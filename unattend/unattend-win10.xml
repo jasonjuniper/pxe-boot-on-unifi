@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Windows 10 Unattended Answer File — Juniper Design
-  Use with WDS: attach to an install image in WDS console
-    WDS console → Server → Install Images → right-click image → Properties → Unattended tab
+  Used with MDT LiteTouch — place this file at:
+    C:\DeploymentShare\Control\WIN10-JUNIPER\unattend.xml
+
+  The MDT Task Sequence merges this file into its own unattend during OS deployment.
+  CustomSettings.ini values (TimeZone, AdminPassword, ComputerName) take precedence
+  over anything set here — prefer setting those there, not here.
 
   KEY SETTINGS TO FILL IN BEFORE USE:
     - ProductKey      : Windows 10 Pro volume/MAK key (or KMS, or leave blank for KMS activation)
-    - FullName        : Default user display name
-    - Organization    : Organization name
-    - AdministratorPassword : Set via 1Password / op run — DO NOT paste plaintext here
-    - TimeZone        : Adjust for your locale
-    - RegisteredOwner / RegisteredOrganization : Your org
+    - TimeZone        : Set here AND in CustomSettings.ini — must match
+    - AdminPassword   : NEVER paste here. Set AdminPassword in CustomSettings.ini
+                        using 'op read' at runtime or MDT's 1Password integration.
 
   Reference: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/automate-windows-setup
 -->
@@ -142,7 +144,7 @@
       <ComputerName>*</ComputerName>   <!-- * = auto-generated; change to a prefix if desired -->
       <RegisteredOrganization>Juniper Design</RegisteredOrganization>
       <RegisteredOwner>Juniper Design</RegisteredOwner>
-      <TimeZone>Eastern Standard Time</TimeZone>
+      <TimeZone>Pacific Standard Time</TimeZone>
     </component>
 
     <!-- Enable Remote Desktop -->
@@ -176,8 +178,10 @@
         <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
 
-      <!-- Local admin account — password must be set via 1Password/op at deploy time -->
-      <!-- Remove or modify if using domain join instead -->
+      <!-- Local admin account.
+           Password is set by MDT via AdminPassword in CustomSettings.ini (from 1Password).
+           The CHANGEME placeholder below is overridden by MDT at deploy time — do NOT
+           put a real password here. See 01b-configure-mdt.ps1 for the AdminPassword setup. -->
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
@@ -185,7 +189,6 @@
             <DisplayName>Juniper Admin</DisplayName>
             <Group>Administrators</Group>
             <Password>
-              <!-- PLACEHOLDER — replace at deploy time via DISM or 1Password injection -->
               <Value>CHANGEME</Value>
               <PlainText>true</PlainText>
             </Password>
@@ -197,7 +200,11 @@
         <Enabled>false</Enabled>
       </AutoLogon>
 
-      <!-- Post-install script chain — runs as the local admin after first logon -->
+      <!-- Post-install script chain.
+           When using MDT: these steps are handled by the MDT Task Sequence (State Restore phase).
+           Leave this commented out if deploying via MDT LiteTouch — the TS manages reboots
+           and script sequencing automatically.
+           Uncomment only if running a manual bare-metal install WITHOUT MDT. -->
       <!--
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">

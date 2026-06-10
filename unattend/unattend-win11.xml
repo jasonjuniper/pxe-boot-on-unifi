@@ -2,14 +2,17 @@
 <!--
   Windows 11 Unattended Answer File — Juniper Design
   Windows 11 requires TPM 2.0 + Secure Boot on target hardware.
-  This answer file bypasses the online account requirement and Team/Organization
-  OOBE screens for a clean, unattended Pro install.
+  Used with MDT LiteTouch — place this file at:
+    C:\DeploymentShare\Control\WIN11-JUNIPER\unattend.xml
+
+  The MDT Task Sequence merges this file into its own unattend during OS deployment.
+  CustomSettings.ini values (TimeZone, AdminPassword, ComputerName) take precedence.
 
   KEY SETTINGS TO FILL IN BEFORE USE:
     - ProductKey      : Windows 11 Pro volume/MAK key (or blank for KMS)
-    - ComputerName    : * for auto, or a site prefix like JUNIPER-%RAND%
-    - TimeZone        : Adjust for your locale
-    - Admin password  : Set via 1Password / op run — do NOT paste plaintext here
+    - TimeZone        : Set here AND in CustomSettings.ini — must match
+    - AdminPassword   : NEVER paste here. Set AdminPassword in CustomSettings.ini
+                        using 'op read' at runtime. See 01b-configure-mdt.ps1.
 
   Reference: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/automate-windows-setup
 -->
@@ -118,7 +121,7 @@
       <ComputerName>*</ComputerName>
       <RegisteredOrganization>Juniper Design</RegisteredOrganization>
       <RegisteredOwner>Juniper Design</RegisteredOwner>
-      <TimeZone>Eastern Standard Time</TimeZone>
+      <TimeZone>Pacific Standard Time</TimeZone>
     </component>
 
     <component name="Microsoft-Windows-TerminalServices-LocalSessionManager"
@@ -128,7 +131,25 @@
       <fDenyTSConnections>false</fDenyTSConnections>
     </component>
 
-    <!-- Windows 11: bypass online account requirement in specialize pass -->
+    <!-- Windows 11: bypass online account / "Let's connect you to a network" requirement.
+         HideOnlineAccountScreens in oobeSystem handles most cases. The RunSynchronous
+         BypassNRO key below is a belt-and-suspenders fix for 24H2 builds that ignore
+         HideOnlineAccountScreens when no network adapter is detected at OOBE time. -->
+    <component name="Microsoft-Windows-Deployment"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS"
+               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+          <Description>Bypass network requirement at OOBE</Description>
+          <WillReboot>Never</WillReboot>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+
     <component name="Microsoft-Windows-OOBE-Sysprep"
                processorArchitecture="amd64"
                publicKeyToken="31bf3856ad364e35" language="neutral"
@@ -159,6 +180,8 @@
         <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
 
+      <!-- Password is set by MDT via AdminPassword in CustomSettings.ini (from 1Password).
+           CHANGEME is overridden by MDT at deploy time — do NOT put a real password here. -->
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
@@ -177,7 +200,12 @@
         <Enabled>false</Enabled>
       </AutoLogon>
 
-      <!-- Uncomment to chain post-install scripts automatically:
+      <!-- Post-install script chain.
+           When using MDT: these steps are handled by the MDT Task Sequence (State Restore phase).
+           Leave this commented out if deploying via MDT LiteTouch — the TS manages reboots
+           and script sequencing automatically.
+           Uncomment only if running a manual bare-metal install WITHOUT MDT. -->
+      <!--
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>

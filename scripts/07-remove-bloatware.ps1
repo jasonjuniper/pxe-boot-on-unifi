@@ -16,7 +16,7 @@ $ErrorActionPreference = 'SilentlyContinue'   # removal errors are non-fatal
 # Use: Get-AppxPackage | Select-Object Name to find package names
 # ---------------------------------------------------------------------------
 $AppxToRemove = @(
-    # Microsoft bloat
+    # Microsoft bloat (Win10 + Win11)
     'Microsoft.BingNews',
     'Microsoft.BingWeather',
     'Microsoft.GetHelp',
@@ -33,13 +33,26 @@ $AppxToRemove = @(
     'Microsoft.XboxGamingOverlay',
     'Microsoft.XboxIdentityProvider',
     'Microsoft.XboxSpeechToTextOverlay',
-    'Microsoft.YourPhone',
-    'Microsoft.ZuneMusic',
-    'Microsoft.ZuneVideo',
+    'Microsoft.YourPhone',         # Phone Link (Win10 name)
+    'Microsoft.YourPhoneApp',      # Phone Link (Win11 name)
+    'Microsoft.ZuneMusic',         # Media Player (old)
+    'Microsoft.ZuneVideo',         # Movies & TV
+
+    # Windows 11 specific
+    'MicrosoftTeams',              # Teams (personal) — preinstalled on Win11
+    'Microsoft.Teams',             # Teams (personal) — alternate package name
+    'Microsoft.MicrosoftTeams',    # Teams — another variant
+    'Microsoft.Cortana',           # Cortana — can be removed on Win11
+    'Clipchamp.Clipchamp',         # Clipchamp video editor
+    'Microsoft.Windows.DevHome',   # Dev Home (Win11 23H2+)
+    'Microsoft.WindowsCommunicationsApps', # Mail and Calendar
+    'Microsoft.OutlookForWindows', # New Outlook (if preinstalled)
 
     # OEM / third-party (add as needed)
     # 'CandyCrush*',
     # 'king.com*',
+    # 'Dell*',
+    # 'HP*',
 )
 
 # ---------------------------------------------------------------------------
@@ -48,7 +61,7 @@ $AppxToRemove = @(
 # ---------------------------------------------------------------------------
 $FeaturesToDisable = @(
     'WindowsMediaPlayer',
-    'Internet-Explorer-Optional-amd64',
+    'Internet-Explorer-Optional-amd64',  # Win10 only; absent on Win11 (silently skipped)
     # 'WorkFolders-Client',
 )
 
@@ -56,12 +69,16 @@ $FeaturesToDisable = @(
 # SCHEDULED TASKS TO DISABLE (consumer / telemetry junk)
 # ---------------------------------------------------------------------------
 $TasksToDisable = @(
+    # These exist on Win10 and may exist on Win11 — script skips silently if absent
     '\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser',
     '\Microsoft\Windows\Application Experience\ProgramDataUpdater',
     '\Microsoft\Windows\Autochk\Proxy',
     '\Microsoft\Windows\Customer Experience Improvement Program\Consolidator',
     '\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip',
     '\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector',
+    # Win11 specific telemetry tasks
+    '\Microsoft\Windows\Feedback\Siuf\DmClient',
+    '\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload',
 )
 
 # ---------------------------------------------------------------------------
@@ -100,7 +117,7 @@ foreach ($task in $TasksToDisable) {
 }
 
 Write-Host ''
-Write-Host '==> Disabling consumer experience / ads in Start Menu...' -ForegroundColor Cyan
+Write-Host '==> Disabling consumer experience / ads / widgets...' -ForegroundColor Cyan
 if (-not $DryRun) {
     $regPaths = @{
         'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' = @{
@@ -110,6 +127,20 @@ if (-not $DryRun) {
             'SubscribedContent-338389Enabled' = 0   # Tips
             'SubscribedContent-338388Enabled' = 0   # Start suggestions
             'SystemPaneSuggestionsEnabled'    = 0
+            'SubscribedContent-310093Enabled' = 0   # "Suggested" apps
+            'SoftLandingEnabled'             = 0   # Spotlight lock screen
+        }
+        # Win11: disable Widgets (TaskbarDa) and Chat (Teams consumer)
+        'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' = @{
+            'AllowNewsAndInterests' = 0             # Widgets
+        }
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced' = @{
+            'TaskbarDa'  = 0                        # Hide Widgets button from taskbar
+            'TaskbarMn'  = 0                        # Hide Chat (Teams) button from taskbar
+        }
+        # Win11: disable "Recommended" section in Start Menu
+        'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' = @{
+            'HideRecommendedSection' = 1
         }
     }
     foreach ($path in $regPaths.Keys) {
