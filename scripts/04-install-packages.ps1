@@ -94,8 +94,8 @@ if (-not $DryRun) {
 
         # Use op read with the vault-qualified path so no --reveal flag is needed
         # op:// URI format: op://<vault>/<item>/<field>
-        # Adjust vault name if yours differs from "Juniper Design"
-        $junadminPass = & $opExe read 'op://Juniper Design/junadmin/password' 2>$null
+        # Item "pc-deploy" in vault "Private", username field = junadmin
+        $junadminPass = & $opExe read 'op://Private/pc-deploy/password' 2>$null
         if (-not $junadminPass) { throw 'op read returned empty — is the CLI authenticated?' }
 
         $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
