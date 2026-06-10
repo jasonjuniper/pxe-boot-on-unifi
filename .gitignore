@@ -1,0 +1,30 @@
+# Secrets — never commit
+*.secret
+*.cred
+*.psk
+*-creds.txt
+*-password.txt
+op-session*
+
+# WDS captures and large WIM/ISO files (store on the server, not in git)
+*.wim
+*.iso
+*.vhd
+*.vhdx
+capture/
+imports/
+
+# Logs and temp files
+*.log
+*.tmp
+stage/
+_out/
+_err/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editor
+.vscode/settings.json
+*.suo
