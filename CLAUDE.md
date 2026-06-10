@@ -20,12 +20,12 @@ task runs the master across every repo under C:\dev. Brand for this repo:
 
 ## Project overview
 
-This repo controls the **pc-deploy** imaging server (host currently named
-`DESKTOP-I8UM43L`). It PXE-boots target PCs and automates:
+This repo controls the **pc-deploy** imaging server (renamed from DESKTOP-I8UM43L,
+IP 192.168.5.141). It PXE-boots target PCs and automates:
 
-- Windows 10 and 11 unattended installation (WDS + answer files in `unattend/`)
+- Windows 10 and 11 unattended installation (WinPE + DISM, answer files in `unattend/`)
 - All Windows updates (`03-windows-update.ps1`)
-- MSI and winget package installs (`04-install-packages.ps1`)
+- MSI and winget package installs + inventory agent registration (`04-install-packages.ps1`)
 - Printer queue setup (`05-setup-printers.ps1`)
 - Wi-Fi join (`06-join-wifi.ps1`)
 - Bloatware and feature removal (`07-remove-bloatware.ps1`)
@@ -43,36 +43,41 @@ any script that calls it.
 ## Imaging stack (pc-deploy is Windows 11, not Windows Server)
 
 **WDS is NOT available on Windows 11** — it is a Windows Server-only role.
-The WDS binaries are not shipped with Windows 11 and cannot be installed via DISM
-optional features. All "fool the installer" workarounds (ProductType hack, DISM /Source
-from Server ISO) fail because the components aren't in the Windows 11 component store.
+**MDT was retired by Microsoft in 2025** — the download URL was removed.
 
 The correct stack for a Windows 11 imaging server is:
-- **Windows ADK + WinPE Add-on** — provides DISM, WinPE build tools
-- **MDT (Microsoft Deployment Toolkit)** — deployment share, task sequences, LiteTouch WinPE
-- **tftpd64** — PXE + TFTP server (runs on Windows 10/11, replaces WDS)
+- **Windows ADK + WinPE Add-on** — provides DISM, WinPE build tools *(installed)*
+- **Custom WinPE image** — `winpe/startnet.cmd` + `winpe/deploy.ps1` injected at build time
+- **tftpd64** — PXE + TFTP server (installed by `01c-build-winpe.ps1`)
+
+`01b-configure-mdt.ps1` is archived/obsolete — do not run it.
 
 ## Key paths (on pc-deploy)
 
-- MDT deployment share: `C:\DeploymentShare\`
-- LiteTouch boot images: `C:\DeploymentShare\Boot\`
-- Post-install scripts share: `\\pc-deploy\deploy$\scripts\`
-- tftpd64 root: `C:\tftpd64\`
+- WinPE workspace (build time): `C:\WinPE_amd64\`
+- TFTP root + boot media: `C:\tftpd64\`
+- Deploy share (WIM images, scripts, unattend): `C:\deploy\` → `\\192.168.5.141\deploy$`
+- Post-install scripts: `\\192.168.5.141\deploy$\scripts\`
 
 ## Script run order (first-time server setup)
 
 1. `00-rename-server.ps1` — rename + reboot  *(done)*
 2. `01a-enable-remote-access.ps1` — WinRM + deploy$ share *(must run AS ADMIN)*
 3. `02-setup-dhcp-options.ps1` — verify Ubiquiti DHCP options 66/67  *(done)*
-4. `01-setup-wds.ps1` — install ADK + WinPE + MDT + tftpd64
-5. `01b-configure-mdt.ps1` — create deployment share + import OS + generate WinPE
+4. `01-setup-wds.ps1` — install ADK + WinPE Add-on *(ADK+WinPE done)*
+5. `01c-build-winpe.ps1` — download tftpd64, build custom WinPE, populate TFTP root
+6. `01d-setup-deploy-share.ps1` — create `deploy$` share + copy scripts/unattend
+7. Copy WIM files: mount Windows ISOs → `copy install.wim C:\deploy\images\win11.wim`
 
 ## Script run order (per target PC, post-install)
 
-03 → 04 → 05 → 06 → 07 (can be chained via `FirstLogonCommands` in unattend)
+WinPE `deploy.ps1` handles: partition → DISM apply → unattend inject → bcdboot → reboot
+
+After first logon (via `FirstLogonCommands` in unattend):
+03 → 04 → 07 (05 and 06 can be added as needed)
 
 ## Router access
 
 Ubiquiti at `192.168.0.1` — credentials in 1Password.
 DHCP options: `66` = TFTP server IP of pc-deploy (`192.168.5.141`),
-`67` = auto-provided by UniFi Network Boot checkbox (`boot\x64\wdsnbp.com`).
+`67` = boot file = `boot\bootmgfw.efi` (UEFI PXE).

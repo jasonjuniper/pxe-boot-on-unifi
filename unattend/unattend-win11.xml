@@ -2,17 +2,17 @@
 <!--
   Windows 11 Unattended Answer File — Juniper Design
   Windows 11 requires TPM 2.0 + Secure Boot on target hardware.
-  Used with MDT LiteTouch — place this file at:
-    C:\DeploymentShare\Control\WIN11-JUNIPER\unattend.xml
 
-  The MDT Task Sequence merges this file into its own unattend during OS deployment.
-  CustomSettings.ini values (TimeZone, AdminPassword, ComputerName) take precedence.
+  Used with the WinPE + DISM deployment stack.
+  deploy.ps1 (WinPE) writes this file to C:\Windows\Panther\unattend.xml on the
+  target after DISM image apply, replacing <ComputerName>*</ComputerName> with the
+  name the tech entered at imaging time.
 
-  KEY SETTINGS TO FILL IN BEFORE USE:
+  KEY SETTINGS:
     - ProductKey      : Windows 11 Pro volume/MAK key (or blank for KMS)
-    - TimeZone        : Set here AND in CustomSettings.ini — must match
-    - AdminPassword   : NEVER paste here. Set AdminPassword in CustomSettings.ini
-                        using 'op read' at runtime. See 01b-configure-mdt.ps1.
+    - TimeZone        : Pacific Standard Time (set below in specialize pass)
+    - AdminPassword   : NEVER paste here. 04-install-packages.ps1 sets a real
+                        password via 1Password at runtime.
 
   Reference: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/automate-windows-setup
 -->
@@ -180,8 +180,9 @@
         <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
 
-      <!-- Password is set by MDT via AdminPassword in CustomSettings.ini (from 1Password).
-           CHANGEME is overridden by MDT at deploy time — do NOT put a real password here. -->
+      <!-- Password placeholder — overridden by 04-install-packages.ps1 via 1Password at
+           first logon. CHANGEME is never used on a real deployment; the script changes it
+           before the machine is handed to a user. Do NOT put a real password here. -->
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
@@ -201,29 +202,27 @@
       </AutoLogon>
 
       <!-- Post-install script chain.
-           When using MDT: these steps are handled by the MDT Task Sequence (State Restore phase).
-           Leave this commented out if deploying via MDT LiteTouch — the TS manages reboots
-           and script sequencing automatically.
-           Uncomment only if running a manual bare-metal install WITHOUT MDT. -->
-      <!--
+           These run at first logon from the deploy$ share on pc-deploy.
+           Scripts 05 (printers), 06 (Wi-Fi), and any others can be added here.
+           03-windows-update.ps1 registers itself in RunOnce and reboots as needed
+           until all updates are installed. -->
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\pc-deploy\deploy$\scripts\03-windows-update.ps1</CommandLine>
+          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\03-windows-update.ps1</CommandLine>
           <Description>Windows Update</Description>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\pc-deploy\deploy$\scripts\04-install-packages.ps1</CommandLine>
-          <Description>Install packages</Description>
+          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\04-install-packages.ps1</CommandLine>
+          <Description>Install packages + inventory agent</Description>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>3</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\pc-deploy\deploy$\scripts\07-remove-bloatware.ps1</CommandLine>
+          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\07-remove-bloatware.ps1</CommandLine>
           <Description>Remove bloatware</Description>
         </SynchronousCommand>
       </FirstLogonCommands>
-      -->
 
     </component>
 

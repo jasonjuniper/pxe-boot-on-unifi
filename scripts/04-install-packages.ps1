@@ -78,6 +78,37 @@ function Install-Msi-Package([hashtable]$Pkg) {
     }
 }
 
+# --- Set JuniperAdmin password from 1Password --------------------------------
+# The unattend.xml creates the JuniperAdmin account with a placeholder password.
+# This block replaces it with the real credential stored in 1Password before
+# anything else runs. Requires 1Password CLI (op) to be authenticated.
+#
+# 1Password item: "junadmin" (local Windows admin for imaged PCs)
+# Field: password
+# To update the password in 1Password: op item edit junadmin --vault=<vault>
+Write-Host '==> Setting JuniperAdmin password from 1Password...' -ForegroundColor Cyan
+if (-not $DryRun) {
+    try {
+        $opExe = 'C:\Program Files\1Password CLI\op.exe'
+        if (-not (Test-Path $opExe)) { $opExe = 'op' }   # fall back to PATH
+
+        # Use op read with the vault-qualified path so no --reveal flag is needed
+        # op:// URI format: op://<vault>/<item>/<field>
+        # Adjust vault name if yours differs from "Juniper Design"
+        $junadminPass = & $opExe read 'op://Juniper Design/junadmin/password' 2>$null
+        if (-not $junadminPass) { throw 'op read returned empty — is the CLI authenticated?' }
+
+        $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
+        Set-LocalUser -Name 'JuniperAdmin' -Password $secPass
+        $junadminPass = $null   # clear from memory
+        Write-Host '    JuniperAdmin password set.' -ForegroundColor Green
+    } catch {
+        Write-Host "    WARN: Could not set JuniperAdmin password: $_" -ForegroundColor Yellow
+        Write-Host '    Run manually: op read "op://Juniper Design/junadmin/password" | ...'
+        Write-Host '    Make sure op CLI is installed and authenticated (op signin).'
+    }
+}
+
 # --- Upgrade winget source first ---------------------------------------------
 Write-Host '==> Refreshing winget sources...' -ForegroundColor Cyan
 if (-not $DryRun) { winget source update | Out-Null }
@@ -92,6 +123,23 @@ if ($MsiPackages.Count -gt 0) {
     Write-Host ''
     Write-Host "==> Installing $($MsiPackages.Count) MSI package(s) from $PackageShare..." -ForegroundColor Cyan
     foreach ($pkg in $MsiPackages) { Install-Msi-Package $pkg }
+}
+
+# --- Inventory agent -----------------------------------------------------------
+# Registers this machine with the Juniper inventory system (FastAPI + Postgres
+# on ENG-1 at 192.168.13.94:8080). Runs after all packages so the agent
+# captures the fully-configured machine state.
+Write-Host ''
+Write-Host '==> Registering with Juniper inventory system...' -ForegroundColor Cyan
+if (-not $DryRun) {
+    try {
+        Invoke-Expression (Invoke-RestMethod 'http://192.168.13.94:8080/static/install_agent.ps1')
+        Write-Host '    Inventory agent installed.' -ForegroundColor Green
+    } catch {
+        Write-Host "    WARN: Inventory registration failed: $_" -ForegroundColor Yellow
+        Write-Host '    The machine is still usable. Retry manually:'
+        Write-Host '      irm http://192.168.13.94:8080/static/install_agent.ps1 | iex'
+    }
 }
 
 Write-Host ''

@@ -1,4 +1,18 @@
 # 01b-configure-mdt.ps1
+# !! ARCHIVED / OBSOLETE !!
+#
+# MDT (Microsoft Deployment Toolkit) was officially retired by Microsoft in 2025.
+# The download URL was removed. This script is kept for historical reference only.
+#
+# The replacement stack is WinPE + DISM:
+#   01c-build-winpe.ps1        -- builds WinPE image with deploy.ps1 injected
+#   01d-setup-deploy-share.ps1 -- creates deploy$ share
+#   winpe/deploy.ps1           -- runs on the target during imaging
+#
+# DO NOT RUN THIS SCRIPT.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Original description (for reference):
 # Configures the MDT deployment share and generates the LiteTouch WinPE boot image.
 # Run on pc-deploy as Administrator AFTER 01-setup-wds.ps1 has completed.
 #
