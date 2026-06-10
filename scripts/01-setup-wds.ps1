@@ -30,20 +30,15 @@ $winget = Get-Command winget -ErrorAction SilentlyContinue
 if ($winget) {
     Write-Host '    winget already available.' -ForegroundColor Green
 } else {
-    Write-Host '    Installing winget (App Installer)...'
+    Write-Host '    Installing winget via Microsoft Store (App Installer)...'
     try {
-        # Download latest winget release from GitHub
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $rel = Invoke-RestMethod 'https://api.github.com/repos/microsoft/winget-cli/releases/latest'
-        $msix = ($rel.assets | Where-Object { $_.name -like '*.msixbundle' })[0].browser_download_url
-        $tmp  = "$env:TEMP\winget.msixbundle"
-        Invoke-WebRequest -Uri $msix -OutFile $tmp -UseBasicParsing
-        Add-AppxPackage -Path $tmp
-        Remove-Item $tmp -Force
-        Write-Host '    winget installed.' -ForegroundColor Green
+        # Trigger Store update for App Installer (works on Win10 1709+ / Win11)
+        Start-Process 'ms-windows-store://pdp/?ProductId=9NBLGGH4NNS1' -ErrorAction SilentlyContinue
+        Write-Host '    WARN: winget is not present. The Microsoft Store has been opened.' -ForegroundColor Yellow
+        Write-Host '    Install "App Installer" from the Store, then re-run this script.' -ForegroundColor Yellow
+        Write-Host '    Continuing with remaining steps...' -ForegroundColor Yellow
     } catch {
-        Write-Host "    WARN: Could not install winget automatically: $_" -ForegroundColor Yellow
-        Write-Host '    Install App Installer from the Microsoft Store and re-run.' -ForegroundColor Yellow
+        Write-Host "    WARN: Could not open Store: $_" -ForegroundColor Yellow
     }
 }
 
@@ -65,14 +60,29 @@ if ($git) {
     }
 }
 
-# --- Install WDS role (includes Deployment Server + Transport Server) --------
-Write-Host '==> Installing WDS role...' -ForegroundColor Cyan
-$feat = Get-WindowsFeature WDS
-if ($feat.Installed) {
-    Write-Host '    WDS already installed.' -ForegroundColor Green
+# --- Install WDS (works on both Windows Server and Windows 10/11) ------------
+Write-Host '==> Installing WDS...' -ForegroundColor Cyan
+$isServer = (Get-CimInstance Win32_OperatingSystem).ProductType -ne 1   # 1 = Workstation
+
+if ($isServer) {
+    # Windows Server: use Server Manager cmdlets
+    $feat = Get-WindowsFeature WDS
+    if ($feat.Installed) {
+        Write-Host '    WDS already installed.' -ForegroundColor Green
+    } else {
+        Install-WindowsFeature -Name WDS -IncludeManagementTools
+        Write-Host '    WDS installed.' -ForegroundColor Green
+    }
 } else {
-    Install-WindowsFeature -Name WDS -IncludeManagementTools
-    Write-Host '    WDS installed.' -ForegroundColor Green
+    # Windows 10/11: use DISM optional features
+    $wds = Get-WindowsOptionalFeature -Online -FeatureName WDS -ErrorAction SilentlyContinue
+    if ($wds -and $wds.State -eq 'Enabled') {
+        Write-Host '    WDS already enabled.' -ForegroundColor Green
+    } else {
+        Write-Host '    Enabling WDS via DISM...'
+        Enable-WindowsOptionalFeature -Online -FeatureName WDS -All -NoRestart | Out-Null
+        Write-Host '    WDS enabled.' -ForegroundColor Green
+    }
 }
 
 # --- Initialize WDS ----------------------------------------------------------
