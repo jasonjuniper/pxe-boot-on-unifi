@@ -40,27 +40,39 @@ All secrets are in 1Password and retrieved at runtime via `op read` or
 `op run`. The 1Password CLI (`op`) must be authenticated before running
 any script that calls it.
 
-## Key paths (on pc-deploy once renamed)
+## Imaging stack (pc-deploy is Windows 11, not Windows Server)
 
-- WDS root: `C:\RemoteInstall\`
-- Boot images: `C:\RemoteInstall\Boot\x64\`
-- Install images: `C:\RemoteInstall\Images\`
-- Answer files: `C:\RemoteInstall\WdsClientUnattend\`
+**WDS is NOT available on Windows 11** — it is a Windows Server-only role.
+The WDS binaries are not shipped with Windows 11 and cannot be installed via DISM
+optional features. All "fool the installer" workarounds (ProductType hack, DISM /Source
+from Server ISO) fail because the components aren't in the Windows 11 component store.
+
+The correct stack for a Windows 11 imaging server is:
+- **Windows ADK + WinPE Add-on** — provides DISM, WinPE build tools
+- **MDT (Microsoft Deployment Toolkit)** — deployment share, task sequences, LiteTouch WinPE
+- **tftpd64** — PXE + TFTP server (runs on Windows 10/11, replaces WDS)
+
+## Key paths (on pc-deploy)
+
+- MDT deployment share: `C:\DeploymentShare\`
+- LiteTouch boot images: `C:\DeploymentShare\Boot\`
 - Post-install scripts share: `\\pc-deploy\deploy$\scripts\`
+- tftpd64 root: `C:\tftpd64\`
 
 ## Script run order (first-time server setup)
 
-1. `00-rename-server.ps1` — rename + reboot
-2. `01-setup-wds.ps1` — install WDS role + configure
-3. `02-setup-dhcp-options.ps1` — update Ubiquiti router DHCP options
-4. Add Windows images via WDS console or `wdsutil`
-5. Drop unattend XML files into WDS
+1. `00-rename-server.ps1` — rename + reboot  *(done)*
+2. `01a-enable-remote-access.ps1` — WinRM + deploy$ share *(must run AS ADMIN)*
+3. `02-setup-dhcp-options.ps1` — verify Ubiquiti DHCP options 66/67  *(done)*
+4. `01-setup-wds.ps1` — install ADK + WinPE + MDT + tftpd64
+5. `01b-configure-mdt.ps1` — create deployment share + import OS + generate WinPE
 
 ## Script run order (per target PC, post-install)
 
-3 → 4 → 5 → 6 → 7 (can be chained via `FirstLogonCommands` in unattend)
+03 → 04 → 05 → 06 → 07 (can be chained via `FirstLogonCommands` in unattend)
 
 ## Router access
 
 Ubiquiti at `192.168.0.1` — credentials in 1Password.
-DHCP options required: `66` = TFTP server IP of pc-deploy, `67` = `boot\x64\wdsnbp.com`.
+DHCP options: `66` = TFTP server IP of pc-deploy (`192.168.5.141`),
+`67` = auto-provided by UniFi Network Boot checkbox (`boot\x64\wdsnbp.com`).
