@@ -3,7 +3,7 @@
 # from an already-connected PC, or by creating a new profile from 1Password.
 #
 # The PSK is NEVER stored in this script. It is read at runtime from 1Password
-# using 'op read' — the 1Password CLI must be signed in first.
+# using 'op read' - the 1Password CLI must be signed in first.
 #
 # USAGE: .\06-join-wifi.ps1
 #        .\06-join-wifi.ps1 -Ssid "JuniperOffice" -OpItem "WiFi/Office"
@@ -104,4 +104,4 @@ if (-not $DryRun) {
     }
 }
 
-if ($DryRun) { Write-Host '(Dry run — no changes made.)' -ForegroundColor Yellow }
+if ($DryRun) { Write-Host '(Dry run - no changes made.)' -ForegroundColor Yellow }

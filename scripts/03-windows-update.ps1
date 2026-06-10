@@ -51,7 +51,7 @@ do {
 } while ($round -lt $MaxRounds)
 
 if ($round -ge $MaxRounds) {
-    Write-Host "Reached $MaxRounds rounds — check Windows Update manually." -ForegroundColor Yellow
+    Write-Host "Reached $MaxRounds rounds - check Windows Update manually." -ForegroundColor Yellow
 }
 
 Write-Host ''

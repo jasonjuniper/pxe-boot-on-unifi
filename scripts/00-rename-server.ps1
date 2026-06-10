@@ -29,6 +29,6 @@ if (-not $Force) {
 }
 
 Rename-Computer -NewName $NewName -Force
-Write-Host "Renamed. Rebooting in 10 seconds — reconnect to '$NewName' after restart." -ForegroundColor Yellow
+Write-Host "Renamed. Rebooting in 10 seconds - reconnect to '$NewName' after restart." -ForegroundColor Yellow
 Start-Sleep 10
 Restart-Computer -Force

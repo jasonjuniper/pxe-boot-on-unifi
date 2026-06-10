@@ -17,7 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# WINGET PACKAGES — add/remove as needed
+# WINGET PACKAGES - add/remove as needed
 # Find IDs with: winget search <name>
 # ---------------------------------------------------------------------------
 $WingetPackages = @(
@@ -96,4 +96,4 @@ if ($MsiPackages.Count -gt 0) {
 
 Write-Host ''
 Write-Host '==> Package installation complete.' -ForegroundColor Green
-if ($DryRun) { Write-Host '    (Dry run — nothing was actually installed.)' -ForegroundColor Yellow }
+if ($DryRun) { Write-Host '    (Dry run - nothing was actually installed.)' -ForegroundColor Yellow }

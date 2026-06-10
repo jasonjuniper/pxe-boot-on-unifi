@@ -6,7 +6,7 @@
 #   - Server renamed to pc-deploy (run 00-rename-server.ps1 first)
 #   - Static IP assigned on the LAN NIC
 #   - Sufficient disk space on the WDS root drive (recommend 100 GB+)
-#   - Scripts on the machine — bootstrap without git/winget:
+#   - Scripts on the machine - bootstrap without git/winget:
 #       powershell -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest 'https://github.com/jasonjuniper/pc-imaging-server/archive/refs/heads/main.zip' -OutFile $env:TEMP\d.zip; Expand-Archive $env:TEMP\d.zip $env:TEMP\dsrc -Force; New-Item C:\deploy -ItemType Directory -Force | Out-Null; Copy-Item $env:TEMP\dsrc\pc-imaging-server-main\* C:\deploy -Recurse -Force"
 #
 # This script installs winget and git on the server, so future updates can use:
@@ -25,7 +25,7 @@ $ErrorActionPreference = 'Stop'
 # --- Install server-side prerequisites (git, winget App Installer) -----------
 Write-Host '==> Installing server prerequisites...' -ForegroundColor Cyan
 
-# winget (App Installer) — needed to install packages on this server
+# winget (App Installer) - needed to install packages on this server
 $winget = Get-Command winget -ErrorAction SilentlyContinue
 if ($winget) {
     Write-Host '    winget already available.' -ForegroundColor Green
@@ -42,7 +42,7 @@ if ($winget) {
     }
 }
 
-# Git — needed for pulling script updates from GitHub onto this server
+# Git - needed for pulling script updates from GitHub onto this server
 $git = Get-Command git -ErrorAction SilentlyContinue
 if ($git) {
     Write-Host '    git already available.' -ForegroundColor Green
@@ -100,7 +100,7 @@ $wdscmd = "C:\Windows\System32\wdsutil.exe"
 
 # Answer all clients (known + unknown) automatically
 & $wdscmd /Set-Server /AnswerClients:All
-# PXE response delay (seconds) — 0 = respond immediately
+# PXE response delay (seconds) - 0 = respond immediately
 & $wdscmd /Set-Server /PxePromptPolicy /Known:NoPrompt /New:NoPrompt
 # Set TFTP block size for faster transfers (1456 = jumbo-safe default)
 & $wdscmd /Set-Server /Transport /TftpMaxBlockSize:1456

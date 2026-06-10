@@ -122,5 +122,5 @@ if (-not $DryRun) {
 
 Write-Host ''
 Write-Host '==> Bloatware removal complete.' -ForegroundColor Green
-if ($DryRun) { Write-Host '    (Dry run — nothing was actually changed.)' -ForegroundColor Yellow }
+if ($DryRun) { Write-Host '    (Dry run - nothing was actually changed.)' -ForegroundColor Yellow }
 Write-Host '    A reboot is recommended to finalize feature changes.' -ForegroundColor Yellow

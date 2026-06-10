@@ -6,7 +6,7 @@
 #   - Fixed IP reservation: pc-deploy (c8:f7:50:a3:34:ed) → 192.168.5.141
 #   - DHCP option 66 (TFTP Server): 192.168.5.141
 #   - DHCP option 67 (Boot File): automatically provided by UniFi when
-#     the Network Boot / TFTP option is enabled — no manual entry needed.
+#     the Network Boot / TFTP option is enabled - no manual entry needed.
 #
 # Run this script to verify the WDS service is running and ready.
 #
@@ -36,7 +36,7 @@ if ($wds) {
         Write-Host '  Start it with: Start-Service WDSServer' -ForegroundColor Yellow
     }
 } else {
-    Write-Host 'WDS service             : NOT INSTALLED — run 01-setup-wds.ps1 first' -ForegroundColor Red
+    Write-Host 'WDS service             : NOT INSTALLED - run 01-setup-wds.ps1 first' -ForegroundColor Red
 }
 
 Write-Host ''

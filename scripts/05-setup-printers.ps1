@@ -13,7 +13,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# PRINTERS — add entries here
+# PRINTERS - add entries here
 # Each entry: @{ Name='Queue name on server'; LocalAlias='Name on this PC' }
 # Leave LocalAlias blank to use the same name as on the server.
 # ---------------------------------------------------------------------------
@@ -55,4 +55,4 @@ foreach ($p in $Printers) {
 
 Write-Host ''
 Write-Host '==> Printer setup complete.' -ForegroundColor Green
-if ($DryRun) { Write-Host '    (Dry run — nothing was actually added.)' -ForegroundColor Yellow }
+if ($DryRun) { Write-Host '    (Dry run - nothing was actually added.)' -ForegroundColor Yellow }
