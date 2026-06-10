@@ -1,55 +1,44 @@
 # 02-setup-dhcp-options.ps1
-# Configures DHCP option 66 (TFTP server) and option 67 (boot file) on the
-# Ubiquiti router at 192.168.0.1 so PXE clients know where to boot from.
+# Documents the DHCP PXE configuration applied to the Ubiquiti UniFi router at
+# 192.168.0.1. Configuration was applied manually via the UniFi web UI.
 #
-# The Ubiquiti router runs EdgeOS or UniFi. This script prints the commands
-# to run on the router — it does NOT automatically SSH in (credentials are
-# in 1Password; use 'op run' if you want to automate the SSH step).
+# WHAT WAS CONFIGURED (already done):
+#   - Fixed IP reservation: pc-deploy (c8:f7:50:a3:34:ed) → 192.168.5.141
+#   - DHCP option 66 (TFTP Server): 192.168.5.141
+#   - DHCP option 67 (Boot File): automatically provided by UniFi when
+#     the Network Boot / TFTP option is enabled — no manual entry needed.
+#
+# Run this script to verify the WDS service is running and ready.
 #
 # USAGE: .\02-setup-dhcp-options.ps1
-#        .\02-setup-dhcp-options.ps1 -TftpServerIp 192.168.0.10
+#        .\02-setup-dhcp-options.ps1 -TftpServerIp 192.168.5.141
 
 param(
-    # IP address of pc-deploy on the LAN — update to match your static IP
-    [string]$TftpServerIp = '192.168.0.XXX',
-
-    # WDS PXE boot filename (standard for WDS x64 UEFI + BIOS)
-    [string]$BootFile = 'boot\x64\wdsnbp.com',
-
-    # DHCP shared network name on EdgeOS (check with 'show dhcp server statistics')
-    [string]$DhcpPool = 'LAN'
+    # Static IP of pc-deploy (fixed reservation set in UniFi)
+    [string]$TftpServerIp = '192.168.5.141'
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'SilentlyContinue'
 
-if ($TftpServerIp -match 'XXX') {
-    Write-Host 'ERROR: Update $TftpServerIp to the actual static IP of pc-deploy.' -ForegroundColor Red
-    exit 1
+Write-Host ''
+Write-Host '=== PXE / DHCP configuration status ===' -ForegroundColor Cyan
+Write-Host "TFTP server (pc-deploy) : $TftpServerIp"
+Write-Host "Option 66               : $TftpServerIp  [set in UniFi > Networks > Default > DHCP > TFTP Server]"
+Write-Host "Option 67               : auto (UniFi supplies boot\x64\wdsnbp.com when Network Boot is enabled)"
+Write-Host ''
+
+# Verify WDS is running on this machine
+$wds = Get-Service -Name WDSServer -ErrorAction SilentlyContinue
+if ($wds) {
+    $color = if ($wds.Status -eq 'Running') { 'Green' } else { 'Yellow' }
+    Write-Host "WDS service status      : $($wds.Status)" -ForegroundColor $color
+    if ($wds.Status -ne 'Running') {
+        Write-Host '  Start it with: Start-Service WDSServer' -ForegroundColor Yellow
+    }
+} else {
+    Write-Host 'WDS service             : NOT INSTALLED — run 01-setup-wds.ps1 first' -ForegroundColor Red
 }
 
 Write-Host ''
-Write-Host '=== Ubiquiti EdgeOS DHCP option configuration ===' -ForegroundColor Cyan
-Write-Host "TFTP server IP : $TftpServerIp"
-Write-Host "Boot file      : $BootFile"
-Write-Host "DHCP pool      : $DhcpPool"
-Write-Host ''
-Write-Host 'SSH into the router (192.168.0.1) and run these commands:' -ForegroundColor Yellow
-Write-Host ''
-Write-Host @"
-  configure
-  set service dhcp-server shared-network-name $DhcpPool subnet <YOUR_SUBNET_CIDR> bootfile-server $TftpServerIp
-  set service dhcp-server shared-network-name $DhcpPool subnet <YOUR_SUBNET_CIDR> bootfile-name "$BootFile"
-  commit
-  save
-  exit
-"@
-Write-Host ''
-Write-Host '--- OR for UniFi Network (web UI) ---' -ForegroundColor Yellow
-Write-Host @"
-  Settings > Networks > LAN > DHCP > Advanced > Custom DHCP options:
-    Option 66 (TFTP Server Name) = $TftpServerIp
-    Option 67 (Bootfile Name)    = $BootFile
-"@
-Write-Host ''
-Write-Host 'After saving, reboot a test PC and watch for the PXE boot prompt.' -ForegroundColor Green
-Write-Host 'WDS server must be running: Get-Service WDSServer' -ForegroundColor Green
+Write-Host 'To test PXE boot: boot a target PC over the network (F12 / PXE).' -ForegroundColor Green
+Write-Host 'It should receive an IP from 192.168.5.x and TFTP-load from 192.168.5.141.' -ForegroundColor Green
