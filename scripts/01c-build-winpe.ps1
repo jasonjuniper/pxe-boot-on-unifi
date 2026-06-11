@@ -6,7 +6,8 @@
 #   2. Runs copype.cmd to create a WinPE workspace
 #   3. Mounts boot.wim and injects optional components (PowerShell, DISM, etc.)
 #   4. Copies startnet.cmd and deploy.ps1 into the WinPE image
-#   5. Unmounts / commits the image
+#   5. Injects Juniper branding (background JPEG, deploy HTA, Poppins fonts)
+#   6. Unmounts / commits the image
 #   6. Copies the bootable media tree into C:\tftpd64\
 #   7. Writes a tftpd64.ini config (proxy DHCP mode)
 #   8. Installs and starts the tftpd64 service
@@ -21,11 +22,13 @@
 #        .\01c-build-winpe.ps1 -WorkDir C:\WinPE_work -TftpRoot C:\tftpd64
 
 param(
-    [string]$WorkDir  = 'C:\WinPE_amd64',
-    [string]$TftpRoot = 'C:\tftpd64',
+    [string]$WorkDir      = 'C:\WinPE_amd64',
+    [string]$TftpRoot     = 'C:\tftpd64',
     # Folder containing the winpe\ sources (startnet.cmd, deploy.ps1)
     # Defaults to the directory containing this script's parent (repo root)
-    [string]$RepoRoot = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent)
+    [string]$RepoRoot     = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
+    # Juniper brand kit root — supplies the WinPE background generator and deploy HTA
+    [string]$BrandKitRoot = 'C:\dev\juniper-brand-kit'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -218,6 +221,56 @@ if (-not $winpeSourceDir) {
 Copy-Item (Join-Path $winpeSourceDir 'startnet.cmd') "$mountDir\Windows\System32\startnet.cmd" -Force
 Copy-Item (Join-Path $winpeSourceDir 'deploy.ps1')   "$mountDir\Windows\System32\deploy.ps1"   -Force
 Write-Host "  Injected startnet.cmd and deploy.ps1 from $winpeSourceDir" -ForegroundColor Green
+
+# ─── Step 5b: Inject Juniper branding ─────────────────────────────────────────
+Write-Host ''
+Write-Host '==> Step 5b: Inject Juniper branding' -ForegroundColor Cyan
+
+$brandWinPE = Join-Path $BrandKitRoot 'winpe'
+if (-not (Test-Path $BrandKitRoot)) {
+    Write-Host "  WARN: Brand kit not found at $BrandKitRoot — skipping branding." -ForegroundColor Yellow
+} else {
+    # Generate the branded background JPEG
+    $bgScript = Join-Path $brandWinPE 'build-winpe-bg.ps1'
+    $bgOut    = Join-Path $brandWinPE 'juniper-winpe-bg.jpg'
+    if (Test-Path $bgScript) {
+        Write-Host '  Generating WinPE background...'
+        $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+        $p = Start-Process 'powershell.exe' `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$bgScript`" -OutFile `"$bgOut`"" `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+        $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
+        Remove-Item $o,$e -ErrorAction SilentlyContinue
+        if ($p.ExitCode -ne 0) {
+            Write-Host "    WARN: Background generation failed (exit $($p.ExitCode)). $err" -ForegroundColor Yellow
+        } else {
+            Write-Host '    OK' -ForegroundColor Green
+        }
+    }
+
+    # Copy background into WIM as winpe.jpg (WinPE desktop background)
+    if (Test-Path $bgOut) {
+        Copy-Item $bgOut "$mountDir\Windows\System32\winpe.jpg" -Force
+        Write-Host '  Copied winpe.jpg into WIM.' -ForegroundColor Green
+    }
+
+    # Copy branded deploy HTA
+    $htaSrc = Join-Path $brandWinPE 'deploy-ui.hta'
+    if (Test-Path $htaSrc) {
+        Copy-Item $htaSrc "$mountDir\Windows\System32\deploy-ui.hta" -Force
+        Write-Host '  Copied deploy-ui.hta into WIM.' -ForegroundColor Green
+    }
+
+    # Copy Poppins fonts into WIM (needed by HTA for on-brand text rendering)
+    $fontsDir = Join-Path $BrandKitRoot 'fonts'
+    if (Test-Path $fontsDir) {
+        New-Item "$mountDir\Windows\Fonts" -ItemType Directory -Force | Out-Null
+        Get-ChildItem $fontsDir -Filter 'Poppins-*.ttf' | ForEach-Object {
+            Copy-Item $_.FullName "$mountDir\Windows\Fonts\$($_.Name)" -Force
+        }
+        Write-Host '  Copied Poppins fonts into WIM.' -ForegroundColor Green
+    }
+}
 
 # ─── Step 6: Unmount and commit ────────────────────────────────────────────────
 Write-Host ''
