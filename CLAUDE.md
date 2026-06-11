@@ -81,3 +81,26 @@ After first logon (via `FirstLogonCommands` in unattend):
 Ubiquiti at `192.168.0.1` — credentials in 1Password.
 DHCP options: `66` = TFTP server IP of pc-deploy (`192.168.5.141`),
 `67` = boot file = `boot\bootmgfw.efi` (UEFI PXE).
+
+## Local DNS records (UniFi static DNS)
+
+Managed via UniFi API — `POST/PUT https://192.168.0.1/proxy/network/v2/api/site/default/static-dns`
+with `X-API-Key` header (key in `op://Private/Unifi API Key (Inventory)/Token`).
+
+| Hostname | Type | Value |
+|---|---|---|
+| `pc-deploy.juniperdesign.local` | A | `192.168.5.141` |
+| `inventory.juniperdesign.local` | A | `192.168.5.141` |
+| `inv.juniperdesign.local` | A | `192.168.5.141` |
+
+## Inventory server (pc-deploy)
+
+FastAPI + PostgreSQL 16 running natively on pc-deploy as `JuniperInventory` Windows service.
+- App: `C:\inventory\app\` — service managed by NSSM (`C:\nssm\nssm.exe`)
+- DB data: `C:\PGdata\`
+- Logs: `C:\inventory\uvicorn.log`, `C:\inventory\uvicorn-err.log`
+- HTTP: `http://192.168.5.141:8080/` (also `http://inventory.juniperdesign.local:8080/`)
+- Secrets: `op://Private/inventory-server/` — db-password, pg-superpassword
+- DPAPI cache on ENG-2: `C:\Users\ENG2\.juniper-inv-secrets.xml`
+- Service env vars (UNIFI_HOST, UNIFI_API_KEY, DATABASE_URL, etc.) stored in registry:
+  `HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Environment`
