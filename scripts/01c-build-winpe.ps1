@@ -226,9 +226,12 @@ foreach ($oc in $ocs) {
 }
 Write-Host '  Optional components added.' -ForegroundColor Green
 
-# ─── Step 5: Inject startnet.cmd and deploy.ps1 ────────────────────────────────
+# ─── Step 5: Inject startnet.cmd and deploy-boot.ps1 ─────────────────────────
+# deploy-boot.ps1 is the minimal bootstrap baked into the WIM.
+# The full deploy logic lives on the share at deploy$\scripts\deploy.ps1
+# so it can be updated without rebuilding the WIM.
 Write-Host ''
-Write-Host '==> Step 5: Inject startnet.cmd and deploy.ps1' -ForegroundColor Cyan
+Write-Host '==> Step 5: Inject startnet.cmd and deploy-boot.ps1' -ForegroundColor Cyan
 
 $winpeSourceDir = ''
 # Look for winpe\ next to this script, then in common repo locations
@@ -238,20 +241,20 @@ $candidates = @(
     'C:\dev\pc-imaging-server\winpe'
 )
 foreach ($c in $candidates) {
-    if (Test-Path (Join-Path $c 'deploy.ps1')) { $winpeSourceDir = (Resolve-Path $c).Path; break }
+    if (Test-Path (Join-Path $c 'deploy-boot.ps1')) { $winpeSourceDir = (Resolve-Path $c).Path; break }
 }
 
 if (-not $winpeSourceDir) {
-    Write-Host '  ERROR: Cannot find winpe\deploy.ps1. Copy this repo to pc-deploy and re-run,' -ForegroundColor Red
+    Write-Host '  ERROR: Cannot find winpe\deploy-boot.ps1. Copy this repo to pc-deploy and re-run,' -ForegroundColor Red
     Write-Host '         or pass -RepoRoot to point at the checkout.'
     # Unmount without commit so we don't corrupt the WIM
-    Start-Process $dismExe -ArgumentList "/Unmount-Image /MountDir:`"$mountDir`" /Discard" -NoNewWindow -Wait
+    & $dismExe /Unmount-WIM /MountDir:"$mountDir" /Discard 2>&1 | Out-Null
     exit 1
 }
 
-Copy-Item (Join-Path $winpeSourceDir 'startnet.cmd') "$mountDir\Windows\System32\startnet.cmd" -Force
-Copy-Item (Join-Path $winpeSourceDir 'deploy.ps1')   "$mountDir\Windows\System32\deploy.ps1"   -Force
-Write-Host "  Injected startnet.cmd and deploy.ps1 from $winpeSourceDir" -ForegroundColor Green
+Copy-Item (Join-Path $winpeSourceDir 'startnet.cmd')    "$mountDir\Windows\System32\startnet.cmd"    -Force
+Copy-Item (Join-Path $winpeSourceDir 'deploy-boot.ps1') "$mountDir\Windows\System32\deploy-boot.ps1" -Force
+Write-Host "  Injected startnet.cmd and deploy-boot.ps1 from $winpeSourceDir" -ForegroundColor Green
 
 # ─── Step 5b: Inject Juniper branding ─────────────────────────────────────────
 Write-Host ''

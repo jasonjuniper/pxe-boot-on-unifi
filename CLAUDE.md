@@ -47,7 +47,9 @@ any script that calls it.
 
 The correct stack for a Windows 11 imaging server is:
 - **Windows ADK + WinPE Add-on** — provides DISM, WinPE build tools *(installed)*
-- **Custom WinPE image** — `winpe/startnet.cmd` + `winpe/deploy.ps1` injected at build time
+- **Custom WinPE image** — `winpe/startnet.cmd` + `winpe/deploy-boot.ps1` baked in at build time
+  - Main deploy logic lives on the share: `scripts/deploy.ps1` → `deploy$\scripts\deploy.ps1`
+  - To update deploy.ps1: edit it, then copy to pc-deploy share (no WIM rebuild needed)
 - **tftpd64** — PXE + TFTP server (installed by `01c-build-winpe.ps1`)
 
 `01b-configure-mdt.ps1` is archived/obsolete — do not run it.
@@ -57,7 +59,8 @@ The correct stack for a Windows 11 imaging server is:
 - WinPE workspace (build time): `C:\WinPE_amd64\`
 - TFTP root + boot media: `C:\tftpd64\`
 - Deploy share (WIM images, scripts, unattend): `C:\deploy\` → `\\192.168.5.141\deploy$`
-- Post-install scripts: `\\192.168.5.141\deploy$\scripts\`
+- Post-install scripts + deploy.ps1: `\\192.168.5.141\deploy$\scripts\`
+- WIM images: `\\192.168.5.141\deploy$\images\` (`win11-home.wim`, `win11-pro.wim`, `win10.wim`)
 
 ## Script run order (first-time server setup)
 
@@ -67,7 +70,10 @@ The correct stack for a Windows 11 imaging server is:
 4. `01-setup-wds.ps1` — install ADK + WinPE Add-on *(ADK+WinPE done)*
 5. `01c-build-winpe.ps1` — download tftpd64, build custom WinPE, populate TFTP root
 6. `01d-setup-deploy-share.ps1` — create `deploy$` share + copy scripts/unattend
-7. Copy WIM files: mount Windows ISOs → `copy install.wim C:\deploy\images\win11.wim`
+7. Copy WIM files: export single-edition WIMs to `C:\deploy\images\`:
+   - `win11-home.wim` (index 1 = Home from multi-edition ISO)
+   - `win11-pro.wim`  (index 6 = Pro from multi-edition ISO)
+   - `win10.wim`      (multi-edition ISO, Win10 Pro = index 6)
 
 ## Script run order (per target PC, post-install)
 

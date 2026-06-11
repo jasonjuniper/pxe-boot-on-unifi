@@ -72,7 +72,8 @@ Write-Host '==> Populating share with scripts and unattend files' -ForegroundCol
 # Find repo root (this script is in scripts\)
 $repoRoot = Split-Path $PSScriptRoot -Parent
 
-$scriptsToCopy = @('03-windows-update.ps1','04-install-packages.ps1',
+$scriptsToCopy = @('deploy.ps1',
+                   '03-windows-update.ps1','04-install-packages.ps1',
                    '05-install-drivers.ps1',
                    '05-setup-printers.ps1','06-join-wifi.ps1','07-remove-bloatware.ps1',
                    '09-update-driver-warehouse.ps1',
