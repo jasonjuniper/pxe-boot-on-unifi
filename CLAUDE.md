@@ -104,3 +104,40 @@ FastAPI + PostgreSQL 16 running natively on pc-deploy as `JuniperInventory` Wind
 - DPAPI cache on ENG-2: `C:\Users\ENG2\.juniper-inv-secrets.xml`
 - Service env vars (UNIFI_HOST, UNIFI_API_KEY, DATABASE_URL, etc.) stored in registry:
   `HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Environment`
+
+### Inventory agent
+
+`scripts/static/install_agent.ps1` is the agent script. It is served dynamically by the
+inventory server at `GET /static/install_agent.ps1` — the server replaces the
+`##INVENTORY_API##` placeholder with the live base URL before sending.
+
+The agent collects a full WMI hardware snapshot (CPU, RAM, disks, GPU, BIOS serial,
+chassis type, OS, BitLocker state, Defender status, TPM, Secure Boot, installed software)
+and POSTs it to `POST /ingest/endpoint`. The server upserts the device record by MAC address.
+
+One-liner (run on any imaged PC to register or re-register):
+```powershell
+irm http://inventory.juniperdesign.local:8080/static/install_agent.ps1 | iex
+```
+
+`04-install-packages.ps1` runs this automatically at the end of every imaging run.
+
+The agent file lives on the server at `C:\inventory\app\static\install_agent.ps1`.
+To update it: edit `scripts/static/install_agent.ps1` in this repo, then copy to the server:
+```powershell
+$s = New-PSSession -ComputerName 192.168.5.141
+Copy-Item scripts\static\install_agent.ps1 -Destination C:\inventory\app\static\ -ToSession $s
+Remove-PSSession $s
+```
+
+## Windows activation (OEM UEFI key)
+
+`04-install-packages.ps1` includes an OEM activation step that:
+1. Reads the embedded product key from UEFI firmware via
+   `SoftwareLicensingService.OA3xOriginalProductKey` (WMI)
+2. Installs it with `slmgr.vbs /ipk` and activates with `slmgr.vbs /ato`
+3. **Never logs the key value** — only slmgr's result text is written to output
+4. Gracefully skips on VMs or hardware without an embedded OEM key
+
+This works for any OEM PC shipped with Windows 8 or later (ACPI MSDM table).
+Non-OEM machines will activate via digital license or KMS automatically.

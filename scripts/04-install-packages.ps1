@@ -275,9 +275,36 @@ if (-not $DryRun) {
     }
 }
 
+# --- Activate Windows via UEFI OEM key (ACPI MSDM table) ----------------------
+# Most OEM PCs shipped with Win 8+ embed a product key in UEFI firmware (MSDM).
+# This reads the key silently, installs it, and activates Windows.
+# The key value is NEVER written to output — only slmgr's result text is shown.
+# Gracefully skips if no embedded key is found (VMs, non-OEM hardware).
+Write-Host ''
+Write-Host '==> Activating Windows (UEFI OEM key)...' -ForegroundColor Cyan
+if (-not $DryRun) {
+    try {
+        $oemKey = (Get-WmiObject -Query 'SELECT OA3xOriginalProductKey FROM SoftwareLicensingService' `
+                      -ErrorAction Stop).OA3xOriginalProductKey
+        if ($oemKey -and $oemKey.Length -gt 0) {
+            # Install key — slmgr output is the result message, not the key
+            $ipk = cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $oemKey 2>&1
+            Write-Host "    Key installed: $($ipk -join ' ')" -ForegroundColor Green
+            # Activate against Microsoft activation servers
+            $ato = cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1
+            Write-Host "    Activation:    $($ato -join ' ')" -ForegroundColor Green
+        } else {
+            Write-Host '    No OEM UEFI key found (VM or key not embedded) — skipping.' -ForegroundColor DarkGray
+            Write-Host '    Windows should activate automatically via digital license or KMS.'
+        }
+    } catch {
+        Write-Host "    WARN: OEM key read failed: $_" -ForegroundColor Yellow
+    }
+}
+
 # --- Inventory agent -----------------------------------------------------------
 # Registers this machine with the Juniper inventory system (FastAPI + Postgres
-# on ENG-1 at 192.168.5.141:8080). Runs after all packages so the agent
+# on pc-deploy at 192.168.5.141:8080). Runs after all packages so the agent
 # captures the fully-configured machine state.
 Write-Host ''
 Write-Host '==> Registering with Juniper inventory system...' -ForegroundColor Cyan
