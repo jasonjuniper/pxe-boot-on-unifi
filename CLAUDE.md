@@ -80,7 +80,7 @@ After first logon (via `FirstLogonCommands` in unattend):
 
 Ubiquiti at `192.168.0.1` — credentials in 1Password.
 DHCP options: `66` = TFTP server IP of pc-deploy (`192.168.5.141`),
-`67` = boot file = `boot\bootmgfw.efi` (UEFI PXE).
+`67` = boot file = `EFI\Boot\bootx64.efi` (UEFI PXE — copype puts the bootloader here).
 
 ## Local DNS records (UniFi static DNS)
 

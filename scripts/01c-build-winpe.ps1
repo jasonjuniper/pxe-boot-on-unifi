@@ -33,6 +33,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Log everything (Write-Host, errors, output) to a transcript for remote visibility
+$TranscriptPath = Join-Path (Split-Path $PSCommandPath) 'build.log'
+Start-Transcript -Path $TranscriptPath -Force | Out-Null
+
 $adkRoot = 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit'
 $copype   = "$adkRoot\Windows Preinstallation Environment\copype.cmd"
 $dismExe  = "$adkRoot\Deployment Tools\amd64\DISM\dism.exe"
@@ -122,13 +126,34 @@ Write-Host ''
 Write-Host '==> Step 2: Create WinPE workspace (copype)' -ForegroundColor Cyan
 
 if (Test-Path $WorkDir) {
-    Write-Host "  Removing existing workspace at $WorkDir..."
-    Remove-Item $WorkDir -Recurse -Force
+    Write-Host "  Cleaning up existing workspace at $WorkDir..."
+    # Discard any mounted WIM images first (a previous partial run may have left one mounted)
+    $mountDir = "$WorkDir\mount"
+    if (Test-Path $mountDir) {
+        Write-Host "  Discarding any mounted WIM at $mountDir..."
+        # Use & directly (not Start-Process) so DISM runs in the same session context
+        & $dismExe /Unmount-WIM /MountDir:"$mountDir" /Discard 2>&1 | Out-Null
+        Write-Host "    Unmount complete."
+    }
+    # Also clean up any DISM orphaned mounts pointing at this workspace
+    & $dismExe /Cleanup-Mountpoints 2>&1 | Out-Null
+    Write-Host "  Cleanup-Mountpoints complete."
+    Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $WorkDir) {
+        Write-Host "  WARN: Could not fully remove $WorkDir — some files may still be locked." -ForegroundColor Yellow
+        Write-Host "  Rebooting pc-deploy and re-running this script may be required."
+    } else {
+        Write-Host "  Workspace removed." -ForegroundColor Green
+    }
 }
+
+# copype.cmd requires the full ADK environment (WinPERoot, OSCDImgRoot, PATH additions).
+# Source DandISetEnv.bat in the same cmd session so all vars are available.
+$dandI = "$adkRoot\Deployment Tools\DandISetEnv.bat"
 
 $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
 $p = Start-Process 'cmd.exe' `
-     -ArgumentList "/c `"$copype`" amd64 `"$WorkDir`"" `
+     -ArgumentList "/c `"call `"$dandI`" && `"$copype`" amd64 `"$WorkDir`"`"" `
      -NoNewWindow -Wait -PassThru `
      -RedirectStandardOutput $o -RedirectStandardError $e
 $out = Get-Content $o -Raw; $err = Get-Content $e -Raw
@@ -144,16 +169,20 @@ Write-Host "  WinPE workspace created at $WorkDir." -ForegroundColor Green
 Write-Host ''
 Write-Host '==> Step 3: Mount boot.wim' -ForegroundColor Cyan
 
+# Use the DISM PowerShell module so that Mount + Add-Package + Dismount all share
+# the same process session.  Start-Process dism.exe creates isolated child processes
+# that cannot access each other's DISM sessions (HRESULT=C1510115).
+Import-Module Dism -ErrorAction Stop
+
 $wimFile  = "$WorkDir\media\sources\boot.wim"
 $mountDir = "$WorkDir\mount"
 
 New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
 
-$p = Start-Process $dismExe `
-     -ArgumentList "/Mount-Image /ImageFile:`"$wimFile`" /Index:1 /MountDir:`"$mountDir`"" `
-     -NoNewWindow -Wait -PassThru
-if ($p.ExitCode -ne 0) {
-    Write-Host "  DISM mount failed (exit $($p.ExitCode))" -ForegroundColor Red
+try {
+    Mount-WindowsImage -ImagePath $wimFile -Index 1 -Path $mountDir -ErrorAction Stop | Out-Null
+} catch {
+    Write-Host "  DISM mount failed: $_" -ForegroundColor Red
     exit 1
 }
 Write-Host '  boot.wim mounted.' -ForegroundColor Green
@@ -181,16 +210,18 @@ foreach ($oc in $ocs) {
         continue
     }
     Write-Host "  Adding $oc..."
-    $p = Start-Process $dismExe `
-         -ArgumentList "/Image:`"$mountDir`" /Add-Package /PackagePath:`"$ocCab`"" `
-         -NoNewWindow -Wait -PassThru
-    if ($p.ExitCode -ne 0) { Write-Host "    WARN: exit $($p.ExitCode)" -ForegroundColor Yellow }
+    try {
+        Add-WindowsPackage -Path $mountDir -PackagePath $ocCab -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host "    WARN: $oc add-package failed: $_" -ForegroundColor Yellow
+    }
 
     if (Test-Path $langCab) {
-        $p = Start-Process $dismExe `
-             -ArgumentList "/Image:`"$mountDir`" /Add-Package /PackagePath:`"$langCab`"" `
-             -NoNewWindow -Wait -PassThru
-        if ($p.ExitCode -ne 0) { Write-Host "    WARN: lang pack exit $($p.ExitCode)" -ForegroundColor Yellow }
+        try {
+            Add-WindowsPackage -Path $mountDir -PackagePath $langCab -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Host "    WARN: $oc lang pack failed: $_" -ForegroundColor Yellow
+        }
     }
 }
 Write-Host '  Optional components added.' -ForegroundColor Green
@@ -276,11 +307,10 @@ if (-not (Test-Path $BrandKitRoot)) {
 Write-Host ''
 Write-Host '==> Step 6: Unmount and commit boot.wim' -ForegroundColor Cyan
 
-$p = Start-Process $dismExe `
-     -ArgumentList "/Unmount-Image /MountDir:`"$mountDir`" /Commit" `
-     -NoNewWindow -Wait -PassThru
-if ($p.ExitCode -ne 0) {
-    Write-Host "  DISM unmount failed (exit $($p.ExitCode))" -ForegroundColor Red
+try {
+    Dismount-WindowsImage -Path $mountDir -Save -ErrorAction Stop | Out-Null
+} catch {
+    Write-Host "  DISM unmount/commit failed: $_" -ForegroundColor Red
     exit 1
 }
 Write-Host '  boot.wim committed.' -ForegroundColor Green
@@ -326,7 +356,7 @@ SyslogLevel=0
 
 [PXE]
 PXE_Port=4011
-BootFile=boot\bootmgfw.efi
+BootFile=EFI\Boot\bootx64.efi
 ProxyDHCP=1
 
 [DHCP]
@@ -341,31 +371,34 @@ Write-Host "  tftpd64.ini written to $iniPath." -ForegroundColor Green
 Write-Host ''
 Write-Host '==> Step 9: Install tftpd64 service' -ForegroundColor Cyan
 
+# tftpd64.exe is a GUI app — it cannot self-register as a service.
+# Use NSSM (already present at C:\nssm\nssm.exe for the inventory service) to wrap it.
+$nssmBin  = 'C:\nssm\nssm.exe'
+$iniPath  = "$TftpRoot\tftpd64.ini"
+
 $tftpdSvc = Get-Service -Name 'tftpd64' -ErrorAction SilentlyContinue
 if ($tftpdSvc) {
-    Write-Host '  Service already registered.' -ForegroundColor Green
+    Write-Host '  Service already registered — restarting.' -ForegroundColor Green
+    Restart-Service -Name 'tftpd64' -ErrorAction SilentlyContinue
 } else {
-    $svBin = "$TftpRoot\tftpd64_svc.exe"
-    if (-not (Test-Path $svBin)) { $svBin = $tftpdExe }   # some builds ship a single exe
-
-    $p = Start-Process $svBin -ArgumentList '--service install' -NoNewWindow -Wait -PassThru
-    if ($p.ExitCode -ne 0) {
-        Write-Host "  WARN: Service install returned $($p.ExitCode). Try starting tftpd64 manually." -ForegroundColor Yellow
+    if (-not (Test-Path $nssmBin)) {
+        Write-Host "  ERROR: NSSM not found at $nssmBin. Install NSSM and re-run." -ForegroundColor Red
     } else {
-        Write-Host '  Service installed.' -ForegroundColor Green
+        & $nssmBin install tftpd64 $tftpdExe "-z `"$iniPath`""
+        & $nssmBin set tftpd64 DisplayName 'tftpd64 PXE/TFTP Server'
+        & $nssmBin set tftpd64 Start SERVICE_AUTO_START
+        & $nssmBin set tftpd64 AppStdout "$TftpRoot\tftpd64.log"
+        & $nssmBin set tftpd64 AppStderr "$TftpRoot\tftpd64-err.log"
+        Write-Host '  Service installed via NSSM.' -ForegroundColor Green
+        Start-Service tftpd64 -ErrorAction SilentlyContinue
     }
 }
 
-# Start / restart
 $tftpdSvc = Get-Service -Name 'tftpd64' -ErrorAction SilentlyContinue
-if ($tftpdSvc) {
-    try {
-        Restart-Service -Name 'tftpd64' -ErrorAction Stop
-        Write-Host '  tftpd64 service started.' -ForegroundColor Green
-    } catch {
-        Write-Host "  WARN: Could not start service: $_" -ForegroundColor Yellow
-        Write-Host "  Start it manually: Start-Service tftpd64" -ForegroundColor Yellow
-    }
+if ($tftpdSvc -and $tftpdSvc.Status -eq 'Running') {
+    Write-Host '  tftpd64 service is running.' -ForegroundColor Green
+} else {
+    Write-Host "  WARN: tftpd64 service not running (state: $($tftpdSvc.Status)). Start manually: Start-Service tftpd64" -ForegroundColor Yellow
 }
 
 # ─── Done ──────────────────────────────────────────────────────────────────────
@@ -386,3 +419,5 @@ Write-Host '       Option 66 (TFTP server) = 192.168.5.141'
 Write-Host '       Option 67 (boot file)   = boot\bootmgfw.efi  (or check UniFi Network Boot)'
 Write-Host ''
 Write-Host '  4. PXE-boot a test machine — it should reach the Juniper deploy menu.'
+
+Stop-Transcript | Out-Null
