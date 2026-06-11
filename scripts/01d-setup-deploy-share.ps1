@@ -75,7 +75,8 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $scriptsToCopy = @('03-windows-update.ps1','04-install-packages.ps1',
                    '05-install-drivers.ps1',
                    '05-setup-printers.ps1','06-join-wifi.ps1','07-remove-bloatware.ps1',
-                   '09-update-driver-warehouse.ps1')
+                   '09-update-driver-warehouse.ps1',
+                   'setup-inventory-native.ps1')
 foreach ($s in $scriptsToCopy) {
     $src = Join-Path $repoRoot "scripts\$s"
     $dst = "$DeployRoot\scripts\$s"

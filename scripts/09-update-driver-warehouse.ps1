@@ -18,7 +18,7 @@
 
 param(
     [string]$DeployRoot    = 'C:\deploy',
-    [string]$InventoryUrl  = 'http://192.168.13.94:8080',
+    [string]$InventoryUrl  = 'http://192.168.5.141:8080',
     [switch]$SkipInventory  # skip API query, just audit the local warehouse
 )
 
