@@ -21,6 +21,10 @@ $ErrorActionPreference = 'Stop'
 # Find IDs with: winget search <name>
 # ---------------------------------------------------------------------------
 $WingetPackages = @(
+    # Runtime prerequisites — install before anything that links against them
+    'Microsoft.VCRedist.2015+.x64',     # VC++ runtime (Python, Git internals, Ollama)
+    'Microsoft.VCRedist.2015+.x86',     # 32-bit variant for legacy app compatibility
+
     # Browsers
     'Google.Chrome',
     'Mozilla.Firefox',
@@ -30,9 +34,21 @@ $WingetPackages = @(
     '7zip.7zip',
     'Notepad++.Notepad++',
 
-    # Dev tools (remove if not needed on all machines)
-    # 'Git.Git',
-    # 'Microsoft.VisualStudioCode',
+    # Dev / AI toolchain — required for Windows MCP, Desktop Commander, Claude Code
+    'Git.Git',
+    'OpenJS.NodeJS.LTS',      # npm, npx
+    'Python.Python.3.12',
+    'Microsoft.PowerShell',   # PowerShell 7
+
+    # WSL2 kernel package — must be installed before the WSL2 section below runs
+    # (handles the Linux kernel; DISM below handles the Windows optional features)
+    'Microsoft.WSL',
+
+    # Local LLM
+    'Ollama.Ollama',
+
+    # Claude Desktop (Windows MCP installs as a Claude plugin after this)
+    'Anthropic.Claude',
 )
 
 # ---------------------------------------------------------------------------
@@ -125,20 +141,154 @@ if ($MsiPackages.Count -gt 0) {
     foreach ($pkg in $MsiPackages) { Install-Msi-Package $pkg }
 }
 
+# --- WSL2 + Ubuntu ------------------------------------------------------------
+# Two-part setup:
+#   1. winget Microsoft.WSL (above) installs the WSL2 Linux kernel package.
+#   2. DISM below enables the Windows optional features (Subsystem-Linux +
+#      VirtualMachinePlatform). A reboot is required after feature enablement;
+#      the RunOnce chain in 03-windows-update.ps1 handles that reboot, so this
+#      script just enables the features and schedules the Ubuntu install.
+# Ubuntu finishes initializing on first interactive launch (wsl -d Ubuntu).
+Write-Host ''
+Write-Host '==> Installing WSL2 + Ubuntu...' -ForegroundColor Cyan
+if (-not $DryRun) {
+    # Enable required Windows features (silently, no reboot yet)
+    $features = @(
+        'Microsoft-Windows-Subsystem-Linux',
+        'VirtualMachinePlatform'
+    )
+    foreach ($feat in $features) {
+        Write-Host "  Enabling feature: $feat" -ForegroundColor Cyan
+        $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+        $p = Start-Process 'dism.exe' `
+            -ArgumentList "/online /enable-feature /featurename:$feat /all /norestart" `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+        $out = Get-Content $o -Raw -ErrorAction SilentlyContinue
+        Remove-Item $o,$e -ErrorAction SilentlyContinue
+        if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
+            Write-Host '    OK' -ForegroundColor Green
+        } else {
+            Write-Host "    WARN: DISM exit $($p.ExitCode) for $feat" -ForegroundColor Yellow
+        }
+    }
+
+    # Set WSL default version to 2
+    $o = [IO.Path]::GetTempFileName()
+    Start-Process wsl -ArgumentList '--set-default-version 2' `
+        -NoNewWindow -Wait -RedirectStandardOutput $o -ErrorAction SilentlyContinue
+    Remove-Item $o -ErrorAction SilentlyContinue
+
+    # Install Ubuntu distro (--no-launch so it doesn't open a console window)
+    Write-Host '  Installing Ubuntu distro (no-launch)...' -ForegroundColor Cyan
+    $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+    $p = Start-Process wsl -ArgumentList '--install -d Ubuntu --no-launch' `
+        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+    $out = Get-Content $o -Raw -ErrorAction SilentlyContinue
+    $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
+    Remove-Item $o,$e -ErrorAction SilentlyContinue
+    if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
+        Write-Host '    Ubuntu installed (will finish initializing on first launch).' -ForegroundColor Green
+    } else {
+        Write-Host "    WARN: wsl install exit $($p.ExitCode)" -ForegroundColor Yellow
+        if ($err) { Write-Host "    $($err.Trim())" -ForegroundColor DarkGray }
+    }
+}
+
+# --- Set PowerShell 7 as default shell ----------------------------------------
+# Registers pwsh.exe as the default shell for new terminals, Explorer "Open
+# PowerShell here", and the Windows Terminal default profile.
+Write-Host ''
+Write-Host '==> Setting PowerShell 7 as default shell...' -ForegroundColor Cyan
+if (-not $DryRun) {
+    $pwsh = 'C:\Program Files\PowerShell\7\pwsh.exe'
+    if (Test-Path $pwsh) {
+        # Set HKLM default shell (used by runas, Task Scheduler, etc.)
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+            -Name Shell -Value 'explorer.exe' -ErrorAction SilentlyContinue
+        # Register pwsh as the OpenWithProgids default for .ps1 files
+        Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.ps1\UserChoice' `
+            -Name ProgId -Value 'Microsoft.PowerShellScript.1' -ErrorAction SilentlyContinue
+        # Windows Terminal: set PS7 as default profile (if WT is present)
+        $wtSettings = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+        if (Test-Path $wtSettings) {
+            $wt = Get-Content $wtSettings -Raw | ConvertFrom-Json
+            $ps7profile = $wt.profiles.list | Where-Object { $_.source -match 'PowerShell' -and $_.name -match '7|Preview' } | Select-Object -First 1
+            if ($ps7profile) {
+                $wt.defaultProfile = $ps7profile.guid
+                $wt | ConvertTo-Json -Depth 20 | Set-Content $wtSettings -Encoding UTF8
+                Write-Host '    Windows Terminal default profile set to PS7.' -ForegroundColor Green
+            }
+        }
+        # Ensure pwsh.exe is on the system PATH
+        $syspath = [System.Environment]::GetEnvironmentVariable('Path','Machine')
+        $pwshDir = 'C:\Program Files\PowerShell\7'
+        if ($syspath -notmatch [regex]::Escape($pwshDir)) {
+            [System.Environment]::SetEnvironmentVariable('Path', "$syspath;$pwshDir", 'Machine')
+            Write-Host '    Added PS7 to system PATH.' -ForegroundColor Green
+        }
+        Write-Host '    PowerShell 7 default shell configured.' -ForegroundColor Green
+    } else {
+        Write-Host '    WARN: pwsh.exe not found — was PowerShell 7 installed?' -ForegroundColor Yellow
+    }
+}
+
+# --- npm global packages (Windows MCP, Desktop Commander, Claude Code) --------
+# Requires Node.js to be installed (winget OpenJS.NodeJS.LTS above).
+# Claude Code is the Anthropic CLI; Windows MCP and Desktop Commander are
+# MCP servers that Claude Code/Cowork uses to control this machine.
+Write-Host ''
+Write-Host '==> Installing npm global packages...' -ForegroundColor Cyan
+
+$NpmGlobalPackages = @(
+    '@anthropic-ai/claude-code',         # Claude Code CLI
+    '@wonderwhy-er/desktop-commander',   # Desktop Commander MCP (npm-based)
+    # NOTE: Windows MCP is a Claude plugin — install it from Claude Desktop's
+    #       Settings > Extensions after first login, not via npm.
+)
+
+if (-not $DryRun) {
+    # Refresh PATH so npm is available after Node.js was just installed
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path','User')
+
+    $npm = (Get-Command npm -ErrorAction SilentlyContinue)?.Source
+    if (-not $npm) { $npm = 'C:\Program Files\nodejs\npm.cmd' }
+
+    if (Test-Path $npm) {
+        foreach ($pkg in $NpmGlobalPackages) {
+            Write-Host "  npm -g : $pkg" -ForegroundColor Cyan
+            $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+            $p = Start-Process $npm -ArgumentList "install -g $pkg" `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+            $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
+            Remove-Item $o,$e -ErrorAction SilentlyContinue
+            if ($p.ExitCode -ne 0) {
+                Write-Host "    WARN: npm exit $($p.ExitCode) for $pkg" -ForegroundColor Yellow
+                if ($err) { Write-Host "    $($err.Trim())" -ForegroundColor DarkGray }
+            } else {
+                Write-Host '    OK' -ForegroundColor Green
+            }
+        }
+    } else {
+        Write-Host '    WARN: npm not found — Node.js may need a reboot to appear on PATH.' -ForegroundColor Yellow
+        Write-Host '    Re-run this script after reboot to install npm packages.'
+    }
+}
+
 # --- Inventory agent -----------------------------------------------------------
 # Registers this machine with the Juniper inventory system (FastAPI + Postgres
-# on ENG-1 at 192.168.13.94:8080). Runs after all packages so the agent
+# on ENG-1 at 192.168.5.141:8080). Runs after all packages so the agent
 # captures the fully-configured machine state.
 Write-Host ''
 Write-Host '==> Registering with Juniper inventory system...' -ForegroundColor Cyan
 if (-not $DryRun) {
     try {
-        Invoke-Expression (Invoke-RestMethod 'http://192.168.13.94:8080/static/install_agent.ps1')
+        Invoke-Expression (Invoke-RestMethod 'http://192.168.5.141:8080/static/install_agent.ps1')
         Write-Host '    Inventory agent installed.' -ForegroundColor Green
     } catch {
         Write-Host "    WARN: Inventory registration failed: $_" -ForegroundColor Yellow
         Write-Host '    The machine is still usable. Retry manually:'
-        Write-Host '      irm http://192.168.13.94:8080/static/install_agent.ps1 | iex'
+        Write-Host '      irm http://192.168.5.141:8080/static/install_agent.ps1 | iex'
     }
 }
 
