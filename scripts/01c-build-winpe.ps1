@@ -66,10 +66,17 @@ if ($tftpdSvc) {
 } else {
     New-Item -Path $TftpRoot -ItemType Directory -Force | Out-Null
 
-    # Official download from BitBucket. If this URL returns 404, go to:
-    # https://bitbucket.org/phjounin/tftpd64/downloads/ and grab the latest zip.
-    $tftpdUrl = 'https://bitbucket.org/phjounin/tftpd64/downloads/tftpd64_4.64.zip'
-    $tftpdZip = "$env:TEMP\tftpd64.zip"
+    # Resolve latest portable zip URL from GitHub releases API
+    $tftpdZip = "$env:TEMP\tftpd64_portable.zip"
+    try {
+        $rel      = Invoke-RestMethod 'https://api.github.com/repos/PJO2/tftpd64/releases/latest' -UseBasicParsing
+        $asset    = $rel.assets | Where-Object { $_.name -match 'tftpd64_portable' } | Select-Object -First 1
+        $tftpdUrl = $asset.browser_download_url
+        if (-not $tftpdUrl) { throw "No tftpd64_portable asset found in latest release" }
+    } catch {
+        # Fallback to known-good v4.74 if the API call fails
+        $tftpdUrl = 'https://github.com/PJO2/tftpd64/releases/download/v4.74/tftpd64_portable_v4.74.zip'
+    }
 
     Write-Host "  Downloading tftpd64 from $tftpdUrl..."
     try {
