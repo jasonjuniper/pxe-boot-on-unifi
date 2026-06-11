@@ -29,9 +29,10 @@ $dirs = @(
     $DeployRoot,
     "$DeployRoot\images",     # WIM files (win11.wim, win10.wim)
     "$DeployRoot\unattend",   # unattend-win11.xml, unattend-win10.xml
-    "$DeployRoot\scripts",    # 03-07 post-install scripts
+    "$DeployRoot\scripts",    # 03-09 post-install scripts
     "$DeployRoot\packages",   # MSI/EXE installers
-    "$DeployRoot\winpe"       # optional: source copies of startnet.cmd + deploy.ps1
+    "$DeployRoot\winpe",      # optional: source copies of startnet.cmd + deploy.ps1
+    "$DeployRoot\drivers"     # driver packs per model — see drivers\manifest.json
 )
 
 foreach ($d in $dirs) {
@@ -72,7 +73,9 @@ Write-Host '==> Populating share with scripts and unattend files' -ForegroundCol
 $repoRoot = Split-Path $PSScriptRoot -Parent
 
 $scriptsToCopy = @('03-windows-update.ps1','04-install-packages.ps1',
-                   '05-setup-printers.ps1','06-join-wifi.ps1','07-remove-bloatware.ps1')
+                   '05-install-drivers.ps1',
+                   '05-setup-printers.ps1','06-join-wifi.ps1','07-remove-bloatware.ps1',
+                   '09-update-driver-warehouse.ps1')
 foreach ($s in $scriptsToCopy) {
     $src = Join-Path $repoRoot "scripts\$s"
     $dst = "$DeployRoot\scripts\$s"
@@ -94,6 +97,16 @@ foreach ($u in $unattendToCopy) {
     } else {
         Write-Host "  WARN: Not found: $src (skipped)" -ForegroundColor Yellow
     }
+}
+
+# Copy driver manifest (actual driver packs must be downloaded separately)
+$manifestSrc = Join-Path $repoRoot 'drivers\manifest.json'
+$manifestDst = "$DeployRoot\drivers\manifest.json"
+if (Test-Path $manifestSrc) {
+    Copy-Item $manifestSrc $manifestDst -Force
+    Write-Host '  Copied: drivers\manifest.json' -ForegroundColor Green
+} else {
+    Write-Host '  WARN: drivers\manifest.json not found in repo (skipped)' -ForegroundColor Yellow
 }
 
 # ─── Firewall: open SMB for PXE clients on the local subnet ────────────────────

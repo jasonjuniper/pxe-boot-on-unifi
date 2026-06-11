@@ -1,0 +1,77 @@
+{
+  "_version": "1.0",
+  "_updated": "2026-06-11",
+  "_notes": [
+    "Central driver registry for the Juniper Design imaging server.",
+    "Models are keyed by a normalized slug derived from WMI Win32_ComputerSystem.Model.",
+    "driverPath is relative to C:\\deploy\\drivers\\ on pc-deploy (\\\\192.168.5.141\\deploy$\\drivers\\).",
+    "wmiModels lists exact strings returned by Win32_ComputerSystem.Model — add variants if WMI differs across BIOS revisions.",
+    "To add a new model: populate wmiModels, driverPath, vendorUrl, then run 09-update-driver-warehouse.ps1 to verify.",
+    "Driver packs should be extracted (not ZIPs) so DISM /Add-Driver /Recurse can find .inf files directly."
+  ],
+  "models": {
+    "dell-latitude-5440": {
+      "manufacturer": "Dell",
+      "model": "Latitude 5440",
+      "wmiModels": ["Latitude 5440"],
+      "driverPath": "Dell/Latitude-5440",
+      "vendorUrl": "https://www.dell.com/support/home/en-us/product-support/product/latitude-14-5440-laptop/drivers",
+      "driverPackNotes": "Download 'Driver Pack' CAB from Dell's driver page, extract with: expand -F:* DriverPack.cab C:\\deploy\\drivers\\Dell\\Latitude-5440\\",
+      "notes": ""
+    },
+    "dell-latitude-5540": {
+      "manufacturer": "Dell",
+      "model": "Latitude 5540",
+      "wmiModels": ["Latitude 5540"],
+      "driverPath": "Dell/Latitude-5540",
+      "vendorUrl": "https://www.dell.com/support/home/en-us/product-support/product/latitude-15-5540-laptop/drivers",
+      "driverPackNotes": "Download 'Driver Pack' CAB from Dell's driver page, extract with: expand -F:* DriverPack.cab C:\\deploy\\drivers\\Dell\\Latitude-5540\\",
+      "notes": ""
+    },
+    "dell-optiplex-7010": {
+      "manufacturer": "Dell",
+      "model": "OptiPlex 7010",
+      "wmiModels": ["OptiPlex 7010", "OptiPlex 7010 Plus"],
+      "driverPath": "Dell/OptiPlex-7010",
+      "vendorUrl": "https://www.dell.com/support/home/en-us/product-support/product/optiplex-7010-desktop/drivers",
+      "driverPackNotes": "Download 'Driver Pack' CAB from Dell's driver page.",
+      "notes": ""
+    },
+    "dell-optiplex-7020": {
+      "manufacturer": "Dell",
+      "model": "OptiPlex 7020",
+      "wmiModels": ["OptiPlex 7020"],
+      "driverPath": "Dell/OptiPlex-7020",
+      "vendorUrl": "https://www.dell.com/support/home/en-us/product-support/product/optiplex-7020-desktop/drivers",
+      "driverPackNotes": "Download 'Driver Pack' CAB from Dell's driver page.",
+      "notes": ""
+    },
+    "hp-elitebook-840-g9": {
+      "manufacturer": "HP",
+      "model": "HP EliteBook 840 G9",
+      "wmiModels": ["HP EliteBook 840 G9"],
+      "driverPath": "HP/EliteBook-840-G9",
+      "vendorUrl": "https://support.hp.com/us-en/drivers/hp-elitebook-840-14-inch-g9-notebook-pc/2101672988",
+      "driverPackNotes": "Download the 'HP Driver Pack' .exe, extract with: HPDriverPack.exe /e /s /f C:\\deploy\\drivers\\HP\\EliteBook-840-G9\\",
+      "notes": ""
+    },
+    "hp-prodesk-400-g9": {
+      "manufacturer": "HP",
+      "model": "HP ProDesk 400 G9",
+      "wmiModels": ["HP ProDesk 400 G9 Desktop Mini PC", "HP ProDesk 400 G9"],
+      "driverPath": "HP/ProDesk-400-G9",
+      "vendorUrl": "https://support.hp.com/us-en/drivers/hp-prodesk-400-g9-desktop-mini-pc/2101706753",
+      "driverPackNotes": "Download the 'HP Driver Pack' .exe and extract.",
+      "notes": ""
+    },
+    "lenovo-thinkpad-t14-gen4": {
+      "manufacturer": "Lenovo",
+      "model": "ThinkPad T14 Gen 4",
+      "wmiModels": ["ThinkPad T14 Gen 4", "20XX", "21HD", "21HE"],
+      "driverPath": "Lenovo/ThinkPad-T14-Gen4",
+      "vendorUrl": "https://support.lenovo.com/us/en/downloads/driver-list/product100038-thinkpad-t14-gen-4",
+      "driverPackNotes": "Download the SCCM/WinPE driver pack ZIP from Lenovo, extract to the driverPath folder.",
+      "notes": "Lenovo model strings in WMI are sometimes the MTM code (e.g. 21HD) — add both to wmiModels."
+    }
+  }
+}

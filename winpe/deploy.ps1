@@ -41,6 +41,64 @@ $OsOptions = @{
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
+function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
+    # Strip leading manufacturer name if WMI duplicates it (e.g. "HP HP EliteBook")
+    $mdl = $Model.Trim()
+    $mfr = $Manufacturer.Trim()
+    if ($mdl -imatch "^$([regex]::Escape($mfr))\s+") {
+        $mdl = $mdl.Substring($mfr.Length).TrimStart()
+    }
+    # Normalize to lowercase kebab-case
+    $key = "$mfr-$mdl" -replace '[^A-Za-z0-9]', '-' -replace '-{2,}', '-' -replace '^-|-$', ''
+    return $key.ToLower()
+}
+
+function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [string]$Model) {
+    $manifestPath = "$DeployShare\drivers\manifest.json"
+    if (-not (Test-Path $manifestPath)) {
+        Write-Host '  INFO: No driver manifest at deploy$\drivers\manifest.json — skipping.' -ForegroundColor DarkGray
+        return
+    }
+
+    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $normalKey = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
+
+    # Match by wmiModels list first (most reliable), then by normalized key
+    $matched = $null
+    foreach ($prop in $manifest.models.PSObject.Properties) {
+        $entry = $prop.Value
+        if ($entry.wmiModels -contains $Model) { $matched = $entry; break }
+    }
+    if (-not $matched) {
+        foreach ($prop in $manifest.models.PSObject.Properties) {
+            if ($prop.Name -eq $normalKey) { $matched = $prop.Value; break }
+        }
+    }
+
+    if (-not $matched) {
+        Write-Host "  WARN: No driver pack in manifest for '$Model' (key: $normalKey)" -ForegroundColor Yellow
+        Write-Host '        Windows generic/inbox drivers will be used.' -ForegroundColor Yellow
+        Write-Host '        Add this model to drivers\manifest.json and run 09-update-driver-warehouse.ps1.' -ForegroundColor Yellow
+        return
+    }
+
+    $driverSrc = "$DeployShare\drivers\$($matched.driverPath)"
+    if (-not (Test-Path $driverSrc)) {
+        Write-Host "  WARN: Driver pack listed in manifest but folder not found: $driverSrc" -ForegroundColor Yellow
+        Write-Host '        Run 09-update-driver-warehouse.ps1 on pc-deploy to populate missing driver packs.' -ForegroundColor Yellow
+        return
+    }
+
+    $infCount = (Get-ChildItem $driverSrc -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue).Count
+    Write-Host "  Injecting driver pack for $Model ($infCount .inf files)..." -ForegroundColor Cyan
+    $p = Start-Process dism -ArgumentList "/Image:C:\ /Add-Driver /Driver:`"$driverSrc`" /Recurse /ForceUnsigned" -Wait -PassThru -NoNewWindow
+    if ($p.ExitCode -eq 0) {
+        Write-Host '  Drivers injected successfully.' -ForegroundColor Green
+    } else {
+        Write-Host "  WARN: DISM driver injection returned exit $($p.ExitCode) — some drivers may need post-install." -ForegroundColor Yellow
+    }
+}
+
 function Write-Banner {
     Clear-Host
     Write-Host ''
@@ -85,6 +143,43 @@ if (-not (Test-Path $DeployShare)) {
     wpeutil reboot
     exit
 }
+
+# ─── Detect Hardware Model ───────────────────────────────────────────────────
+
+$hwWmiCS  = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
+$hwWmiBios = Get-WmiObject -Class Win32_BIOS -ErrorAction SilentlyContinue
+$hwMfr    = if ($hwWmiCS)   { $hwWmiCS.Manufacturer.Trim() } else { 'Unknown' }
+$hwModel  = if ($hwWmiCS)   { $hwWmiCS.Model.Trim()        } else { 'Unknown' }
+$hwSerial = if ($hwWmiBios) { $hwWmiBios.SerialNumber.Trim() } else { 'Unknown' }
+
+Write-Host '  ── Hardware Detected ───────────────────────────' -ForegroundColor DarkCyan
+Write-Host "    Manufacturer : $hwMfr"
+Write-Host "    Model        : $hwModel"
+Write-Host "    Serial       : $hwSerial"
+
+# Check if a driver pack exists for this model
+$manifestPath = "$DeployShare\drivers\manifest.json"
+if (Test-Path $manifestPath) {
+    $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $driverHit = $false
+    foreach ($prop in $manifest.models.PSObject.Properties) {
+        if ($prop.Value.wmiModels -contains $hwModel) { $driverHit = $true; break }
+    }
+    if (-not $driverHit) {
+        $nk = Get-NormalizedModelKey -Manufacturer $hwMfr -Model $hwModel
+        foreach ($prop in $manifest.models.PSObject.Properties) {
+            if ($prop.Name -eq $nk) { $driverHit = $true; break }
+        }
+    }
+    if ($driverHit) {
+        Write-Host '    Drivers      : FOUND in warehouse' -ForegroundColor Green
+    } else {
+        Write-Host '    Drivers      : NOT in warehouse — inbox drivers only' -ForegroundColor Yellow
+    }
+} else {
+    Write-Host '    Drivers      : no manifest found' -ForegroundColor DarkGray
+}
+Write-Host ''
 
 # ─── OS Selection ────────────────────────────────────────────────────────────
 
@@ -199,6 +294,12 @@ if ($p.ExitCode -ne 0) {
     exit
 }
 Write-Host '  Image applied.' -ForegroundColor Green
+
+# ─── Inject Drivers (offline) ────────────────────────────────────────────────
+
+Write-Host ''
+Write-Host '  Injecting hardware drivers...' -ForegroundColor Cyan
+Invoke-DriverInjection -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
 
 # ─── Inject unattend.xml with computer name ───────────────────────────────────
 
