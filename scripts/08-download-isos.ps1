@@ -34,8 +34,11 @@ New-Item $ImagesDir -ItemType Directory -Force | Out-Null
 
 # ---------------------------------------------------------------------------
 # Download Fido
+# Fixed path (not $env:TEMP) so SYSTEM-context scheduled tasks find it
 # ---------------------------------------------------------------------------
-$fidoPath = "$env:TEMP\Fido.ps1"
+$fidoDir  = 'C:\pc-imaging-setup'
+$fidoPath = "$fidoDir\Fido.ps1"
+New-Item $fidoDir -ItemType Directory -Force | Out-Null
 Write-Host '==> Downloading Fido...' -ForegroundColor Cyan
 Invoke-WebRequest -Uri 'https://github.com/pbatard/Fido/raw/master/Fido.ps1' `
                   -OutFile $fidoPath -UseBasicParsing
@@ -119,11 +122,11 @@ function Get-WindowsImage {
 $results = @{}
 
 if (-not $SkipWin11) {
-    $results['Windows 11'] = Get-WindowsImage -WinVer '11' -Release '24H2' -WimName 'win11.wim'
+    $results['Windows 11'] = Get-WindowsImage -WinVer '11' -Release 'Latest' -WimName 'win11.wim'
 }
 
 if (-not $SkipWin10) {
-    $results['Windows 10'] = Get-WindowsImage -WinVer '10' -Release '22H2' -WimName 'win10.wim'
+    $results['Windows 10'] = Get-WindowsImage -WinVer '10' -Release 'Latest' -WimName 'win10.wim'
 }
 
 # ---------------------------------------------------------------------------
