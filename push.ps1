@@ -33,6 +33,41 @@ try {
 } catch {
     Write-Host "  [sync] Could not reach $deployHost to check install_agent.ps1 -- skipping sync check." -ForegroundColor DarkGray
 }
+
+# --- Sync check: JuniperInventoryAgent.msi + .json ---------------------------
+$msiRepo    = Join-Path $PSScriptRoot 'scripts\static\JuniperInventoryAgent.msi'
+$jsonRepo   = Join-Path $PSScriptRoot 'scripts\static\JuniperInventoryAgent.json'
+$msiRemote  = 'C:\inventory\app\static\JuniperInventoryAgent.msi'
+$jsonRemote = 'C:\inventory\app\static\JuniperInventoryAgent.json'
+
+try {
+    $session2 = New-PSSession -ComputerName $deployHost -ErrorAction Stop
+
+    # Sync JSON (small - always pull)
+    $liveJson = Invoke-Command -Session $session2 -ScriptBlock {
+        param($p) if (Test-Path $p) { Get-Content $p -Raw } else { $null }
+    } -ArgumentList $jsonRemote
+    if ($liveJson) {
+        $liveVer  = ($liveJson | ConvertFrom-Json).agent_version
+        $repoVer  = if (Test-Path $jsonRepo) { (Get-Content $jsonRepo -Raw | ConvertFrom-Json).agent_version } else { $null }
+        if ($liveVer -ne $repoVer) {
+            Write-Host "  [sync] MSI version changed ($repoVer -> $liveVer) -- pulling MSI + JSON." -ForegroundColor Yellow
+            Set-Content $jsonRepo $liveJson -Encoding ASCII
+
+            # MSI is large - only pull when version changes
+            $liveBytes = Invoke-Command -Session $session2 -ScriptBlock {
+                param($p) if (Test-Path $p) { [System.IO.File]::ReadAllBytes($p) } else { $null }
+            } -ArgumentList $msiRemote
+            if ($liveBytes) {
+                [System.IO.File]::WriteAllBytes($msiRepo, $liveBytes)
+                Write-Host "  [sync] MSI updated ($([math]::Round($liveBytes.Length/1KB,1)) KB)" -ForegroundColor Green
+            }
+        }
+    }
+    Remove-PSSession $session2
+} catch {
+    Write-Host "  [sync] Could not sync MSI/JSON from $deployHost -- skipping." -ForegroundColor DarkGray
+}
 # -----------------------------------------------------------------------------
 $master = $env:DEV_PUSH_AUTOMATION
 if (-not $master) { $master = 'C:\dev\dev-push-automation\push-all.ps1' }

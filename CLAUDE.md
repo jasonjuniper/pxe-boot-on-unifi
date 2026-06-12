@@ -119,7 +119,10 @@ inventory server at `GET /static/install_agent.ps1` — the server replaces the
 
 The agent collects a full WMI hardware snapshot (CPU, RAM, disks, GPU, BIOS serial,
 chassis type, OS, BitLocker state, Defender status, TPM, Secure Boot, installed software)
-and POSTs it to `POST /ingest/endpoint`. The server upserts the device record by MAC address.
+and POSTs it to `POST /ingest/endpoint`. The server resolves which device record to
+upsert using **serial number first**, then ethernet MAC, then wireless MAC, then hostname.
+This means a machine re-resolves to its existing inventory record after a re-image as
+long as the BIOS serial number is unchanged.
 
 One-liner (run on any imaged PC to register or re-register):
 ```powershell
@@ -128,13 +131,25 @@ irm http://inventory.juniperdesign.local:8080/static/install_agent.ps1 | iex
 
 `04-install-packages.ps1` runs this automatically at the end of every imaging run.
 
-The agent file lives on the server at `C:\inventory\app\static\install_agent.ps1`.
-To update it: edit `scripts/static/install_agent.ps1` in this repo, then copy to the server:
-```powershell
-$s = New-PSSession -ComputerName 192.168.5.141
-Copy-Item scripts\static\install_agent.ps1 -Destination C:\inventory\app\static\ -ToSession $s
-Remove-PSSession $s
-```
+**Agent files are synced automatically:** `push.ps1` in this repo compares
+`scripts/static/install_agent.ps1`, `JuniperInventoryAgent.msi`, and
+`JuniperInventoryAgent.json` against the live server and pulls any newer
+version before committing. Never manually copy these files.
+
+### Inventory API for imaging decisions
+
+The inventory API can be queried before or after imaging to look up machine history,
+check OS state, BitLocker status, assigned user, and whether a machine has been
+previously imaged. Full API reference:
+
+**`C:\dev\inventory\Computer Inventory\docs\imaging-api.md`**
+
+Key endpoints:
+- `GET /api/devices?q={serial}` — look up a machine by serial number
+- `GET /api/device/{id}` — full device detail (OS, BitLocker, TPM, user, etc.)
+- `POST /ingest/endpoint` — register or update a machine record
+- `GET /api/agent/latest` — current agent version + SHA256
+- `GET /static/JuniperInventoryAgent.msi` — MSI download
 
 ## Windows activation (OEM UEFI key)
 
