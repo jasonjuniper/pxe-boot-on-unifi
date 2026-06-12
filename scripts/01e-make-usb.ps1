@@ -55,23 +55,38 @@ $deployShare = "\\$DeployServer\deploy$"
 try { net use $deployShare /persistent:no *>$null } catch {}
 
 if (-not (Test-Path $MediaSource)) {
-    # Fallback: check if media tree is in tftpd64 share
+    # Fallback 1: winpemedia$ share (C:\WinPE_amd64\media on pc-deploy) — correct USB BCD
+    $winpeMediaShare = "\\$DeployServer\winpemedia$"
+    try { net use $winpeMediaShare /persistent:no *>$null } catch {}
+
+    # Fallback 2: tftpd64$ — NOTE: contains PXE BCD, not USB BCD; BCD will be fixed below
     $tftpShare = "\\$DeployServer\tftpd64$"
     try { net use $tftpShare /persistent:no *>$null } catch {}
 
-    if (Test-Path "$tftpShare\EFI\Boot\bootx64.efi") {
+    if (Test-Path "$winpeMediaShare\EFI\Boot\bootx64.efi") {
+        $MediaSource = $winpeMediaShare
+        Write-Warn "deploy$\winpe-media not found; using winpemedia$ (C:\WinPE_amd64\media) as source."
+    } elseif (Test-Path "$tftpShare\EFI\Boot\bootx64.efi") {
         $MediaSource = $tftpShare
-        Write-Warn "deploy$\winpe-media not found; using tftpd64$ as source."
+        Write-Warn "deploy$\winpe-media not found; falling back to tftpd64$ (BCD will be corrected for USB)."
     } else {
-        Write-Err "Cannot find WinPE media at $MediaSource or $tftpShare"
+        Write-Err "Cannot find WinPE media on any share from $DeployServer"
         Write-Host ''
-        Write-Host '  Run 01c-build-winpe.ps1 on pc-deploy first, then run' -ForegroundColor Yellow
-        Write-Host '  01d-setup-deploy-share.ps1 to expose the media tree on the share.' -ForegroundColor Yellow
-        Write-Host ''
-        Write-Host '  If tftpd64$ share is not exposed, create it on pc-deploy:' -ForegroundColor Yellow
-        Write-Host '    New-SmbShare -Name tftpd64$ -Path C:\tftpd64 -FullAccess Everyone' -ForegroundColor DarkGray
+        Write-Host '  Run 01c-build-winpe.ps1 on pc-deploy first to build the WinPE image.' -ForegroundColor Yellow
+        Write-Host '  Then run 01d-setup-deploy-share.ps1 to expose the media tree on the share.' -ForegroundColor Yellow
         exit 1
     }
+}
+
+# Determine the correct USB BCD source.
+# IMPORTANT: tftpd64 contains a PXE-boot BCD (network device), which does NOT work for USB.
+# The correct USB BCD lives in the WinPE workspace (C:\WinPE_amd64\media\boot\bcd).
+# We use it to overwrite whatever BCD was in the media source.
+$usbBcdSource = $null
+$winpeMediaShare2 = "\\$DeployServer\winpemedia$"
+try { net use $winpeMediaShare2 /persistent:no *>$null } catch {}
+if (Test-Path "$winpeMediaShare2\boot\bcd") {
+    $usbBcdSource = "$winpeMediaShare2\boot\bcd"
 }
 
 # Quick sanity — bootloader must exist
@@ -189,6 +204,19 @@ if ($p.ExitCode -gt 7) {
     exit 1
 }
 Write-OK "Files copied (robocopy exit $($p.ExitCode))."
+
+# ─── Fix BCD for USB boot ─────────────────────────────────────────────────────
+# The tftpd64 BCD uses PXE (network) device entries which don't work for USB.
+# Replace with the correct USB BCD from the WinPE workspace.
+if ($usbBcdSource) {
+    Write-Step 'Replacing BCD with USB-boot version (from WinPE_amd64\media)...'
+    Copy-Item $usbBcdSource "$usbDrive\boot\bcd" -Force
+    Write-OK 'BCD corrected for USB boot.'
+} else {
+    Write-Warn 'winpemedia$ share not found on pc-deploy — BCD not replaced.'
+    Write-Warn 'If boot fails with 0xc0000098, run: New-SmbShare -Name winpemedia$ -Path C:\WinPE_amd64\media -FullAccess Everyone'
+    Write-Warn 'Then re-run this script.'
+}
 
 # ─── Verify ───────────────────────────────────────────────────────────────────
 Write-Step 'Verifying bootloader on USB...'

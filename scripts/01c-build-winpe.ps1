@@ -413,6 +413,20 @@ if ($tftpdSvc -and $tftpdSvc.Status -eq 'Running') {
     Write-Host "  WARN: tftpd64 service not running (state: $($tftpdSvc.Status)). Start manually: Start-Service tftpd64" -ForegroundColor Yellow
 }
 
+# ─── Step 10: Expose winpemedia$ share for USB drive creation ─────────────────
+# 01e-make-usb.ps1 needs the WinPE workspace BCD (not the tftpd64 BCD, which is
+# PXE-only) to create a USB-bootable drive.  Expose C:\WinPE_amd64\media as
+# winpemedia$ so ENG-2 can pull the correct BCD at USB-write time.
+Write-Host ''
+Write-Host '==> Step 10: Expose winpemedia$ share' -ForegroundColor Cyan
+$wmShare = Get-SmbShare -Name 'winpemedia$' -ErrorAction SilentlyContinue
+if ($wmShare) { Remove-SmbShare -Name 'winpemedia$' -Force }
+New-SmbShare -Name 'winpemedia$' -Path "$WorkDir\media" `
+             -FullAccess 'SYSTEM','Administrators' | Out-Null
+Grant-SmbShareAccess -Name 'winpemedia$' -AccountName 'Everyone' `
+                     -AccessRight Read -Force | Out-Null
+Write-Host "  winpemedia$ -> $WorkDir\media (Everyone:Read)" -ForegroundColor Green
+
 # ─── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host '=== WinPE Build Complete ===' -ForegroundColor Green
