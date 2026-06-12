@@ -98,6 +98,96 @@ function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [st
     }
 }
 
+function Invoke-DriverCoverageCheck {
+    param([string]$DeployShare, [string]$Manufacturer, [string]$Model)
+
+    Write-Host '  -- Driver Coverage Check ----------------------------' -ForegroundColor DarkCyan
+
+    $manifestPath = "$DeployShare\drivers\manifest.json"
+    if (-not (Test-Path $manifestPath)) {
+        Write-Host '    No driver manifest - skipping.' -ForegroundColor DarkGray
+        return
+    }
+
+    # Find driver pack for this model
+    $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $normalKey = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
+    $matched   = $null
+    foreach ($p in $manifest.models.PSObject.Properties) {
+        if ($p.Value.wmiModels -contains $Model -or $p.Name -eq $normalKey) {
+            $matched = $p.Value; break
+        }
+    }
+
+    if (-not $matched) {
+        Write-Host "    No driver pack for '$Model' - inbox drivers only." -ForegroundColor Yellow
+        return
+    }
+
+    $packPath = "$DeployShare\drivers\$($matched.driverPath)"
+    $infFiles = @(Get-ChildItem $packPath -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue)
+
+    if (-not (Test-Path $packPath) -or $infFiles.Count -eq 0) {
+        Write-Host "    Pack folder missing or empty: $packPath" -ForegroundColor Yellow
+        return
+    }
+
+    # Parse every hardware ID from every INF in the pack
+    $coveredIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($inf in $infFiles) {
+        $raw = Get-Content $inf.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $raw) { continue }
+        [regex]::Matches($raw, '(?i)(PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}|USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') |
+            ForEach-Object { $coveredIds.Add($_.Value.ToUpper()) | Out-Null }
+    }
+
+    # Enumerate PCI and USB devices on this machine
+    $pnp = @(Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue |
+        Where-Object { $_.HardwareID -and ($_.DeviceID -like 'PCI\*' -or $_.DeviceID -like 'USB\*') })
+
+    # Generic/system names that are always handled by inbox drivers - skip from "not in pack" list
+    $genericPatterns = @('PCI Standard','USB Root Hub','USB Composite','USB Hub','Mass Storage',
+                         'SCSI','IDE','AHCI','Generic','Thunderbolt Controller','xHCI',
+                         'Host Controller','Bridge','PCI Express')
+
+    $inPack    = [System.Collections.Generic.List[string]]::new()
+    $notInPack = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($dev in $pnp) {
+        $hwid = $dev.HardwareID[0]
+        $key  = if     ($hwid -match '(PCI\\VEN_[0-9A-Fa-f]{4}&DEV_[0-9A-Fa-f]{4})') { $matches[1].ToUpper() }
+                elseif ($hwid -match '(USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4})') { $matches[1].ToUpper() }
+                else   { $null }
+        if (-not $key) { continue }
+
+        $devName = if ($dev.Name) { $dev.Name } else { $key }
+
+        if ($coveredIds.Contains($key)) {
+            $inPack.Add("$devName  [$key]") | Out-Null
+        } else {
+            $isGeneric = $genericPatterns | Where-Object { $devName -ilike "*$_*" }
+            if (-not $isGeneric) {
+                $notInPack.Add("$devName  [$key]") | Out-Null
+            }
+        }
+    }
+
+    Write-Host "    Pack     : $($matched.driverPath)  ($($infFiles.Count) INFs, $($coveredIds.Count) HW IDs)" -ForegroundColor Cyan
+
+    if ($inPack.Count -gt 0) {
+        Write-Host "    Covered  : $($inPack.Count) device(s)" -ForegroundColor Green
+        $inPack | ForEach-Object { Write-Host "      + $_" -ForegroundColor Green }
+    }
+
+    if ($notInPack.Count -gt 0) {
+        Write-Host "    Not in pack (may use inbox/WU): $($notInPack.Count) device(s)" -ForegroundColor Yellow
+        $notInPack | ForEach-Object { Write-Host "      ? $_" -ForegroundColor Yellow }
+    } else {
+        Write-Host "    Coverage : all PCI/USB devices matched by pack." -ForegroundColor Green
+    }
+    Write-Host ''
+}
+
 function Write-Banner {
     Clear-Host
     Write-Host ''
@@ -157,25 +247,9 @@ Write-Host "    Model        : $hwModel"
 Write-Host "    Serial       : $(if ($serialClean) { $hwSerial } else { '(no usable serial)' })"
 Write-Host "    NICs         : $($allNics.Count) physical ($(@($allNics | Where-Object { $_['type'] -eq 'ethernet' }).Count) wired)"
 
-$manifestPath = "$DeployShare\drivers\manifest.json"
-if (Test-Path $manifestPath) {
-    $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
-    $driverHit = $false
-    foreach ($prop in $manifest.models.PSObject.Properties) {
-        if ($prop.Value.wmiModels -contains $hwModel) { $driverHit = $true; break }
-    }
-    if (-not $driverHit) {
-        $nk = Get-NormalizedModelKey -Manufacturer $hwMfr -Model $hwModel
-        foreach ($prop in $manifest.models.PSObject.Properties) {
-            if ($prop.Name -eq $nk) { $driverHit = $true; break }
-        }
-    }
-    Write-Host "    Drivers      : $(if ($driverHit) { 'FOUND in warehouse' } else { 'NOT in warehouse - inbox drivers only' })" `
-        -ForegroundColor $(if ($driverHit) { 'Green' } else { 'Yellow' })
-} else {
-    Write-Host '    Drivers      : no manifest found' -ForegroundColor DarkGray
-}
 Write-Host ''
+
+Invoke-DriverCoverageCheck -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
 
 # --- Inventory preflight lookup ---------------------------------------------
 # Look up this machine by serial number to pre-populate defaults.

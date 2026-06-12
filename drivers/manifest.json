@@ -5,7 +5,7 @@
   "_comment4": "Driver folders (binaries only, not tracked in git): C:\\deploy\\drivers\\ on pc-deploy.",
   "models": {
     "dell-xps-13-9380": {
-      "description": "Full driver pack for Dell XPS 13 9380 (Cannon Point-LP, 8th gen Whiskey Lake-U). Subfolders: rst (Intel RST RAID, DEV_9DD7), wifi (Intel Wireless-AC 9560 netwtw08 v21.30, DEV_9DF0), serial-io (Intel Serial IO CNL GPIO+I2C v30.100.2020.7 - touchpad), audio-realtek (Realtek APO v11.0.6000.795 + service), heci (Intel ME).",
+      "description": "Full driver pack for Dell XPS 13 9380 (Cannon Point-LP, 8th gen Whiskey Lake-U). Subfolders: rst (Intel RST RAID, DEV_9DD7), wifi (Intel Wireless-AC 9560 netwtw08 v21.30, DEV_9DF0), serial-io (Intel Serial IO CNL GPIO+I2C v30.100.2020.7 - touchpad), audio-realtek (Realtek APO v11.0.6000.795 + service), heci (Intel ME), bluetooth (Intel ibtusb v24.20.0.3, USB VID_8087&PID_0AAA), thunderbolt (Intel TbtHostController v1.41.1379.0 for JHL6340, TbtBusDrv + TbtP2pNdisDrv + services).",
       "wmiModels": ["XPS 13 9380"],
       "driverPath": "dell-xps-13-9380"
     }
