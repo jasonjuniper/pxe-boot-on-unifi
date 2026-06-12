@@ -33,6 +33,7 @@ $WingetPackages = @(
     'Microsoft.RemoteDesktopClient',
     '7zip.7zip',
     'Notepad++.Notepad++',
+    'PuTTY.PuTTY',
 
     # Dev / AI toolchain — required for Windows MCP, Desktop Commander, Claude Code
     'Git.Git',
