@@ -62,13 +62,30 @@ function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
     return $key.ToLower()
 }
 
+function Get-DriverManifest([string]$DeployShare) {
+    # Prefer live manifest from inventory API (auto-generated from confirmed_working entries).
+    # Falls back to the static manifest.json on the deploy share.
+    try {
+        $m = Invoke-RestMethod "$InvApi/api/drivers/manifest.json" -TimeoutSec 5 -ErrorAction Stop
+        if ($m.models) {
+            Write-Host '  (driver manifest: live from inventory API)' -ForegroundColor DarkGray
+            return $m
+        }
+    } catch {}
+
+    $path = "$DeployShare\drivers\manifest.json"
+    if (Test-Path $path) {
+        return (Get-Content $path -Raw | ConvertFrom-Json)
+    }
+    return $null
+}
+
 function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [string]$Model) {
-    $manifestPath = "$DeployShare\drivers\manifest.json"
-    if (-not (Test-Path $manifestPath)) {
-        Write-Host '  INFO: No driver manifest at deploy$\drivers\manifest.json - skipping.' -ForegroundColor DarkGray
+    $manifest = Get-DriverManifest -DeployShare $DeployShare
+    if (-not $manifest) {
+        Write-Host '  INFO: No driver manifest found - skipping injection.' -ForegroundColor DarkGray
         return
     }
-    $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
     $normalKey = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
     $matched   = $null
     foreach ($prop in $manifest.models.PSObject.Properties) {
@@ -103,14 +120,13 @@ function Invoke-DriverCoverageCheck {
 
     Write-Host '  -- Driver Coverage Check ----------------------------' -ForegroundColor DarkCyan
 
-    $manifestPath = "$DeployShare\drivers\manifest.json"
-    if (-not (Test-Path $manifestPath)) {
+    $manifest = Get-DriverManifest -DeployShare $DeployShare
+    if (-not $manifest) {
         Write-Host '    No driver manifest - skipping.' -ForegroundColor DarkGray
         return
     }
 
     # Find driver pack for this model
-    $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
     $normalKey = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
     $matched   = $null
     foreach ($p in $manifest.models.PSObject.Properties) {
