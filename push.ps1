@@ -4,6 +4,36 @@
 # commit, destination-correct push, SharePoint sync where applicable) for THIS
 # repo only. Any extra args (e.g. -DryRun) pass straight through.
 $ErrorActionPreference = 'Stop'
+
+# --- Sync check: install_agent.ps1 -------------------------------------------
+# The live copy on pc-deploy is the source of truth. If it differs from the
+# repo copy, auto-pull it so we never push a stale agent.
+$agentRepo   = Join-Path $PSScriptRoot 'scripts\static\install_agent.ps1'
+$deployHost  = '192.168.5.141'
+$agentRemote = 'C:\inventory\app\static\install_agent.ps1'
+
+try {
+    $session = New-PSSession -ComputerName $deployHost -ErrorAction Stop
+    $liveBytes = Invoke-Command -Session $session -ScriptBlock {
+        param($p) [System.IO.File]::ReadAllBytes($p)
+    } -ArgumentList $agentRemote
+    Remove-PSSession $session
+
+    $repoHash = (Get-FileHash $agentRepo -Algorithm MD5).Hash
+    $liveHash = [System.Security.Cryptography.MD5]::Create().ComputeHash($liveBytes) |
+        ForEach-Object { $_.ToString('x2') }
+    $liveHashStr = -join $liveHash
+
+    if ($repoHash -ne $liveHashStr) {
+        Write-Host ''
+        Write-Host '  [sync] install_agent.ps1 differs from live server -- pulling before push.' -ForegroundColor Yellow
+        [System.IO.File]::WriteAllBytes($agentRepo, $liveBytes)
+        Write-Host "  [sync] Updated ($([math]::Round($liveBytes.Length/1KB,1)) KB)" -ForegroundColor Green
+    }
+} catch {
+    Write-Host "  [sync] Could not reach $deployHost to check install_agent.ps1 -- skipping sync check." -ForegroundColor DarkGray
+}
+# -----------------------------------------------------------------------------
 $master = $env:DEV_PUSH_AUTOMATION
 if (-not $master) { $master = 'C:\dev\dev-push-automation\push-all.ps1' }
 if (-not (Test-Path $master)) {
