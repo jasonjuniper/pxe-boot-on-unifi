@@ -279,12 +279,6 @@ Write-Host "    OS    : $($os.Label)"
 Write-Host "    Name  : $computerName"
 Write-Host ''
 Write-Host '  !! Disk 0 will be COMPLETELY WIPED !!' -ForegroundColor Red
-Write-Host ''
-$confirm = Read-Host '  Type YES to proceed, anything else to abort'
-if ($confirm -ne 'YES') {
-    Write-Host '  Aborted.' -ForegroundColor Yellow
-    Read-Host '  Press Enter to reboot'; wpeutil reboot; exit
-}
 
 # --- Partition Disk 0 (GPT / UEFI) -----------------------------------------
 
