@@ -44,8 +44,8 @@ $OsOptions = @{
     }
     '3' = @{
         Label    = 'Windows 10 Pro'
-        WimFile  = 'images\win10.wim'
-        WimIndex = 6          # multi-edition ISO; Win10 Pro = index 6
+        WimFile  = 'images\win10-pro.wim'
+        WimIndex = 1          # single-edition export from win10.wim index 6
         Unattend = 'unattend\unattend-win10.xml'
     }
 }
