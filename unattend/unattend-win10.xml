@@ -222,6 +222,12 @@
           <Description>Remove bloatware</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\08-set-file-associations.ps1</CommandLine>
+          <Description>Set 7-Zip as default for archive types</Description>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
       </FirstLogonCommands>
 
     </component>
