@@ -7,6 +7,8 @@
 # deploy.ps1 from the share.  Keeping the main logic on the share means
 # script changes do NOT require a WIM rebuild — only changes to this
 # file (or startnet.cmd) require a rebuild.
+#
+# Press T within 5 seconds at startup to open the diagnostic toolkit instead.
 
 $DeployServer = '192.168.5.141'   # pc-deploy — use IP; DNS may not work in WinPE
 $DeployShare  = "\\$DeployServer\deploy$"
@@ -17,6 +19,28 @@ Write-Host '  ============================================' -ForegroundColor Cya
 Write-Host '   Juniper Design  -  PC Deployment System  ' -ForegroundColor Cyan
 Write-Host '  ============================================' -ForegroundColor Cyan
 Write-Host ''
+Write-Host '  Press [T] within 5 seconds to open the diagnostic toolkit.' -ForegroundColor DarkGray
+Write-Host '  Any other key or timeout continues to deployment.' -ForegroundColor DarkGray
+Write-Host ''
+
+# ── Toolkit intercept (5-second window) ──────────────────────────────────────
+$launchToolkit = $false
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+while ($sw.ElapsedMilliseconds -lt 5000) {
+    if ([Console]::KeyAvailable) {
+        $key = [Console]::ReadKey($true)
+        if ($key.Key -eq [ConsoleKey]::T) { $launchToolkit = $true }
+        break
+    }
+    Start-Sleep -Milliseconds 100
+}
+$sw.Stop()
+
+if ($launchToolkit) {
+    Write-Host '  Opening toolkit...' -ForegroundColor Cyan
+    & X:\Windows\System32\toolkit.ps1
+    exit
+}
 
 # ── Wait for network ──────────────────────────────────────────────────────────
 Write-Host '  Waiting for network...' -ForegroundColor Yellow
@@ -34,6 +58,8 @@ for ($i = 1; $i -le 30; $i++) {
 if (-not $connected) {
     Write-Host ''
     Write-Host "  Cannot reach $DeployServer. Check network cable / switch." -ForegroundColor Red
+    Write-Host ''
+    Write-Host '  TIP: Press Ctrl+C and run toolkit.ps1 to diagnose network issues.' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
     exit

@@ -27,12 +27,13 @@ Write-Host "==> Creating deploy folder structure under $DeployRoot" -ForegroundC
 
 $dirs = @(
     $DeployRoot,
-    "$DeployRoot\images",     # WIM files (win11.wim, win10.wim)
-    "$DeployRoot\unattend",   # unattend-win11.xml, unattend-win10.xml
-    "$DeployRoot\scripts",    # 03-09 post-install scripts
-    "$DeployRoot\packages",   # MSI/EXE installers
-    "$DeployRoot\winpe",      # optional: source copies of startnet.cmd + deploy.ps1
-    "$DeployRoot\drivers"     # driver packs per model — see drivers\manifest.json
+    "$DeployRoot\images",       # WIM files (win11-home.wim, win11-pro.wim, win10.wim)
+    "$DeployRoot\unattend",     # unattend-win11.xml, unattend-win10.xml
+    "$DeployRoot\scripts",      # 03-09 post-install scripts + deploy.ps1
+    "$DeployRoot\packages",     # MSI/EXE installers
+    "$DeployRoot\winpe",        # optional: source copies of startnet.cmd + deploy-boot.ps1
+    "$DeployRoot\drivers",      # driver packs per model — see drivers\manifest.json
+    "$DeployRoot\winpe-media"   # WinPE boot media tree for USB drive creation (01e-make-usb.ps1)
 )
 
 foreach ($d in $dirs) {
@@ -109,6 +110,31 @@ if (Test-Path $manifestSrc) {
     Write-Host '  Copied: drivers\manifest.json' -ForegroundColor Green
 } else {
     Write-Host '  WARN: drivers\manifest.json not found in repo (skipped)' -ForegroundColor Yellow
+}
+
+# ─── Copy WinPE media tree for USB drive creation ─────────────────────────────
+Write-Host ''
+Write-Host '==> Copying WinPE media tree to deploy$\winpe-media (for 01e-make-usb.ps1)' -ForegroundColor Cyan
+
+$tftpRoot   = 'C:\tftpd64'
+$mediaTarget = "$DeployRoot\winpe-media"
+
+if (Test-Path "$tftpRoot\EFI\Boot\bootx64.efi") {
+    $robocopyLog = "$env:TEMP\01d-winpe-media-copy.txt"
+    $p = Start-Process -FilePath 'C:\Windows\System32\Robocopy.exe' `
+        -ArgumentList "`"$tftpRoot`" `"$mediaTarget`" /E /NP /NFL /NDL /XD `"tftpd64`"" `
+        -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $robocopyLog `
+        -RedirectStandardError  "$env:TEMP\01d-winpe-media-err.txt"
+    if ($p.ExitCode -le 7) {
+        Write-Host "  Copied WinPE media tree to $mediaTarget" -ForegroundColor Green
+    } else {
+        Write-Host "  WARN: Robocopy exited $($p.ExitCode) copying $tftpRoot -> $mediaTarget" -ForegroundColor Yellow
+        Get-Content $robocopyLog | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" }
+    }
+} else {
+    Write-Host "  WARN: $tftpRoot\EFI\Boot\bootx64.efi not found." -ForegroundColor Yellow
+    Write-Host '  Run 01c-build-winpe.ps1 first to build the WinPE image.' -ForegroundColor Yellow
 }
 
 # ─── Firewall: open SMB for PXE clients on the local subnet ────────────────────

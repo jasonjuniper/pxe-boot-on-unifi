@@ -237,9 +237,9 @@ $winpeSourceDir = ''
 # Look for winpe\ next to this script, then in common repo locations
 $candidates = @(
     (Join-Path $PSScriptRoot '..\winpe'),
-    (Join-Path $RepoRoot 'winpe'),
     'C:\dev\pc-imaging-server\winpe'
 )
+if ($RepoRoot) { $candidates += (Join-Path $RepoRoot 'winpe') }
 foreach ($c in $candidates) {
     if (Test-Path (Join-Path $c 'deploy-boot.ps1')) { $winpeSourceDir = (Resolve-Path $c).Path; break }
 }
@@ -255,6 +255,15 @@ if (-not $winpeSourceDir) {
 Copy-Item (Join-Path $winpeSourceDir 'startnet.cmd')    "$mountDir\Windows\System32\startnet.cmd"    -Force
 Copy-Item (Join-Path $winpeSourceDir 'deploy-boot.ps1') "$mountDir\Windows\System32\deploy-boot.ps1" -Force
 Write-Host "  Injected startnet.cmd and deploy-boot.ps1 from $winpeSourceDir" -ForegroundColor Green
+
+# Inject toolkit.ps1 — network diagnostic tool (press T at boot to launch)
+$toolkitSrc = Join-Path $winpeSourceDir 'toolkit.ps1'
+if (Test-Path $toolkitSrc) {
+    Copy-Item $toolkitSrc "$mountDir\Windows\System32\toolkit.ps1" -Force
+    Write-Host "  Injected toolkit.ps1" -ForegroundColor Green
+} else {
+    Write-Host "  WARN: toolkit.ps1 not found in $winpeSourceDir — skipping." -ForegroundColor Yellow
+}
 
 # ─── Step 5b: Inject Juniper branding ─────────────────────────────────────────
 Write-Host ''
