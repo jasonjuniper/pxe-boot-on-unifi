@@ -63,9 +63,24 @@ Write-Host '    Firewall rules updated (SMB open to entire LAN).' -ForegroundCol
 #    causes the connection to hang silently until timeout.
 Write-Host '    Allowing unencrypted SMB (required for WinPE clients)...'
 Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Force
-# Also grant Everyone read access to the deploy$ share (required for WinPE)
 Grant-SmbShareAccess -Name 'deploy$' -AccountName 'Everyone' -AccessRight Read -Force | Out-Null
 Write-Host '    SMB unencrypted access enabled; Everyone:Read on deploy$.' -ForegroundColor Green
+
+# 6. Allow null-session (unauthenticated) access to deploy$ specifically.
+#    WinPE connects to SMB shares without credentials (null session). Windows 10/11
+#    blocks null sessions by default. Listing the share in NullSessionShares with
+#    RestrictNullSessAccess=0 allows WinPE to read the share on an internal network.
+Write-Host '    Enabling null-session access for deploy$ (required for WinPE)...'
+$lmParams = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+Set-ItemProperty -Path $lmParams -Name 'NullSessionShares' -Value @('deploy$') -Type MultiString
+Set-ItemProperty -Path $lmParams -Name 'RestrictNullSessAccess' -Value 0 -Type DWord
+$acl  = Get-Acl 'C:\deploy'
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    'Everyone', 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl 'C:\deploy' $acl
+Restart-Service LanmanServer -Force
+Write-Host '    Null-session access enabled for deploy$.' -ForegroundColor Green
 
 Write-Host ''
 Write-Host '==> Remote access ready.' -ForegroundColor Green
