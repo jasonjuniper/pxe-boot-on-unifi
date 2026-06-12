@@ -1,4 +1,4 @@
-# toolkit.ps1 — Juniper Design WinPE Diagnostic Toolkit
+﻿# toolkit.ps1 — Juniper Design WinPE Diagnostic Toolkit
 #
 # Baked into WinPE at X:\Windows\System32\toolkit.ps1
 # Launched by deploy-boot.ps1 when T is pressed at startup.
@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# - Helpers -
 
 function Write-Banner {
     Clear-Host
@@ -27,7 +27,7 @@ function Write-Banner {
 
 function Write-Section([string]$Title) {
     Write-Host ''
-    Write-Host "  ── $Title " -ForegroundColor DarkCyan
+    Write-Host "  - $Title " -ForegroundColor DarkCyan
 }
 
 function Pause-ForUser {
@@ -35,13 +35,23 @@ function Pause-ForUser {
     Read-Host '  Press Enter to continue'
 }
 
-# ─── Diagnostics ──────────────────────────────────────────────────────────────
+# - Diagnostics -
 
 function Show-NetworkAdapters {
     Write-Section 'Network Adapters'
-    $adapters = Get-NetAdapter
+    # USB NICs (ASIX AX88179, Realtek RTL8153) can take 10-20s to initialize after wpeinit.
+    # Retry up to 20 seconds before declaring no adapter found.
+    $adapters = $null
+    for ($retry = 0; $retry -lt 4; $retry++) {
+        $adapters = Get-NetAdapter -ErrorAction SilentlyContinue
+        if ($adapters) { break }
+        if ($retry -lt 3) {
+            Write-Host "  Waiting for NIC to initialize... ($($retry * 5 + 5)s)" -ForegroundColor DarkGray
+            Start-Sleep 5
+        }
+    }
     if (-not $adapters) {
-        Write-Host '  !! No network adapters detected at all.' -ForegroundColor Red
+        Write-Host '  !! No network adapters detected after 20s wait.' -ForegroundColor Red
         Write-Host ''
         Write-Host '  This usually means WinPE is missing drivers for your USB or' -ForegroundColor Yellow
         Write-Host '  Thunderbolt NIC. Common chips and what to try:' -ForegroundColor Yellow
@@ -56,7 +66,7 @@ function Show-NetworkAdapters {
         Write-Host "  [$($a.Status.PadRight(12))] $($a.Name.PadRight(30)) $($a.MacAddress)  $($a.LinkSpeed)" -ForegroundColor $color
     }
     Write-Host ''
-    Write-Host '  ── IP Configuration'
+    Write-Host '  - IP Configuration'
     $configs = Get-NetIPConfiguration
     if (-not $configs) {
         Write-Host '  (none)' -ForegroundColor Yellow
@@ -102,7 +112,26 @@ function Test-Connectivity {
 
 function Test-DeployShare {
     Write-Section 'Deploy Share'
-    try { net use $DeployShare /persistent:no *>$null } catch {}
+    # net use can hang for minutes if SMB is blocked -- run it as a job with a 15s timeout
+    Write-Host "  Connecting to $DeployShare (15s timeout)..." -ForegroundColor DarkGray
+    $job = Start-Job -ScriptBlock {
+        param($share)
+        net use $share /persistent:no 2>&1
+    } -ArgumentList $DeployShare
+    $null = Wait-Job $job -Timeout 15
+    if ($job.State -eq 'Running') {
+        Stop-Job $job
+        Write-Host "  $DeployShare : TIMED OUT (SMB blocked or server unreachable)" -ForegroundColor Red
+        Write-Host ''
+        Write-Host '  Possible causes:' -ForegroundColor Yellow
+        Write-Host '    - SMB encryption required on pc-deploy (run: Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Force)' -ForegroundColor Yellow
+        Write-Host '    - Port 445 blocked by firewall' -ForegroundColor Yellow
+        Write-Host '    - deploy$ share not created (run 01d-setup-deploy-share.ps1)' -ForegroundColor Yellow
+        Remove-Job $job -Force
+        return
+    }
+    Remove-Job $job -Force
+
     if (Test-Path $DeployShare) {
         Write-Host "  $DeployShare : ACCESSIBLE" -ForegroundColor Green
         Write-Host ''
@@ -113,9 +142,9 @@ function Test-DeployShare {
         Write-Host "  $DeployShare : NOT ACCESSIBLE" -ForegroundColor Red
         Write-Host ''
         Write-Host '  Possible causes:' -ForegroundColor Yellow
-        Write-Host '    - Port 445 closed (Windows Firewall on pc-deploy)' -ForegroundColor Yellow
+        Write-Host '    - SMB encryption required on pc-deploy (run: Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Force)' -ForegroundColor Yellow
+        Write-Host '    - Port 445 blocked by firewall' -ForegroundColor Yellow
         Write-Host '    - deploy$ share not created (run 01d-setup-deploy-share.ps1)' -ForegroundColor Yellow
-        Write-Host '    - pc-deploy not reachable (check ping above)' -ForegroundColor Yellow
     }
 }
 
@@ -202,7 +231,7 @@ function Show-Help {
     Write-Host '    - Ubiquiti option 67 not set to EFI\Boot\bootx64.efi'
 }
 
-# ─── Main loop ────────────────────────────────────────────────────────────────
+# - Main loop -
 
 Write-Banner
 

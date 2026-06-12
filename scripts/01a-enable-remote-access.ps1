@@ -48,7 +48,24 @@ Write-Host "    \\$($env:COMPUTERNAME)\deploy$ -> $deployPath" -ForegroundColor 
 Write-Host '    Opening firewall ports...'
 Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction SilentlyContinue
 Enable-NetFirewallRule -DisplayGroup 'File and Printer Sharing' -ErrorAction SilentlyContinue
-Write-Host '    Firewall rules updated.' -ForegroundColor Green
+# Built-in SMB-In rules default to RemoteAddress=LocalSubnet, which only allows the
+# interface's immediate subnet.  On a flat /20 network clients on other octets
+# (e.g. 192.168.10.x vs 192.168.5.141) are silently blocked even though they're on
+# the same LAN.  Set RemoteAddress=Any -- safe for an internal network with no VLANs.
+Get-NetFirewallRule -DisplayName 'File and Printer Sharing (SMB-In)' |
+    ForEach-Object { $_ | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress Any }
+Get-NetFirewallRule -DisplayName 'File and Printer Sharing (Restrictive) (SMB-In)' -ErrorAction SilentlyContinue |
+    ForEach-Object { $_ | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress Any }
+Write-Host '    Firewall rules updated (SMB open to entire LAN).' -ForegroundColor Green
+
+# 5. Allow unencrypted SMB access so WinPE clients can reach deploy$
+#    WinPE's net.exe does not negotiate SMB encryption; RejectUnencryptedAccess=True
+#    causes the connection to hang silently until timeout.
+Write-Host '    Allowing unencrypted SMB (required for WinPE clients)...'
+Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Force
+# Also grant Everyone read access to the deploy$ share (required for WinPE)
+Grant-SmbShareAccess -Name 'deploy$' -AccountName 'Everyone' -AccessRight Read -Force | Out-Null
+Write-Host '    SMB unencrypted access enabled; Everyone:Read on deploy$.' -ForegroundColor Green
 
 Write-Host ''
 Write-Host '==> Remote access ready.' -ForegroundColor Green
