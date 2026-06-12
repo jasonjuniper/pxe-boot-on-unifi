@@ -1,4 +1,4 @@
-﻿# toolkit.ps1 — Juniper Design WinPE Diagnostic Toolkit
+# toolkit.ps1 - Juniper Design WinPE Diagnostic Toolkit
 #
 # Baked into WinPE at X:\Windows\System32\toolkit.ps1
 # Launched by deploy-boot.ps1 when T is pressed at startup.
@@ -101,12 +101,12 @@ function Test-Connectivity {
     foreach ($port in @(69, 445)) {
         $r = Test-NetConnection -ComputerName $DeployServer -Port $port -WarningAction SilentlyContinue
         $label = switch ($port) {
-            69  { 'TFTP (UDP 69) — TCP probe only, UDP unreachable is normal' }
-            445 { 'SMB  (TCP 445) — must be open for deploy share access' }
+            69  { 'TFTP (UDP 69) - TCP probe only, UDP unreachable is normal' }
+            445 { 'SMB  (TCP 445) - must be open for deploy share access' }
         }
         $ok    = $r.TcpTestSucceeded
         $color = if ($port -eq 445) { if ($ok) { 'Green' } else { 'Red' } } else { 'DarkGray' }
-        Write-Host "    Port $port : $(if ($ok) { 'OPEN' } else { 'CLOSED' })  — $label" -ForegroundColor $color
+        Write-Host "    Port $port : $(if ($ok) { 'OPEN' } else { 'CLOSED' })  - $label" -ForegroundColor $color
     }
 }
 
@@ -179,7 +179,7 @@ function Show-DhcpDetails {
         $color = if ($opts66 -eq $DeployServer) { 'Green' } else { 'Yellow' }
         Write-Host "    Option 66 (TFTP Server) : $opts66" -ForegroundColor $color
         if ($opts66 -ne $DeployServer) {
-            Write-Host "      !! Expected $DeployServer — check Ubiquiti DHCP option 66" -ForegroundColor Yellow
+            Write-Host "      !! Expected $DeployServer - check Ubiquiti DHCP option 66" -ForegroundColor Yellow
         }
     } else {
         Write-Host '    Option 66 (TFTP Server) : NOT RECEIVED' -ForegroundColor Red
@@ -211,7 +211,7 @@ function Run-FullDiagnostic {
 }
 
 function Show-Help {
-    Write-Section 'Help — PXE Troubleshooting Notes'
+    Write-Section 'Help - PXE Troubleshooting Notes'
     Write-Host ''
     Write-Host '  PXE boot flow:' -ForegroundColor DarkGray
     Write-Host '    1. Machine broadcasts DHCP discover with PXEClient tag'
@@ -221,9 +221,9 @@ function Show-Help {
     Write-Host '    5. bootx64.efi chainloads boot.wim (WinPE)'
     Write-Host ''
     Write-Host '  USB NIC PXE issues:' -ForegroundColor DarkGray
-    Write-Host '    - USB/Thunderbolt NICs rarely have a PXE ROM — use this USB instead'
+    Write-Host '    - USB/Thunderbolt NICs rarely have a PXE ROM - use this USB instead'
     Write-Host '    - If this NIC shows Up but no IP: cable connected after POST? replug it'
-    Write-Host '    - If NIC not detected: WinPE missing drivers — see 01c-build-winpe.ps1'
+    Write-Host '    - If NIC not detected: WinPE missing drivers - see 01c-build-winpe.ps1'
     Write-Host ''
     Write-Host '  DHCP option 66/67 not received:' -ForegroundColor DarkGray
     Write-Host '    - tftpd64 service not running on pc-deploy (check task 2 above)'

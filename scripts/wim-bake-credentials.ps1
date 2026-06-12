@@ -43,20 +43,32 @@ $credScript = $template -replace '##WINPE_PASS##', $pass
 $pass       = $null   # clear from memory immediately after substitution
 
 Write-Host ''
-Write-Host '==> Pushing credentialed deploy-boot.ps1 to pc-deploy...' -ForegroundColor Cyan
+Write-Host '==> Pushing credentialed deploy-boot.ps1 + toolkit.ps1 to pc-deploy...' -ForegroundColor Cyan
 $session = New-PSSession -ComputerName $DeployServer
 Invoke-Command -Session $session -ScriptBlock {
     param($content)
-    $path = 'C:\deploy\scripts\winpe\deploy-boot.ps1'
+    $path = 'C:\deploy\staging\deploy-boot.ps1'
     New-Item (Split-Path $path) -ItemType Directory -Force | Out-Null
-    [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
     "Written: $path  ($([math]::Round($content.Length/1KB,1)) KB)"
 } -ArgumentList $credScript
 $credScript = $null   # clear from memory
 
+# Also push toolkit.ps1 to staging so WimUpdate4 bakes it in too
+$toolkitSrc = "$PSScriptRoot\..\winpe\toolkit.ps1"
+if (Test-Path $toolkitSrc) {
+    $toolkitContent = [System.IO.File]::ReadAllBytes($toolkitSrc)
+    Invoke-Command -Session $session -ScriptBlock {
+        param($bytes)
+        $path = 'C:\deploy\staging\toolkit.ps1'
+        [System.IO.File]::WriteAllBytes($path, $bytes)
+        "Written: $path  ($([math]::Round($bytes.Length/1KB,1)) KB)"
+    } -ArgumentList (,$toolkitContent)
+}
+
 Write-Host '==> Triggering WIM rebuild on pc-deploy (WimUpdate4)...' -ForegroundColor Cyan
 Invoke-Command -Session $session -ScriptBlock {
-    Remove-Item 'C:\imaging-build\wim-update-deploy-boot.log' -Force -ErrorAction SilentlyContinue
+    Remove-Item 'C:\imaging-build\wim-update4.log' -Force -ErrorAction SilentlyContinue
     Start-ScheduledTask -TaskName 'WimUpdate4'
 }
 
@@ -76,17 +88,17 @@ if ($state -ne 'Ready') {
     Write-Warning "WIM rebuild did not finish within 3 minutes. Check log on pc-deploy."
 } else {
     Invoke-Command -Session $session -ScriptBlock {
-        Get-Content 'C:\imaging-build\wim-update-deploy-boot.log' -Tail 4 -ErrorAction SilentlyContinue
+        Get-Content 'C:\imaging-build\wim-update4.log' -Tail 4 -ErrorAction SilentlyContinue
     } | ForEach-Object { Write-Host "    $_" }
     Write-Host '    WIM rebuild complete.' -ForegroundColor Green
 }
 
 Write-Host '==> Scrubbing credential file from deploy share...' -ForegroundColor Cyan
 Invoke-Command -Session $session -ScriptBlock {
-    $path    = 'C:\deploy\scripts\winpe\deploy-boot.ps1'
+    $path    = 'C:\deploy\staging\deploy-boot.ps1'
     $content = Get-Content $path -Raw
-    $scrubbed = $content -replace "(?m)^\`$DeployPass\s*=\s*'[^']*'", "`$DeployPass = '##WINPE_PASS##'"
-    [System.IO.File]::WriteAllText($path, $scrubbed, [System.Text.UTF8Encoding]::new($true))
+    $scrubbed = $content -replace "(?m)(\`$DeployPass\s*=\s*)'[^']*'", '$1''##WINPE_PASS##'''
+    [System.IO.File]::WriteAllText($path, $scrubbed, [System.Text.UTF8Encoding]::new($false))
     "Scrubbed $path"
 }
 Remove-PSSession $session

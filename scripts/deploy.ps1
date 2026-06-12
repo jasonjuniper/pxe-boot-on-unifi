@@ -1,17 +1,19 @@
-# deploy.ps1 — Juniper Design WinPE Deployment Script
+# deploy.ps1 - Juniper Design WinPE Deployment Script
 #
 # Lives on the DEPLOY SHARE at \\192.168.5.141\deploy$\scripts\deploy.ps1
 # Launched by deploy-boot.ps1 (baked into WinPE) after the share is mapped.
 #
-# To update without rebuilding WinPE: edit this file, run 01d-setup-deploy-share.ps1
-# (or copy it directly: scripts\deploy.ps1 → C:\deploy\scripts\deploy.ps1 on pc-deploy).
+# To update without rebuilding WinPE: edit this file and copy to pc-deploy:
+#   scripts\deploy.ps1 -> C:\deploy\scripts\deploy.ps1 on pc-deploy
 #
-# Prompts for OS selection and computer name, partitions disk 0,
-# applies the Windows image via DISM, injects unattend.xml with the
-# chosen computer name, sets up the boot sector, and reboots.
+# AUTOMATION: deploy.ps1 queries the inventory API by serial number.
+# If the machine is recognised, its prior hostname and OS are used as
+# defaults with a 30-second countdown.  The operator can press any key
+# to override.  Unknown machines always prompt.
 #
-# DEPLOYMENT SHARE: \\192.168.5.141\deploy$ (no credentials — share is
-# open read-only to Everyone; no secrets are stored there)
+# OEM KEY: Windows reads the embedded UEFI key from the ACPI MSDM table
+# automatically during setup.  04-install-packages.ps1 also calls slmgr
+# post-install as belt-and-suspenders.  No extra work needed here.
 #
 # SHARE LAYOUT (C:\deploy on pc-deploy):
 #   images\win11-home.wim        Windows 11 Home (single-edition, index 1)
@@ -23,8 +25,9 @@
 
 $ErrorActionPreference = 'Stop'
 
-$DeployServer = '192.168.5.141'   # pc-deploy — use IP, DNS may not work in WinPE
+$DeployServer = '192.168.5.141'   # pc-deploy - use IP, DNS may not work in WinPE
 $DeployShare  = "\\$DeployServer\deploy$"
+$InvApi       = "http://$DeployServer`:8080"
 
 $OsOptions = @{
     '1' = @{
@@ -47,16 +50,14 @@ $OsOptions = @{
     }
 }
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# --- Helpers ----------------------------------------------------------------
 
 function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
-    # Strip leading manufacturer name if WMI duplicates it (e.g. "HP HP EliteBook")
     $mdl = $Model.Trim()
     $mfr = $Manufacturer.Trim()
     if ($mdl -imatch "^$([regex]::Escape($mfr))\s+") {
         $mdl = $mdl.Substring($mfr.Length).TrimStart()
     }
-    # Normalize to lowercase kebab-case
     $key = "$mfr-$mdl" -replace '[^A-Za-z0-9]', '-' -replace '-{2,}', '-' -replace '^-|-$', ''
     return $key.ToLower()
 }
@@ -64,46 +65,36 @@ function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
 function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [string]$Model) {
     $manifestPath = "$DeployShare\drivers\manifest.json"
     if (-not (Test-Path $manifestPath)) {
-        Write-Host '  INFO: No driver manifest at deploy$\drivers\manifest.json — skipping.' -ForegroundColor DarkGray
+        Write-Host '  INFO: No driver manifest at deploy$\drivers\manifest.json - skipping.' -ForegroundColor DarkGray
         return
     }
-
-    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
     $normalKey = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
-
-    # Match by wmiModels list first (most reliable), then by normalized key
-    $matched = $null
+    $matched   = $null
     foreach ($prop in $manifest.models.PSObject.Properties) {
-        $entry = $prop.Value
-        if ($entry.wmiModels -contains $Model) { $matched = $entry; break }
+        if ($prop.Value.wmiModels -contains $Model) { $matched = $prop.Value; break }
     }
     if (-not $matched) {
         foreach ($prop in $manifest.models.PSObject.Properties) {
             if ($prop.Name -eq $normalKey) { $matched = $prop.Value; break }
         }
     }
-
     if (-not $matched) {
-        Write-Host "  WARN: No driver pack in manifest for '$Model' (key: $normalKey)" -ForegroundColor Yellow
-        Write-Host '        Windows generic/inbox drivers will be used.' -ForegroundColor Yellow
-        Write-Host '        Add this model to drivers\manifest.json and run 09-update-driver-warehouse.ps1.' -ForegroundColor Yellow
+        Write-Host "  WARN: No driver pack for '$Model' (key: $normalKey) - inbox drivers only." -ForegroundColor Yellow
         return
     }
-
     $driverSrc = "$DeployShare\drivers\$($matched.driverPath)"
     if (-not (Test-Path $driverSrc)) {
-        Write-Host "  WARN: Driver pack listed in manifest but folder not found: $driverSrc" -ForegroundColor Yellow
-        Write-Host '        Run 09-update-driver-warehouse.ps1 on pc-deploy to populate missing driver packs.' -ForegroundColor Yellow
+        Write-Host "  WARN: Driver pack folder not found: $driverSrc" -ForegroundColor Yellow
         return
     }
-
     $infCount = (Get-ChildItem $driverSrc -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue).Count
     Write-Host "  Injecting driver pack for $Model ($infCount .inf files)..." -ForegroundColor Cyan
     $p = Start-Process dism -ArgumentList "/Image:C:\ /Add-Driver /Driver:`"$driverSrc`" /Recurse /ForceUnsigned" -Wait -PassThru -NoNewWindow
     if ($p.ExitCode -eq 0) {
         Write-Host '  Drivers injected successfully.' -ForegroundColor Green
     } else {
-        Write-Host "  WARN: DISM driver injection returned exit $($p.ExitCode) — some drivers may need post-install." -ForegroundColor Yellow
+        Write-Host "  WARN: DISM driver injection exit $($p.ExitCode) - some drivers may need post-install." -ForegroundColor Yellow
     }
 }
 
@@ -116,35 +107,56 @@ function Write-Banner {
     Write-Host ''
 }
 
-# ─── Start ──────────────────────────────────────────────────────────────────
+# --- Start ------------------------------------------------------------------
 
 Write-Banner
 
-# Ensure share is mapped (deploy-boot.ps1 maps it, but handle the case where
-# this script is run standalone for testing)
 try { net use $DeployShare /persistent:no *>$null } catch {}
 if (-not (Test-Path $DeployShare)) {
     Write-Host "  Cannot reach $DeployShare" -ForegroundColor Red
-    Write-Host '  Verify deploy$ share is accessible from WinPE (Everyone:Read).' -ForegroundColor Yellow
-    Read-Host '  Press Enter to reboot'
-    wpeutil reboot
-    exit
+    Read-Host '  Press Enter to reboot'; wpeutil reboot; exit
 }
 
-# ─── Detect Hardware Model ───────────────────────────────────────────────────
+# --- Collect hardware identity (serial + all physical MACs) -----------------
+# Used for inventory preflight lookup and post-imaging MAC registration.
 
-$hwWmiCS  = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
+$hwWmiCS   = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
 $hwWmiBios = Get-WmiObject -Class Win32_BIOS -ErrorAction SilentlyContinue
-$hwMfr    = if ($hwWmiCS)   { $hwWmiCS.Manufacturer.Trim() } else { 'Unknown' }
-$hwModel  = if ($hwWmiCS)   { $hwWmiCS.Model.Trim()        } else { 'Unknown' }
-$hwSerial = if ($hwWmiBios) { $hwWmiBios.SerialNumber.Trim() } else { 'Unknown' }
+$hwMfr     = if ($hwWmiCS)   { $hwWmiCS.Manufacturer.Trim()  } else { 'Unknown' }
+$hwModel   = if ($hwWmiCS)   { $hwWmiCS.Model.Trim()         } else { 'Unknown' }
+$hwSerial  = if ($hwWmiBios) { $hwWmiBios.SerialNumber.Trim() } else { '' }
 
-Write-Host '  ── Hardware Detected ───────────────────────────' -ForegroundColor DarkCyan
+# Filter placeholder serials that BIOSes ship with
+$_bogus = @('to be filled','default string','system serial','tbd','0','00000000',
+            'na','n/a','not specified','none','chassis serial','ffffffffff')
+$serialClean = $hwSerial
+foreach ($b in $_bogus) { if ($serialClean -ilike "*$b*") { $serialClean = ''; break } }
+
+# Every physical NIC (Ethernet + Wi-Fi) - collected for inventory association
+$allNics = @(
+    Get-WmiObject Win32_NetworkAdapter -ErrorAction SilentlyContinue |
+    Where-Object { $_.PhysicalAdapter -eq $true -and $_.MACAddress -ne $null } |
+    ForEach-Object {
+        @{
+            mac  = $_.MACAddress.Replace('-',':').ToLower()
+            name = $_.Name
+            type = if ($_.Name -imatch 'wi.fi|wifi|802\.11|wlan|wireless') { 'wifi' } else { 'ethernet' }
+        }
+    }
+)
+$allMacs    = @($allNics | ForEach-Object { $_['mac'] })
+$primaryNic = ($allNics | Where-Object { $_['type'] -eq 'ethernet' } | Select-Object -First 1)
+if (-not $primaryNic) { $primaryNic = ($allNics | Select-Object -First 1) }
+$primaryMac = if ($primaryNic) { $primaryNic['mac'] } else { '' }
+
+# --- Detect Hardware --------------------------------------------------------
+
+Write-Host '  -- Hardware Detected ----------------------------------' -ForegroundColor DarkCyan
 Write-Host "    Manufacturer : $hwMfr"
 Write-Host "    Model        : $hwModel"
-Write-Host "    Serial       : $hwSerial"
+Write-Host "    Serial       : $(if ($serialClean) { $hwSerial } else { '(no usable serial)' })"
+Write-Host "    NICs         : $($allNics.Count) physical ($(@($allNics | Where-Object { $_['type'] -eq 'ethernet' }).Count) wired)"
 
-# Check if a driver pack exists for this model
 $manifestPath = "$DeployShare\drivers\manifest.json"
 if (Test-Path $manifestPath) {
     $manifest  = Get-Content $manifestPath -Raw | ConvertFrom-Json
@@ -158,89 +170,126 @@ if (Test-Path $manifestPath) {
             if ($prop.Name -eq $nk) { $driverHit = $true; break }
         }
     }
-    if ($driverHit) {
-        Write-Host '    Drivers      : FOUND in warehouse' -ForegroundColor Green
-    } else {
-        Write-Host '    Drivers      : NOT in warehouse — inbox drivers only' -ForegroundColor Yellow
-    }
+    Write-Host "    Drivers      : $(if ($driverHit) { 'FOUND in warehouse' } else { 'NOT in warehouse - inbox drivers only' })" `
+        -ForegroundColor $(if ($driverHit) { 'Green' } else { 'Yellow' })
 } else {
     Write-Host '    Drivers      : no manifest found' -ForegroundColor DarkGray
 }
 Write-Host ''
 
-# ─── OS Selection ────────────────────────────────────────────────────────────
+# --- Inventory preflight lookup ---------------------------------------------
+# Look up this machine by serial number to pre-populate defaults.
+# Fails silently - deployment always continues if the API is unreachable.
 
-Write-Host ''
-Write-Host '  Select OS to deploy:' -ForegroundColor Cyan
-foreach ($k in ($OsOptions.Keys | Sort-Object)) {
-    Write-Host "    [$k] $($OsOptions[$k].Label)"
+$prior = $null
+if ($serialClean) {
+    try {
+        $prior = Invoke-RestMethod "$InvApi/api/imaging/preflight?serial=$([uri]::EscapeDataString($hwSerial))" `
+            -TimeoutSec 5 -ErrorAction Stop
+        if (-not $prior.found) { $prior = $null }
+    } catch { $prior = $null }
 }
-Write-Host ''
 
-$osKey = ''
-while ($osKey -notin $OsOptions.Keys) { $osKey = Read-Host '  Choice' }
+# --- OS + Computer Name selection -------------------------------------------
+# Known machine: show inventory defaults with 30 s countdown.
+# Unknown machine: prompt as normal.
+
+$osKey        = ''
+$computerName = ''
+$useDefaults  = $false
+
+if ($prior) {
+    Write-Host '  -- Inventory match found --------------------------------' -ForegroundColor Green
+    Write-Host "    Name:      $($prior.hostname)" -ForegroundColor Green
+    Write-Host "    Last OS:   $($prior.os)" -ForegroundColor DarkGray
+    if ($prior.last_seen) { Write-Host "    Last seen: $($prior.last_seen)" -ForegroundColor DarkGray }
+    Write-Host ''
+    Write-Host "  Default OS:   [$($prior.os_key)] $($OsOptions[$prior.os_key].Label)" -ForegroundColor Cyan
+    Write-Host "  Default Name: $($prior.hostname)" -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '  Press any key to change, or wait 30 s to accept defaults.' -ForegroundColor DarkGray
+    Write-Host ''
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $timedOut = $true
+    while ($sw.Elapsed.TotalSeconds -lt 30) {
+        if ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null; $timedOut = $false; break }
+        $secsLeft = [int](30 - $sw.Elapsed.TotalSeconds)
+        Write-Host "`r  Auto-accepting in $secsLeft s...  " -NoNewline
+        Start-Sleep -Milliseconds 200
+    }
+    Write-Host ''; $sw.Stop()
+
+    if ($timedOut) {
+        $osKey       = $prior.os_key
+        $computerName = $prior.hostname.ToUpper()
+        $useDefaults  = $true
+        Write-Host "  Using: $($OsOptions[$osKey].Label) / $computerName" -ForegroundColor Green
+        Write-Host ''
+    } else {
+        Write-Host '  Manual selection.' -ForegroundColor Yellow; Write-Host ''
+    }
+}
+
+# --- OS Selection (manual) --------------------------------------------------
+
+if (-not $useDefaults) {
+    Write-Host '  Select OS to deploy:' -ForegroundColor Cyan
+    foreach ($k in ($OsOptions.Keys | Sort-Object)) {
+        Write-Host "    [$k] $($OsOptions[$k].Label)"
+    }
+    Write-Host ''
+    while ($osKey -notin $OsOptions.Keys) { $osKey = Read-Host '  Choice' }
+}
+
 $os = $OsOptions[$osKey]
-
 $wimPath = Join-Path $DeployShare $os.WimFile
 if (-not (Test-Path $wimPath)) {
-    Write-Host ''
     Write-Host "  WIM not found: $wimPath" -ForegroundColor Red
+    Write-Host "  Export with: dism /Export-Image /SourceImageFile:<iso-install.wim> /SourceIndex:<n> /DestinationImageFile:C:\deploy\images\$($os.WimFile | Split-Path -Leaf) /Compress:fast" -ForegroundColor Yellow
+    Read-Host '  Press Enter to reboot'; wpeutil reboot; exit
+}
+
+# --- Computer Name (manual) -------------------------------------------------
+
+if (-not $useDefaults) {
     Write-Host ''
-    Write-Host '  To prepare images on pc-deploy, run the WIM export script or' -ForegroundColor Yellow
-    Write-Host '  manually export from the ISO:' -ForegroundColor Yellow
-    Write-Host "    dism /Export-Image /SourceImageFile:D:\sources\install.wim /SourceIndex:<n> /DestImageFile:C:\deploy\images\$($os.WimFile | Split-Path -Leaf) /Compress:fast" -ForegroundColor Yellow
-    Read-Host '  Press Enter to reboot'
-    wpeutil reboot
-    exit
+    Write-Host '  Computer name: (1-15 chars, letters/numbers/hyphens e.g. JUNIPER-WS-01)' -ForegroundColor Cyan
+    Write-Host ''
+    while ($true) {
+        $computerName = (Read-Host '  Name').Trim().ToUpper()
+        if ($computerName -match '^[A-Z0-9]([A-Z0-9\-]{0,13}[A-Z0-9])?$' -and
+            $computerName.Length -ge 1 -and $computerName.Length -le 15) { break }
+        Write-Host '    Invalid. Letters/numbers/hyphens, max 15 chars.' -ForegroundColor Yellow
+    }
 }
 
-# ─── Computer Name ───────────────────────────────────────────────────────────
+# --- Disk 0 Info + Confirmation ---------------------------------------------
 
 Write-Host ''
-Write-Host '  Computer name:' -ForegroundColor Cyan
-Write-Host '    1-15 chars, letters / numbers / hyphens (e.g. JUNIPER-WS-01)'
-Write-Host ''
-
-$computerName = ''
-while ($true) {
-    $computerName = (Read-Host '  Name').Trim().ToUpper()
-    # NetBIOS: 1-15 chars, no leading/trailing hyphen, valid chars only
-    if ($computerName -match '^[A-Z0-9]([A-Z0-9\-]{0,13}[A-Z0-9])?$' -and
-        $computerName.Length -ge 1 -and $computerName.Length -le 15) { break }
-    Write-Host '    Invalid. Use letters, numbers, hyphens. Max 15 chars.' -ForegroundColor Yellow
-}
-
-# ─── Disk 0 Info + Confirmation ──────────────────────────────────────────────
-
-Write-Host ''
-Write-Host '  ── Target: Disk 0 ──────────────────────────────' -ForegroundColor Cyan
+Write-Host '  -- Target: Disk 0 ------------------------------------' -ForegroundColor Cyan
 $disk = Get-Disk | Where-Object Number -eq 0 | Select-Object -First 1
 if ($disk) {
     Write-Host "    Model : $($disk.FriendlyName)"
     Write-Host "    Size  : $([math]::Round($disk.Size/1GB, 0)) GB"
     Write-Host "    Style : $($disk.PartitionStyle)"
 }
-
 Write-Host ''
 Write-Host "    OS    : $($os.Label)"
 Write-Host "    Name  : $computerName"
 Write-Host ''
 Write-Host '  !! Disk 0 will be COMPLETELY WIPED !!' -ForegroundColor Red
 Write-Host ''
-
 $confirm = Read-Host '  Type YES to proceed, anything else to abort'
 if ($confirm -ne 'YES') {
     Write-Host '  Aborted.' -ForegroundColor Yellow
-    Read-Host '  Press Enter to reboot'
-    wpeutil reboot
-    exit
+    Read-Host '  Press Enter to reboot'; wpeutil reboot; exit
 }
 
-# ─── Partition Disk 0 (GPT / UEFI) ──────────────────────────────────────────
+# --- Partition Disk 0 (GPT / UEFI) -----------------------------------------
 
 Write-Host ''
 Write-Host '  Partitioning disk 0 (GPT/UEFI)...' -ForegroundColor Cyan
-
 $dpTxt = @'
 select disk 0
 clean
@@ -254,69 +303,81 @@ format quick fs=ntfs label="Windows"
 assign letter=C
 exit
 '@
-
 $dpFile = "$env:TEMP\juniper_diskpart.txt"
 $dpTxt | Set-Content $dpFile -Encoding ASCII
 $p = Start-Process diskpart -ArgumentList "/s `"$dpFile`"" -Wait -PassThru -NoNewWindow
 Remove-Item $dpFile -Force -ErrorAction SilentlyContinue
 if ($p.ExitCode -ne 0) {
     Write-Host "  diskpart failed (exit $($p.ExitCode))" -ForegroundColor Red
-    Read-Host '  Press Enter to exit'
-    exit
+    Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Partitioned: S: (EFI), C: (Windows).' -ForegroundColor Green
 
-# ─── Apply WIM ───────────────────────────────────────────────────────────────
+# --- Apply WIM --------------------------------------------------------------
 
 Write-Host ''
 Write-Host "  Applying $($os.Label) (index $($os.WimIndex))..." -ForegroundColor Cyan
 Write-Host '  This takes 10-20 minutes depending on disk speed.'
 Write-Host ''
-
 $p = Start-Process dism -ArgumentList "/Apply-Image /ImageFile:`"$wimPath`" /Index:$($os.WimIndex) /ApplyDir:C:\" -Wait -PassThru -NoNewWindow
 if ($p.ExitCode -ne 0) {
     Write-Host "  DISM apply failed (exit $($p.ExitCode))" -ForegroundColor Red
-    Read-Host '  Press Enter to exit'
-    exit
+    Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Image applied.' -ForegroundColor Green
 
-# ─── Inject Drivers (offline) ────────────────────────────────────────────────
+# --- Inject Drivers (offline) -----------------------------------------------
 
 Write-Host ''
 Write-Host '  Injecting hardware drivers...' -ForegroundColor Cyan
 Invoke-DriverInjection -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
 
-# ─── Inject unattend.xml with computer name ───────────────────────────────────
+# --- Inject unattend.xml with computer name ---------------------------------
 
 Write-Host ''
 Write-Host '  Writing unattend.xml...' -ForegroundColor Cyan
-
 $unattendSrc = Join-Path $DeployShare $os.Unattend
 if (-not (Test-Path $unattendSrc)) {
-    Write-Host "  WARN: Unattend not found at $unattendSrc — skipping." -ForegroundColor Yellow
+    Write-Host "  WARN: Unattend not found at $unattendSrc - skipping." -ForegroundColor Yellow
 } else {
     New-Item 'C:\Windows\Panther' -ItemType Directory -Force | Out-Null
-    $xml = Get-Content $unattendSrc -Raw
-    # Replace the wildcard ComputerName with the chosen name
-    $xml = $xml -replace '<ComputerName>\*</ComputerName>', "<ComputerName>$computerName</ComputerName>"
+    $xml = (Get-Content $unattendSrc -Raw) -replace '<ComputerName>\*</ComputerName>', "<ComputerName>$computerName</ComputerName>"
     $xml | Set-Content 'C:\Windows\Panther\unattend.xml' -Encoding UTF8
     Write-Host "  unattend.xml written (ComputerName=$computerName)." -ForegroundColor Green
 }
 
-# ─── Boot sector ─────────────────────────────────────────────────────────────
+# --- Pre-register in inventory ----------------------------------------------
+# Associates serial + all MACs + new name + OS before reboot.
+# The post-install agent (04-install-packages.ps1) does the full snapshot;
+# this just establishes the identity link early so the machine is findable
+# in inventory immediately and defaults will auto-populate on re-image.
+
+Write-Host ''
+Write-Host '  Registering in inventory...' -ForegroundColor DarkGray
+try {
+    $macsJson = ($allMacs | ForEach-Object { '"' + $_ + '"' }) -join ','
+    $nicsJson = ($allNics | ForEach-Object {
+        '{"mac":"' + $_['mac'] + '","name":"' + ($_['name'] -replace '"','') + '","type":"' + $_['type'] + '"}'
+    }) -join ','
+    $body = "{`"hostname`":`"$computerName`",`"mac`":`"$primaryMac`",`"macs`":[$macsJson],`"nics`":[$nicsJson],`"bios_serial`":`"$hwSerial`",`"chassis_serial`":`"$hwSerial`",`"manufacturer`":`"$hwMfr`",`"model`":`"$hwModel`",`"os_caption`":`"$($os.Label)`",`"computer_name`":`"$computerName`"}"
+    Invoke-RestMethod "$InvApi/ingest/endpoint" -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 10 | Out-Null
+    Write-Host '  Registered.' -ForegroundColor DarkGray
+} catch {
+    Write-Host '  Inventory registration skipped (server unreachable - will register post-install).' -ForegroundColor DarkGray
+}
+
+# --- Boot sector ------------------------------------------------------------
 
 Write-Host ''
 Write-Host '  Configuring UEFI boot...' -ForegroundColor Cyan
 $p = Start-Process bcdboot -ArgumentList 'C:\Windows /s S: /f UEFI' -Wait -PassThru -NoNewWindow
 if ($p.ExitCode -ne 0) {
     Write-Host "  bcdboot failed (exit $($p.ExitCode))" -ForegroundColor Red
-    Read-Host '  Press Enter to exit'
-    exit
+    Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Boot sector configured.' -ForegroundColor Green
 
-# ─── Cleanup and reboot ───────────────────────────────────────────────────────
+# --- Cleanup and reboot -----------------------------------------------------
 
 try { net use $DeployShare /delete *>$null } catch {}
 
