@@ -66,21 +66,25 @@ Set-SmbServerConfiguration -RejectUnencryptedAccess $false -Force
 Grant-SmbShareAccess -Name 'deploy$' -AccountName 'Everyone' -AccessRight Read -Force | Out-Null
 Write-Host '    SMB unencrypted access enabled; Everyone:Read on deploy$.' -ForegroundColor Green
 
-# 6. Allow null-session (unauthenticated) access to deploy$ specifically.
-#    WinPE connects to SMB shares without credentials (null session). Windows 10/11
-#    blocks null sessions by default. Listing the share in NullSessionShares with
-#    RestrictNullSessAccess=0 allows WinPE to read the share on an internal network.
-Write-Host '    Enabling null-session access for deploy$ (required for WinPE)...'
+# 6. Ensure null-session is NOT enabled (WinPE authenticates with baked credentials).
+#    Tighten the registry in case it was ever set to allow null sessions.
+Write-Host '    Enforcing null-session block (WinPE uses baked junadmin credentials)...'
 $lmParams = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
-Set-ItemProperty -Path $lmParams -Name 'NullSessionShares' -Value @('deploy$') -Type MultiString
-Set-ItemProperty -Path $lmParams -Name 'RestrictNullSessAccess' -Value 0 -Type DWord
+Set-ItemProperty -Path $lmParams -Name 'NullSessionShares'       -Value @()  -Type MultiString -Force
+Set-ItemProperty -Path $lmParams -Name 'RestrictNullSessAccess'  -Value 1    -Type DWord       -Force
+Write-Host '    Null-session restricted.' -ForegroundColor Green
+
+# 7. Grant junadmin Read access to deploy$ share and NTFS folder.
+#    WinPE connects as junadmin -- credentials are baked into the WIM at build time
+#    by running scripts\wim-bake-credentials.ps1 from ENG-2.
+Write-Host '    Granting junadmin Read on deploy$...'
+Grant-SmbShareAccess -Name 'deploy$' -AccountName 'junadmin' -AccessRight Read -Force | Out-Null
 $acl  = Get-Acl 'C:\deploy'
 $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    'Everyone', 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    'junadmin', 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 $acl.AddAccessRule($rule)
 Set-Acl 'C:\deploy' $acl
-Restart-Service LanmanServer -Force
-Write-Host '    Null-session access enabled for deploy$.' -ForegroundColor Green
+Write-Host '    junadmin:Read on deploy$.' -ForegroundColor Green
 
 Write-Host ''
 Write-Host '==> Remote access ready.' -ForegroundColor Green

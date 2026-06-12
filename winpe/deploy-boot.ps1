@@ -83,27 +83,38 @@ if (-not $connected) {
 }
 
 # -- Map deploy share (15s timeout -- net use can hang if SMB is blocked) -----
+# Credentials below are substituted at WIM build time by wim-bake-credentials.ps1.
+# The placeholder string must never be replaced with a real password in this file.
+$DeployUser = 'junadmin'
+$DeployPass = '##WINPE_PASS##'
 Write-Host "  Connecting to deploy share (15s timeout)..." -ForegroundColor DarkGray
 $netJob = Start-Job -ScriptBlock {
-    param($share)
-    net use $share /persistent:no 2>&1
-} -ArgumentList $DeployShare
+    param($share, $user, $pass)
+    net use $share /user:$user $pass /persistent:no 2>&1
+} -ArgumentList $DeployShare, $DeployUser, $DeployPass
 $null = Wait-Job $netJob -Timeout 15
 if ($netJob.State -eq 'Running') {
     Stop-Job $netJob
     Remove-Job $netJob -Force
     Write-Host "  Deploy share connection timed out." -ForegroundColor Red
-    Write-Host '  Check: RejectUnencryptedAccess on pc-deploy (run 01a-enable-remote-access.ps1)' -ForegroundColor Yellow
+    Write-Host '  Check: SMB port 445 open on pc-deploy' -ForegroundColor Yellow
     Write-Host '  Check: deploy$ share exists (run 01d-setup-deploy-share.ps1)' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
     exit
 }
+$netOut = Receive-Job $netJob
 Remove-Job $netJob -Force
+if ($netOut -match 'error|denied|failed') {
+    Write-Host "  Deploy share auth failed: $netOut" -ForegroundColor Red
+    Write-Host '  WIM may have stale credentials -- run wim-bake-credentials.ps1 on ENG-2 to rebuild.' -ForegroundColor Yellow
+    Read-Host '  Press Enter to reboot'
+    wpeutil reboot
+    exit
+}
 
 if (-not (Test-Path $DeployShare)) {
     Write-Host "  Cannot reach $DeployShare" -ForegroundColor Red
-    Write-Host '  Verify deploy$ share is accessible from WinPE (Everyone:Read).' -ForegroundColor Yellow
     Write-Host '  Run 01a-enable-remote-access.ps1 and 01d-setup-deploy-share.ps1 on pc-deploy.' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
