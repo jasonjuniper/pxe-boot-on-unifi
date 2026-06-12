@@ -1,9 +1,11 @@
 # wim-bake-credentials.ps1
-# Run from ENG-2 (interactive -- prompts for the junadmin password once).
-#
-# Substitutes the password into deploy-boot.ps1, pushes the credentialed version
-# to pc-deploy, triggers the WIM rebuild, waits for it, then scrubs the
+# Substitutes the junadmin password into deploy-boot.ps1, pushes the credentialed
+# version to pc-deploy, triggers the WIM rebuild, waits for it, then scrubs the
 # plain-text credential file from the share.
+#
+# Password source (in priority order):
+#   1. 1Password CLI (op.exe) -- reads op://Private/pc-deploy/password silently
+#   2. Interactive Read-Host prompt (fallback if op is unavailable/locked)
 #
 # The password lives only in the WIM -- never in this repo or in any file on disk.
 #
@@ -28,13 +30,27 @@ if ($template -notmatch '##WINPE_PASS##') {
 
 Write-Host ''
 Write-Host '  Juniper WinPE credential bake' -ForegroundColor Cyan
-Write-Host '  Enter the junadmin password. It will be baked into the WIM and' -ForegroundColor DarkGray
-Write-Host '  never written to disk in plain text.' -ForegroundColor DarkGray
-Write-Host ''
-$secPass = Read-Host '  junadmin password' -AsSecureString
-$bstr    = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPass)
-$pass    = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+# Attempt to read password from 1Password CLI (no prompt, no output to console)
+$pass = $null
+$opExe = 'C:\Users\ENG2\AppData\Local\Microsoft\WinGet\Packages\AgileBits.1Password.CLI_Microsoft.Winget.Source_8wekyb3d8bbwe\op.exe'
+if (Test-Path $opExe) {
+    try {
+        $pass = & $opExe read 'op://Private/pc-deploy/password' 2>$null
+        if ($pass) { Write-Host '  Password: read from 1Password.' -ForegroundColor DarkGray }
+    } catch { $pass = $null }
+}
+
+# Fall back to interactive prompt if op unavailable or returned nothing
+if (-not $pass) {
+    Write-Host '  Enter the junadmin password. It will be baked into the WIM and' -ForegroundColor DarkGray
+    Write-Host '  never written to disk in plain text.' -ForegroundColor DarkGray
+    Write-Host ''
+    $secPass = Read-Host '  junadmin password' -AsSecureString
+    $bstr    = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPass)
+    $pass    = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+}
 
 if (-not $pass) { Write-Error 'No password entered.'; exit 1 }
 

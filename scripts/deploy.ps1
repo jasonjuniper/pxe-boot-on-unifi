@@ -184,9 +184,27 @@ Write-Host ''
 $prior = $null
 if ($serialClean) {
     try {
-        $prior = Invoke-RestMethod "$InvApi/api/imaging/preflight?serial=$([uri]::EscapeDataString($hwSerial))" `
+        $results = Invoke-RestMethod "$InvApi/api/devices?q=$([uri]::EscapeDataString($hwSerial))" `
             -TimeoutSec 5 -ErrorAction Stop
-        if (-not $prior.found) { $prior = $null }
+        # Find exact serial match (search returns partial matches too)
+        $match = @($results | Where-Object { $_.serial_number -ieq $hwSerial }) | Select-Object -First 1
+        if (-not $match) { $match = @($results) | Select-Object -First 1 }
+        if ($match) {
+            # Map inventory OS string to local os_key ('1'=Win11Home, '2'=Win11Pro, '3'=Win10Pro)
+            $osKeyFromInv = switch -Wildcard ($match.os) {
+                '*11*Home*'  { '1' }
+                '*11*Pro*'   { '2' }
+                '*10*'       { '3' }
+                default      { '2' }   # default to Win11 Pro
+            }
+            $prior = [PSCustomObject]@{
+                device_id = $match.id
+                hostname  = $match.hostname
+                os        = $match.os
+                os_key    = $osKeyFromInv
+                last_seen = $match.last_seen
+            }
+        }
     } catch { $prior = $null }
 }
 
@@ -348,14 +366,26 @@ if (-not (Test-Path $unattendSrc)) {
 
 Write-Host ''
 Write-Host '  Registering in inventory...' -ForegroundColor DarkGray
+$invDeviceId = if ($prior) { $prior.device_id } else { $null }
 try {
-    $macsJson = ($allMacs | ForEach-Object { '"' + $_ + '"' }) -join ','
-    $nicsJson = ($allNics | ForEach-Object {
+    $macsJson    = ($allMacs | ForEach-Object { '"' + $_ + '"' }) -join ','
+    $nicsJson    = ($allNics | ForEach-Object {
         '{"mac":"' + $_['mac'] + '","name":"' + ($_['name'] -replace '"','') + '","type":"' + $_['type'] + '"}'
     }) -join ','
-    $body = "{`"hostname`":`"$computerName`",`"mac`":`"$primaryMac`",`"macs`":[$macsJson],`"nics`":[$nicsJson],`"bios_serial`":`"$hwSerial`",`"chassis_serial`":`"$hwSerial`",`"manufacturer`":`"$hwMfr`",`"model`":`"$hwModel`",`"os_caption`":`"$($os.Label)`",`"computer_name`":`"$computerName`"}"
-    Invoke-RestMethod "$InvApi/ingest/endpoint" -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 10 | Out-Null
-    Write-Host '  Registered.' -ForegroundColor DarkGray
+    $ethMacs     = @($allNics | Where-Object { $_['type'] -eq 'ethernet' } | ForEach-Object { '"' + $_['mac'] + '"' }) -join ','
+    $wifiMacs    = @($allNics | Where-Object { $_['type'] -eq 'wifi'     } | ForEach-Object { '"' + $_['mac'] + '"' }) -join ','
+    $body = "{`"hostname`":`"$computerName`",`"mac`":`"$primaryMac`",`"macs`":[$macsJson],`"ethernet_macs`":[$ethMacs],`"wireless_macs`":[$wifiMacs],`"nics`":[$nicsJson],`"bios_serial`":`"$hwSerial`",`"chassis_serial`":`"$hwSerial`",`"manufacturer`":`"$hwMfr`",`"model`":`"$hwModel`",`"os_caption`":`"$($os.Label)`",`"computer_name`":`"$computerName`"}"
+    $invResp     = Invoke-RestMethod "$InvApi/ingest/endpoint" -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 10
+    $invDeviceId = if ($invResp.device_id) { $invResp.device_id } else { $invDeviceId }
+    Write-Host "  Registered (device_id=$invDeviceId)." -ForegroundColor DarkGray
+
+    # PATCH: record the chosen OS and imaging note
+    if ($invDeviceId) {
+        $today    = (Get-Date -Format 'yyyy-MM-dd')
+        $patchBody = "{`"os`":`"$($os.Label)`",`"os_version`":`"`",`"notes`":`"Imaged $today - Juniper IT`"}"
+        Invoke-RestMethod "$InvApi/api/device/$invDeviceId" -Method PATCH -Body $patchBody `
+            -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+    }
 } catch {
     Write-Host '  Inventory registration skipped (server unreachable - will register post-install).' -ForegroundColor DarkGray
 }
@@ -370,6 +400,58 @@ if ($p.ExitCode -ne 0) {
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Boot sector configured.' -ForegroundColor Green
+
+# --- UEFI boot order: Windows first, PXE removed ----------------------------
+
+Write-Host ''
+Write-Host '  Setting UEFI boot order...' -ForegroundColor Cyan
+
+# Move Windows Boot Manager to top of EFI boot order
+$p = Start-Process bcdedit -ArgumentList '/set "{fwbootmgr}" displayorder "{bootmgr}" /addfirst' `
+    -Wait -PassThru -NoNewWindow `
+    -RedirectStandardOutput "$env:TEMP\bcd1_o.txt" `
+    -RedirectStandardError  "$env:TEMP\bcd1_e.txt"
+if ($p.ExitCode -eq 0) {
+    Write-Host '  Windows Boot Manager: first in EFI order.' -ForegroundColor Green
+} else {
+    $bcdErr = (Get-Content "$env:TEMP\bcd1_e.txt" -ErrorAction SilentlyContinue) -join ' '
+    Write-Host "  WARN: Boot order update failed (exit $($p.ExitCode)): $bcdErr" -ForegroundColor Yellow
+}
+
+# Enumerate firmware entries and remove PXE / EFI Network boot options
+$fwOut = "$env:TEMP\bcd_fw.txt"
+Start-Process bcdedit -ArgumentList '/enum firmware' -Wait -NoNewWindow `
+    -RedirectStandardOutput $fwOut `
+    -RedirectStandardError  "$env:TEMP\bcd_fwe.txt" | Out-Null
+$fwLines    = Get-Content $fwOut -ErrorAction SilentlyContinue
+$pxeGuid    = $null
+$pxeRemoved = 0
+foreach ($fwLine in $fwLines) {
+    if ($fwLine -match '^\s+identifier\s+(\{[0-9a-fA-F\-]+\})') {
+        $pxeGuid = $Matches[1]
+    }
+    if ($pxeGuid -and
+        $pxeGuid -notin @('{bootmgr}','{fwbootmgr}') -and
+        $fwLine  -match 'description\s+.*(PXE|EFI Network|IPv4|IPv6|Network Boot)') {
+        $pdel = Start-Process bcdedit -ArgumentList "/delete `"$pxeGuid`"" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:TEMP\bcd_del_o.txt" `
+            -RedirectStandardError  "$env:TEMP\bcd_del_e.txt"
+        if ($pdel.ExitCode -eq 0) {
+            Write-Host "  Removed PXE entry: $pxeGuid" -ForegroundColor DarkGray
+            $pxeRemoved++
+        } else {
+            Write-Host "  PXE entry deprioritized (firmware-protected): $pxeGuid" -ForegroundColor DarkGray
+        }
+        $pxeGuid = $null
+    }
+    if ($fwLine -match '^\s*$') { $pxeGuid = $null }
+}
+if ($pxeRemoved -gt 0) {
+    Write-Host "  PXE: $pxeRemoved boot entr$(if ($pxeRemoved -eq 1){'y'}else{'ies'}) removed." -ForegroundColor Green
+} else {
+    Write-Host '  PXE: no deletable entries found (will be lower priority than Windows).' -ForegroundColor DarkGray
+}
 
 # --- Cleanup and reboot -----------------------------------------------------
 
