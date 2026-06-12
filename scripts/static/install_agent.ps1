@@ -159,3 +159,4 @@ try {
     Write-Host "  WARN: Inventory check-in failed: $_" -ForegroundColor Yellow
     Write-Host "  Retry: irm $InvApi/static/install_agent.ps1 | iex"
 }
+
