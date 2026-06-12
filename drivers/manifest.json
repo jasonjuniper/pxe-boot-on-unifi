@@ -1,12 +1,13 @@
 {
   "_comment": "Driver injection manifest for deploy.ps1 Invoke-DriverInjection.",
   "_comment2": "Each key under 'models' must match the normalized WMI model key OR list exact WMI model strings in wmiModels.",
-  "_comment3": "driverPath is relative to deploy$\\drivers\\ on pc-deploy.",
+  "_comment3": "driverPath is relative to deploy$\\drivers\\ on pc-deploy. DISM uses /Recurse so subfolders are fine.",
+  "_comment4": "Driver folders (binaries only, not tracked in git): C:\\deploy\\drivers\\ on pc-deploy.",
   "models": {
     "dell-xps-13-9380": {
-      "description": "Intel RST AHCI/RAID controller for Dell XPS 13 9380 (Cannon Point-LP, 8th gen Whiskey Lake). Covers DEV_9DD7 (Cannon Point-LP SATA RAID). Required when BIOS storage controller is set to RAID/RST mode.",
+      "description": "Full driver pack for Dell XPS 13 9380 (Cannon Point-LP, 8th gen Whiskey Lake-U). Subfolders: rst (Intel RST RAID, DEV_9DD7), wifi (Intel Wireless-AC 9560 netwtw08 v21.30, DEV_9DF0), serial-io (Intel Serial IO CNL GPIO+I2C v30.100.2020.7 - touchpad), audio-realtek (Realtek APO v11.0.6000.795 + service), heci (Intel ME).",
       "wmiModels": ["XPS 13 9380"],
-      "driverPath": "intel-rst-cannon-point-lp"
+      "driverPath": "dell-xps-13-9380"
     }
   }
 }
