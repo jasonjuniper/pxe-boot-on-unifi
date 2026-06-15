@@ -19,7 +19,8 @@
 param(
     [int]   $DiskNumber = -1,         # -1 = interactive picker
     [string] $DeployServer = '192.168.5.141',
-    [string] $MediaSource  = $null    # override source path (default: \\server\deploy$\winpe-media)
+    [string] $MediaSource  = $null,   # override source path (default: \\server\deploy$\winpe-media)
+    [switch] $Force                   # skip the interactive YES confirmation (for scripted/elevated runs)
 )
 
 Set-StrictMode -Version Latest
@@ -128,14 +129,36 @@ if (-not $targetDisk) {
     exit 1
 }
 
+# Hard safety checks - refuse to touch anything that looks like an internal drive
+if ($targetDisk.BusType -ne 'USB') {
+    Write-Err "SAFETY: Disk $DiskNumber BusType is '$($targetDisk.BusType)', not USB. Aborting."
+    exit 1
+}
+if ($targetDisk.IsSystem) {
+    Write-Err "SAFETY: Disk $DiskNumber is the system disk. Aborting."
+    exit 1
+}
+if ($targetDisk.IsBoot) {
+    Write-Err "SAFETY: Disk $DiskNumber is the boot disk. Aborting."
+    exit 1
+}
+if ($targetDisk.Size -gt 64GB) {
+    Write-Err "SAFETY: Disk $DiskNumber is $([math]::Round($targetDisk.Size/1GB,1)) GB, which exceeds the 64 GB limit for a WinPE USB. Aborting."
+    exit 1
+}
+
 $gb = [math]::Round($targetDisk.Size / 1GB, 1)
 Write-Host ''
 Write-Host "  Target: Disk $DiskNumber — $($targetDisk.FriendlyName) ($gb GB)" -ForegroundColor Yellow
 Write-Host ''
-$confirm = Read-Host '  Type YES to erase this disk and write WinPE'
-if ($confirm -ne 'YES') {
-    Write-Host '  Aborted.' -ForegroundColor DarkGray
-    exit 0
+if ($Force) {
+    Write-Host '  -Force specified; skipping confirmation.' -ForegroundColor DarkGray
+} else {
+    $confirm = Read-Host '  Type YES to erase this disk and write WinPE'
+    if ($confirm -ne 'YES') {
+        Write-Host '  Aborted.' -ForegroundColor DarkGray
+        exit 0
+    }
 }
 
 # ─── Format USB with diskpart ─────────────────────────────────────────────────
@@ -144,6 +167,7 @@ Write-Step "Formatting Disk $DiskNumber as FAT32 (MBR, single partition)..."
 $diskpartScript = @"
 select disk $DiskNumber
 clean
+convert mbr
 create partition primary
 select partition 1
 active
@@ -192,7 +216,7 @@ Write-Step "Copying WinPE media from $MediaSource to $usbDrive ..."
 $robocopyOut = "$env:TEMP\robocopy-usb-out.txt"
 $robocopyErr = "$env:TEMP\robocopy-usb-err.txt"
 $p = Start-Process -FilePath 'C:\Windows\System32\Robocopy.exe' `
-    -ArgumentList "`"$MediaSource`" `"$usbDrive\`" /E /NP /NFL /NDL" `
+    -ArgumentList "`"$MediaSource`" `"$usbDrive`" /E /NP /NFL /NDL" `
     -NoNewWindow -Wait -PassThru `
     -RedirectStandardOutput $robocopyOut `
     -RedirectStandardError  $robocopyErr
