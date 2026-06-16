@@ -1,4 +1,4 @@
-# install_agent.ps1 — Juniper Design Inventory Agent
+# install_agent.ps1 - Juniper Design Inventory Agent
 # Served dynamically by the inventory server; ##INVENTORY_API## is replaced at serve time.
 #
 # One-liner install / update:
@@ -7,13 +7,18 @@
 # What this does:
 #   1. Collects machine identity + full hardware snapshot from WMI
 #   2. POSTs to /ingest/endpoint to register or update this device in the inventory DB
-#   3. Gracefully skips sections that aren't available (VMs, headless, etc.)
+#   3. Gracefully skips sections that aren't available (VMs, headless, WinPE, etc.)
+#
+# WinPE / deploy.ps1 usage:
+#   Set $JUNIPER_HOSTNAME_OVERRIDE = $computerName before calling this via Invoke-Expression.
+#   $env:COMPUTERNAME is 'MINWINPC' in WinPE; the override passes the real target name.
+#   Leave unset (or $null) for normal post-install runs.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $InvApi   = '##INVENTORY_API##'
 $AgentVer = '1.0.0'
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ---- Helpers ----------------------------------------------------------------
 
 function Get-MacAddresses {
     Get-WmiObject Win32_NetworkAdapterConfiguration |
@@ -31,7 +36,7 @@ function Get-PrimaryIP {
         }
 }
 
-# ── Collect WMI data ──────────────────────────────────────────────────────────
+# ---- Collect WMI data -------------------------------------------------------
 
 $cs   = Get-WmiObject Win32_ComputerSystem
 $os   = Get-WmiObject Win32_OperatingSystem
@@ -61,7 +66,7 @@ if ($enc.ChassisTypes) {
     $chassisType = $chassisMap[[int]($enc.ChassisTypes | Select-Object -First 1)]
 }
 
-# ── Security / compliance info ────────────────────────────────────────────────
+# ---- Security / compliance info ---------------------------------------------
 
 $blState = $null
 try {
@@ -89,7 +94,7 @@ try { $tpmPresent = [bool](Get-Tpm -ErrorAction Stop).TpmPresent } catch {}
 $secureBoot = $null
 try { $secureBoot = [bool](Confirm-SecureBootUEFI -ErrorAction Stop) } catch {}
 
-# ── Installed software snapshot ───────────────────────────────────────────────
+# ---- Installed software snapshot --------------------------------------------
 
 $software = @()
 try {
@@ -108,55 +113,60 @@ try {
     )
 } catch {}
 
-# ── Build payload ─────────────────────────────────────────────────────────────
+# ---- Build payload ----------------------------------------------------------
+# $JUNIPER_HOSTNAME_OVERRIDE: set by deploy.ps1 in WinPE before calling this
+# script via Invoke-Expression. WinPE reports 'MINWINPC' for $env:COMPUTERNAME;
+# the override passes the real target computer name chosen during imaging.
+# Leave unset (or $null) for normal post-install runs.
+
+$resolvedName = if ($JUNIPER_HOSTNAME_OVERRIDE) { $JUNIPER_HOSTNAME_OVERRIDE } else { $env:COMPUTERNAME }
 
 $payload = [ordered]@{
-    agent_version   = $AgentVer
-    computer_name   = $env:COMPUTERNAME
-    hostname        = $env:COMPUTERNAME
-    mac             = $macs | Select-Object -First 1
-    macs            = $macs
-    ip              = $primaryIp
-    manufacturer    = $cs.Manufacturer
-    model           = $cs.Model
-    bios_serial     = $bios.SerialNumber
-    chassis_serial  = $enc.SerialNumber
-    bios_version    = $bios.SMBIOSBIOSVersion
-    chassis_type    = $chassisType
-    os_caption      = $os.Caption
-    os_version      = $os.Version
-    os_build        = $os.BuildNumber
-    cpu_name        = ($cpu.Name -replace '\s+', ' ').Trim()
-    cpu_cores       = [int]$cpu.NumberOfCores
-    cpu_threads     = [int]$cpu.NumberOfLogicalProcessors
-    ram_gb          = $ramGb
-    disk_total_gb   = $diskGb
-    gpu_name        = $gpu.Name
-    gpu_vram_gb     = $gpuVram
-    bitlocker_state = $blState
+    agent_version    = $AgentVer
+    computer_name    = $resolvedName
+    hostname         = $resolvedName
+    mac              = $macs | Select-Object -First 1
+    macs             = $macs
+    ip               = $primaryIp
+    manufacturer     = $cs.Manufacturer
+    model            = $cs.Model
+    bios_serial      = $bios.SerialNumber
+    chassis_serial   = $enc.SerialNumber
+    bios_version     = $bios.SMBIOSBIOSVersion
+    chassis_type     = $chassisType
+    os_caption       = $os.Caption
+    os_version       = $os.Version
+    os_build         = $os.BuildNumber
+    cpu_name         = ($cpu.Name -replace '\s+', ' ').Trim()
+    cpu_cores        = [int]$cpu.NumberOfCores
+    cpu_threads      = [int]$cpu.NumberOfLogicalProcessors
+    ram_gb           = $ramGb
+    disk_total_gb    = $diskGb
+    gpu_name         = $gpu.Name
+    gpu_vram_gb      = $gpuVram
+    bitlocker_state  = $blState
     defender_enabled = $defEnabled
-    tpm_present     = $tpmPresent
-    secure_boot     = $secureBoot
-    domain_joined   = [bool]$cs.PartOfDomain
-    domain          = $cs.Domain
-    software        = $software
-    raw             = @{
-        bios_date       = $bios.ReleaseDate
-        os_install_date = $os.InstallDate
-        gpu_driver      = $gpu.DriverVersion
+    tpm_present      = $tpmPresent
+    secure_boot      = $secureBoot
+    domain_joined    = [bool]$cs.PartOfDomain
+    domain           = $cs.Domain
+    software         = $software
+    raw              = @{
+        bios_date        = $bios.ReleaseDate
+        os_install_date  = $os.InstallDate
+        gpu_driver       = $gpu.DriverVersion
         total_disk_count = $disks.Count
     }
 }
 
-# ── POST to inventory ─────────────────────────────────────────────────────────
+# ---- POST to inventory ------------------------------------------------------
 
 try {
     $body = $payload | ConvertTo-Json -Depth 6
     $r    = Invoke-RestMethod "$InvApi/ingest/endpoint" `
                 -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20
-    Write-Host "  Inventory: registered device_id=$($r.device_id) ($env:COMPUTERNAME)" -ForegroundColor Green
+    Write-Host "  Inventory: registered device_id=$($r.device_id) ($resolvedName)" -ForegroundColor Green
 } catch {
     Write-Host "  WARN: Inventory check-in failed: $_" -ForegroundColor Yellow
     Write-Host "  Retry: irm $InvApi/static/install_agent.ps1 | iex"
 }
-
