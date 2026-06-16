@@ -16,8 +16,8 @@
 #
 # 1PASSWORD SYSTEM CONTEXT NOTE:
 # op CLI requires OP_SERVICE_ACCOUNT_TOKEN env var when running non-interactively
-# as SYSTEM. Set this in the JuniperInventory service environment or in
-# HKLM:\SYSTEM\CurrentControlSet\Services\JuniperImaging\Environment before imaging.
+# as SYSTEM. Set this in HKLM:\SYSTEM\CurrentControlSet\Services\JuniperImaging\Environment
+# before imaging. Credential item: op://Private/pc-deploy/password (also in fallout-automation vault).
 #
 # USAGE: .\04-install-packages.ps1
 #        .\04-install-packages.ps1 -PackageShare \\pc-deploy\deploy$ -DryRun
@@ -271,8 +271,9 @@ if (-not $DryRun) {
             throw 'OP_SERVICE_ACCOUNT_TOKEN not set - cannot authenticate op CLI as SYSTEM'
         }
 
-        # TODO: Replace with confirmed 1Password item path for JuniperAdmin workstation password
-        $junadminPass = & $opExe read 'op://Private/junadmin/password' 2>$null
+        # Item "pc-deploy" (Private vault) holds all imaging credentials
+        # including the JuniperAdmin local admin password for imaged workstations.
+        $junadminPass = & $opExe read 'op://Private/pc-deploy/password' 2>$null
         if (-not $junadminPass) { throw 'op read returned empty' }
 
         $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
@@ -281,7 +282,7 @@ if (-not $DryRun) {
         Write-Log 'JuniperAdmin password updated'
     } catch {
         Write-Log "WARN: Could not set JuniperAdmin password: $_" -Level WARN
-        Write-Log 'Run manually after login: op read op://Private/junadmin/password | Set-LocalUser -Name JuniperAdmin ...' -Level WARN
+        Write-Log 'Run manually after login: op read op://Private/pc-deploy/password | Set-LocalUser -Name JuniperAdmin ...' -Level WARN
     }
 }
 
