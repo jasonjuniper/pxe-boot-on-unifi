@@ -29,6 +29,41 @@ $DeployServer = '192.168.5.141'   # pc-deploy - use IP, DNS may not work in WinP
 $DeployShare  = "\\$DeployServer\deploy$"
 $InvApi       = "http://$DeployServer`:8080"
 
+# Write-DeployLog: writes a line to both the target drive AND the remote inventory log.
+# Called during the WinPE phase so every step is visible on pc-deploy in real time.
+# $Script:WpeTargetName is set once the computer name is known (later in the script).
+function Write-DeployLog {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [ValidateSet('INFO','WARN','ERROR')][string]$Level = 'INFO'
+    )
+    $ts    = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $name  = if ($Script:WpeTargetName) { $Script:WpeTargetName } else { 'winpe' }
+    $entry = "$ts  [$($Level.PadRight(5))]  [winpe                 ]  $Message"
+
+    # Write to target drive if staging paths are known
+    if ($Script:WpeMasterLog) {
+        Add-Content -LiteralPath $Script:WpeMasterLog -Value $entry -Encoding UTF8 -ErrorAction SilentlyContinue
+    }
+    if ($Script:WpePhaseLog) {
+        Add-Content -LiteralPath $Script:WpePhaseLog  -Value $entry -Encoding UTF8 -ErrorAction SilentlyContinue
+    }
+
+    # Mirror to inventory server (fire-and-forget, 2s timeout)
+    try {
+        $body = [ordered]@{ computer_name = $name; lines = @($entry) } | ConvertTo-Json -Compress
+        Invoke-RestMethod "$InvApi/ingest/imaging-log" `
+            -Method POST -Body $body -ContentType 'application/json' `
+            -TimeoutSec 2 -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+
+    Write-Host $entry
+}
+
+$Script:WpeTargetName = $null   # set after computer name is chosen
+$Script:WpeMasterLog  = $null   # set after staging paths are created on target
+$Script:WpePhaseLog   = $null
+
 $OsOptions = @{
     '1' = @{
         Label    = 'Windows 11 Home'
@@ -372,6 +407,24 @@ if (-not $useDefaults) {
     }
 }
 
+# Name is now known - set for Write-DeployLog remote log key
+$Script:WpeTargetName = $computerName
+
+# Send first remote log entry immediately so the machine appears on pc-deploy
+try {
+    $ts0   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $body0 = [ordered]@{
+        computer_name = $computerName
+        lines = @(
+            "$ts0  [INFO ]  [winpe                 ]  === Juniper Imaging Start ===",
+            "$ts0  [INFO ]  [winpe                 ]  Machine: $computerName | OS: $($OsOptions[$osKey].Label)",
+            "$ts0  [INFO ]  [winpe                 ]  Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
+        )
+    } | ConvertTo-Json -Compress
+    Invoke-RestMethod "$InvApi/ingest/imaging-log" -Method POST -Body $body0 `
+        -ContentType 'application/json' -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
+} catch {}
+
 # --- Disk 0 Info + Confirmation ---------------------------------------------
 
 Write-Host ''
@@ -480,19 +533,14 @@ foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1','07-remove-bl
 
 Write-Host '  Post-install automation staged (SetupComplete + orchestrator + 4 phase scripts).' -ForegroundColor Green
 
-# Write initial WinPE log entry to the target's master imaging log
-$masterLog = "$jsRoot\imaging.log"
-$winpeLog  = "$jsLogs\winpe.log"
-$ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-$winpeLogLines = @(
-    "$ts  [INFO ]  [winpe                 ]  === Juniper Imaging Start ===",
-    "$ts  [INFO ]  [winpe                 ]  Machine: $computerName | OS: $($os.Label)",
-    "$ts  [INFO ]  [winpe                 ]  Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
-)
-foreach ($line in $winpeLogLines) {
-    Add-Content -LiteralPath $masterLog -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
-    Add-Content -LiteralPath $winpeLog  -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
-}
+# Set staging log paths so Write-DeployLog can write to them
+$Script:WpeMasterLog = "$jsRoot\imaging.log"
+$Script:WpePhaseLog  = "$jsLogs\winpe.log"
+
+# Write imaging-start log (local on target + remote on pc-deploy)
+Write-DeployLog "=== Juniper Imaging Start ==="
+Write-DeployLog "Machine: $computerName | OS: $($os.Label)"
+Write-DeployLog "Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
 
 # --- Pre-register in inventory ----------------------------------------------
 # Uses the inventory agent directly - same data gathering as post-install.
@@ -586,12 +634,7 @@ if ($pxeRemoved -gt 0) {
 
 # --- Write final WinPE log entry before disconnecting share -----------------
 
-$masterLog = 'C:\ProgramData\JuniperSetup\imaging.log'
-$winpeLog  = 'C:\ProgramData\JuniperSetup\logs\winpe.log'
-$ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-$line = "$ts  [INFO ]  [winpe                 ]  WinPE phase complete - rebooting into Windows"
-Add-Content -LiteralPath $masterLog -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
-Add-Content -LiteralPath $winpeLog  -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+Write-DeployLog "WinPE phase complete - rebooting into Windows"
 
 # --- Cleanup and reboot -----------------------------------------------------
 
