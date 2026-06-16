@@ -449,29 +449,24 @@ if (-not (Test-Path $unattendSrc)) {
 }
 
 # --- Pre-register in inventory ----------------------------------------------
-# Associates serial + all MACs + new name + OS before reboot.
-# The post-install agent (04-install-packages.ps1) does the full snapshot;
-# this just establishes the identity link early so the machine is findable
-# in inventory immediately and defaults will auto-populate on re-image.
+# Uses the inventory agent directly - same data gathering as post-install.
+# $JUNIPER_HOSTNAME_OVERRIDE passes the target computer name since WinPE
+# reports 'MINWINPC' for $env:COMPUTERNAME.
 
 Write-Host ''
 Write-Host '  Registering in inventory...' -ForegroundColor DarkGray
 $invDeviceId = if ($prior) { $prior.device_id } else { $null }
 try {
-    $macsJson    = ($allMacs | ForEach-Object { '"' + $_ + '"' }) -join ','
-    $nicsJson    = ($allNics | ForEach-Object {
-        '{"mac":"' + $_['mac'] + '","name":"' + ($_['name'] -replace '"','') + '","type":"' + $_['type'] + '"}'
-    }) -join ','
-    $ethMacs     = @($allNics | Where-Object { $_['type'] -eq 'ethernet' } | ForEach-Object { '"' + $_['mac'] + '"' }) -join ','
-    $wifiMacs    = @($allNics | Where-Object { $_['type'] -eq 'wifi'     } | ForEach-Object { '"' + $_['mac'] + '"' }) -join ','
-    $body = "{`"hostname`":`"$computerName`",`"mac`":`"$primaryMac`",`"macs`":[$macsJson],`"ethernet_macs`":[$ethMacs],`"wireless_macs`":[$wifiMacs],`"nics`":[$nicsJson],`"bios_serial`":`"$hwSerial`",`"chassis_serial`":`"$hwSerial`",`"manufacturer`":`"$hwMfr`",`"model`":`"$hwModel`",`"os_caption`":`"$($os.Label)`",`"computer_name`":`"$computerName`"}"
-    $invResp     = Invoke-RestMethod "$InvApi/ingest/endpoint" -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 10
-    $invDeviceId = if ($invResp.device_id) { $invResp.device_id } else { $invDeviceId }
-    Write-Host "  Registered (device_id=$invDeviceId)." -ForegroundColor DarkGray
-
+    $JUNIPER_HOSTNAME_OVERRIDE = $computerName
+    Invoke-Expression (Invoke-RestMethod "$InvApi/static/install_agent.ps1" -TimeoutSec 10)
+    # Look up device_id by serial so we can PATCH the OS/notes below
+    if (-not $invDeviceId) {
+        $lookup = Invoke-RestMethod "$InvApi/api/devices?q=$hwSerial" -TimeoutSec 5 -ErrorAction SilentlyContinue
+        $invDeviceId = if ($lookup.Count -gt 0) { $lookup[0].device_id } else { $null }
+    }
     # PATCH: record the chosen OS and imaging note
     if ($invDeviceId) {
-        $today    = (Get-Date -Format 'yyyy-MM-dd')
+        $today     = (Get-Date -Format 'yyyy-MM-dd')
         $patchBody = "{`"os`":`"$($os.Label)`",`"os_version`":`"`",`"notes`":`"Imaged $today - Juniper IT`"}"
         Invoke-RestMethod "$InvApi/api/device/$invDeviceId" -Method PATCH -Body $patchBody `
             -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
