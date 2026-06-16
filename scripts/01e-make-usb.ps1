@@ -271,6 +271,7 @@ Write-Host ''
 Write-Host '  Boot the target machine from this USB in UEFI mode.' -ForegroundColor Yellow
 Write-Host '  Secure Boot must be DISABLED in BIOS.' -ForegroundColor Yellow
 Write-Host ''
-Write-Host '  On startup, press [T] within 5 seconds to open the diagnostic toolkit.' -ForegroundColor DarkGray
-Write-Host '  Otherwise imaging will start automatically.' -ForegroundColor DarkGray
+Write-Host '  On startup, press [T] within 60 seconds to open the diagnostic toolkit.' -ForegroundColor DarkGray
+Write-Host '  Press [D] to skip the wait and deploy immediately.' -ForegroundColor DarkGray
+Write-Host '  Otherwise imaging starts automatically after 60 seconds.' -ForegroundColor DarkGray
 Write-Host ''

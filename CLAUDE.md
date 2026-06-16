@@ -82,19 +82,27 @@ The correct stack for a Windows 11 imaging server is:
 
 ## Script run order (per target PC, post-install)
 
-WinPE `deploy.ps1` handles: partition -> DISM apply -> unattend inject -> bcdboot
--> driver injection (DISM /Add-Driver from manifest.json) -> reboot
+**WinPE phase** - `deploy.ps1` handles:
+partition -> DISM apply WIM -> unattend inject -> bcdboot
+-> offline driver injection (DISM /Add-Driver from manifest.json or live API)
+-> pre-register machine in inventory -> reboot
 
-After first logon (via `FirstLogonCommands` in unattend):
-03 -> 04 -> 07 (05 and 06 can be added as needed)
+**After first logon** (via `FirstLogonCommands` in unattend):
+`03` -> `03b` -> `04` -> `07` (05 and 06 can be added as needed)
 
-`03b-install-catalog-drivers.ps1` (new) - post-boot online driver install from the
-inventory catalog. Auto-detects manufacturer/model/OS from WMI; queries
-`/api/drivers?status=confirmed_working`; installs `.inf` via pnputil, `.msi` via
-msiexec /qn, `.exe` via /s /norestart; verifies SHA256 when present. Pass
-`--IncludeUnconfirmed` on first run for brand-new hardware. `deploy.ps1` has a
-`Get-DriverManifest` helper that tries `/api/drivers/manifest.json` first and
-falls back to the on-disk manifest.json if the inventory server is unreachable.
+- `03-windows-update.ps1` - all Windows updates
+- `03b-install-catalog-drivers.ps1` - post-boot online driver install from inventory
+  catalog. Auto-detects manufacturer/model/OS from WMI; queries
+  `/api/drivers?status=confirmed_working`; installs `.inf` via pnputil, `.msi` via
+  msiexec /qn, `.exe` via /s /norestart; verifies SHA256 when present. Pass
+  `--IncludeUnconfirmed` on first run for brand-new hardware.
+- `04-install-packages.ps1` - winget + MSI packages + inventory agent registration.
+  The inventory agent also installs the Juniper root CA certificate automatically,
+  so HTTPS to internal services works after this step.
+- `07-remove-bloatware.ps1` - removes unwanted Windows features and apps
+
+`deploy.ps1` has a `Get-DriverManifest` helper that tries `/api/drivers/manifest.json`
+first and falls back to the on-disk `manifest.json` if the inventory server is unreachable.
 
 `09-update-driver-warehouse.ps1` - audit script; cross-references models in inventory,
 driver catalog status, and actual files on disk. Run on pc-deploy at any time.
