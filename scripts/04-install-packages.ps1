@@ -14,10 +14,9 @@
 # as direct MSI/EXE downloads, or installed interactively after first login.
 # TODO: Replace winget with Chocolatey or direct MSI downloads for SYSTEM support.
 #
-# 1PASSWORD SYSTEM CONTEXT NOTE:
-# op CLI requires OP_SERVICE_ACCOUNT_TOKEN env var when running non-interactively
-# as SYSTEM. Set this in HKLM:\SYSTEM\CurrentControlSet\Services\JuniperImaging\Environment
-# before imaging. Credential item: op://Private/pc-deploy/password (also in fallout-automation vault).
+# CREDENTIAL NOTE:
+# JuniperAdmin password is set via the inventory server's /api/management/bootstrap
+# endpoint. No 1Password CLI or OP_SERVICE_ACCOUNT_TOKEN required.
 #
 # USAGE: .\04-install-packages.ps1
 #        .\04-install-packages.ps1 -PackageShare \\pc-deploy\deploy$ -DryRun
