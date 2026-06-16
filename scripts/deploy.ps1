@@ -448,6 +448,52 @@ if (-not (Test-Path $unattendSrc)) {
     Write-Host "  unattend.xml written (ComputerName=$computerName)." -ForegroundColor Green
 }
 
+# --- Stage post-install automation ------------------------------------------
+# Copies SetupComplete.cmd and all orchestration/phase scripts to the target.
+# SetupComplete.cmd fires once post-OOBE as SYSTEM (before login screen),
+# creates the JuniperImaging scheduled task, and kicks off the phase pipeline.
+# The task runs on every startup until all phases complete - no login needed.
+
+Write-Host ''
+Write-Host '  Staging post-install automation...' -ForegroundColor Cyan
+
+$jsRoot    = 'C:\ProgramData\JuniperSetup'
+$jsScripts = "$jsRoot\scripts"
+$jsLogs    = "$jsRoot\logs"
+foreach ($dir in @('C:\Windows\Setup\Scripts', $jsRoot, $jsScripts, $jsLogs)) {
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+}
+
+# SetupComplete.cmd -> fires once post-OOBE, bootstraps the scheduled task
+Copy-Item "$DeployShare\scripts\SetupComplete.cmd" 'C:\Windows\Setup\Scripts\SetupComplete.cmd' -Force
+
+# Orchestration core (root of JuniperSetup, sourced by phase scripts)
+foreach ($f in @('Logging.ps1', 'orchestrator.ps1')) {
+    Copy-Item "$DeployShare\scripts\$f" "$jsRoot\$f" -Force
+}
+
+# Phase scripts
+foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1','07-remove-bloatware.ps1','08-set-file-associations.ps1')) {
+    $src = "$DeployShare\scripts\$f"
+    if (Test-Path $src) { Copy-Item $src "$jsScripts\$f" -Force }
+}
+
+Write-Host '  Post-install automation staged (SetupComplete + orchestrator + 4 phase scripts).' -ForegroundColor Green
+
+# Write initial WinPE log entry to the target's master imaging log
+$masterLog = "$jsRoot\imaging.log"
+$winpeLog  = "$jsLogs\winpe.log"
+$ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+$winpeLogLines = @(
+    "$ts  [INFO ]  [winpe                 ]  === Juniper Imaging Start ===",
+    "$ts  [INFO ]  [winpe                 ]  Machine: $computerName | OS: $($os.Label)",
+    "$ts  [INFO ]  [winpe                 ]  Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
+)
+foreach ($line in $winpeLogLines) {
+    Add-Content -LiteralPath $masterLog -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    Add-Content -LiteralPath $winpeLog  -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+}
+
 # --- Pre-register in inventory ----------------------------------------------
 # Uses the inventory agent directly - same data gathering as post-install.
 # $JUNIPER_HOSTNAME_OVERRIDE passes the target computer name since WinPE
@@ -537,6 +583,15 @@ if ($pxeRemoved -gt 0) {
 } else {
     Write-Host '  PXE: no deletable entries found (will be lower priority than Windows).' -ForegroundColor DarkGray
 }
+
+# --- Write final WinPE log entry before disconnecting share -----------------
+
+$masterLog = 'C:\ProgramData\JuniperSetup\imaging.log'
+$winpeLog  = 'C:\ProgramData\JuniperSetup\logs\winpe.log'
+$ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+$line = "$ts  [INFO ]  [winpe                 ]  WinPE phase complete - rebooting into Windows"
+Add-Content -LiteralPath $masterLog -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+Add-Content -LiteralPath $winpeLog  -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
 
 # --- Cleanup and reboot -----------------------------------------------------
 

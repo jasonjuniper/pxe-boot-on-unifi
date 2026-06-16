@@ -1,9 +1,23 @@
 # 04-install-packages.ps1
 # Installs required software on a freshly imaged PC.
-# Sources: winget (preferred), MSI/EXE packages from a share on pc-deploy.
+# Part of the Juniper automated imaging pipeline - runs via orchestrator.ps1.
 #
-# ADD YOUR PACKAGES to the $WingetPackages and $MsiPackages lists below.
-# Secrets (license keys, tokens) must come from 1Password via 'op read'.
+# Exit codes (read by orchestrator.ps1):
+#   0    - complete
+#   3010 - reboot required (WSL feature enablement)
+#   1    - fatal error
+#
+# WINGET + SYSTEM CONTEXT NOTE:
+# The orchestrator runs as SYSTEM. Winget does not work reliably in SYSTEM context
+# (requires a user profile). Winget blocks are skipped when running as SYSTEM and
+# logged as WARN. Packages that must be installed should be added to $MsiPackages
+# as direct MSI/EXE downloads, or installed interactively after first login.
+# TODO: Replace winget with Chocolatey or direct MSI downloads for SYSTEM support.
+#
+# 1PASSWORD SYSTEM CONTEXT NOTE:
+# op CLI requires OP_SERVICE_ACCOUNT_TOKEN env var when running non-interactively
+# as SYSTEM. Set this in the JuniperInventory service environment or in
+# HKLM:\SYSTEM\CurrentControlSet\Services\JuniperImaging\Environment before imaging.
 #
 # USAGE: .\04-install-packages.ps1
 #        .\04-install-packages.ps1 -PackageShare \\pc-deploy\deploy$ -DryRun
@@ -16,14 +30,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. 'C:\ProgramData\JuniperSetup\Logging.ps1'
+Initialize-ImagingLogging -PhaseName 'install-packages'
+Write-PhaseHeader -Description 'Install Packages'
+
+# Detect SYSTEM context (winget/interactive tools will not work)
+$runningAsSystem = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -match 'SYSTEM')
+if ($runningAsSystem) {
+    Write-Log 'Running as SYSTEM - winget-based installs will be skipped' -Level WARN
+    Write-Log 'Winget packages must be installed interactively or via Chocolatey/MSI' -Level WARN
+}
+
 # ---------------------------------------------------------------------------
 # WINGET PACKAGES - add/remove as needed
 # Find IDs with: winget search <name>
+# NOTE: These are SKIPPED when running as SYSTEM. See header note above.
 # ---------------------------------------------------------------------------
 $WingetPackages = @(
-    # Runtime prerequisites — install before anything that links against them
-    'Microsoft.VCRedist.2015+.x64',     # VC++ runtime (Python, Git internals, Ollama)
-    'Microsoft.VCRedist.2015+.x86',     # 32-bit variant for legacy app compatibility
+    # Runtime prerequisites
+    'Microsoft.VCRedist.2015+.x64',
+    'Microsoft.VCRedist.2015+.x86',
 
     # Browsers
     'Google.Chrome',
@@ -35,25 +61,24 @@ $WingetPackages = @(
     'Notepad++.Notepad++',
     'PuTTY.PuTTY',
 
-    # Dev / AI toolchain — required for Windows MCP, Desktop Commander, Claude Code
+    # Dev / AI toolchain
     'Git.Git',
-    'OpenJS.NodeJS.LTS',      # npm, npx
+    'OpenJS.NodeJS.LTS',
     'Python.Python.3.12',
-    'Microsoft.PowerShell',   # PowerShell 7
+    'Microsoft.PowerShell',
 
-    # WSL2 kernel package — must be installed before the WSL2 section below runs
-    # (handles the Linux kernel; DISM below handles the Windows optional features)
+    # WSL2 kernel
     'Microsoft.WSL',
 
     # Local LLM
     'Ollama.Ollama',
 
-    # Claude Desktop (Windows MCP installs as a Claude plugin after this)
+    # Claude Desktop
     'Anthropic.Claude',
 )
 
 # ---------------------------------------------------------------------------
-# MSI / EXE packages from the package share
+# MSI / EXE packages from the package share (work in SYSTEM context)
 # Each entry: @{ Name='Display name'; File='relative\path.msi'; Args='/quiet' }
 # ---------------------------------------------------------------------------
 $MsiPackages = @(
@@ -64,262 +89,246 @@ $MsiPackages = @(
 # ---------------------------------------------------------------------------
 
 function Install-Winget-Package([string]$Id) {
-    Write-Host "  winget : $Id" -ForegroundColor Cyan
+    Write-Log "  winget: $Id" -PhaseOnly
     if ($DryRun) { return }
     $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
-    $p = Start-Process winget -ArgumentList "install --id $Id --silent --accept-package-agreements --accept-source-agreements" `
+    $p = Start-Process winget `
+            -ArgumentList @('install', '--id', $Id, '--silent', '--accept-package-agreements', '--accept-source-agreements') `
             -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-    $out = Get-Content $o -Raw; $err = Get-Content $e -Raw
+    $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
     Remove-Item $o,$e -ErrorAction SilentlyContinue
     if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
-        Write-Host "    WARN: winget exit $($p.ExitCode) for $Id" -ForegroundColor Yellow
-        if ($err) { Write-Host "    $err" -ForegroundColor DarkGray }
+        Write-Log "    WARN: winget exit $($p.ExitCode) for $Id" -Level WARN
+        if ($err) { Write-Log "    $($err.Trim())" -Level WARN -PhaseOnly }
     } else {
-        Write-Host "    OK (exit $($p.ExitCode))" -ForegroundColor Green
+        Write-Log "    OK (exit $($p.ExitCode))" -PhaseOnly
     }
 }
 
 function Install-Msi-Package([hashtable]$Pkg) {
     $path = Join-Path $PackageShare $Pkg.File
-    Write-Host "  msi    : $($Pkg.Name) ($path)" -ForegroundColor Cyan
-    if (-not (Test-Path $path)) { Write-Host "    SKIP: file not found" -ForegroundColor Yellow; return }
+    Write-Log "  msi: $($Pkg.Name) ($path)" -PhaseOnly
+    if (-not (Test-Path $path)) { Write-Log "    SKIP: file not found at $path" -Level WARN; return }
     if ($DryRun) { return }
     $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
-    $p = Start-Process msiexec -ArgumentList "/i `"$path`" $($Pkg.Args)" `
+    $p = Start-Process msiexec -ArgumentList @("/i", "`"$path`"", $Pkg.Args) `
             -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
     Remove-Item $o,$e -ErrorAction SilentlyContinue
     if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
-        Write-Host "    WARN: msiexec exit $($p.ExitCode)" -ForegroundColor Yellow
+        Write-Log "    WARN: msiexec exit $($p.ExitCode) for $($Pkg.Name)" -Level WARN
     } else {
-        Write-Host "    OK" -ForegroundColor Green
+        Write-Log "    OK" -PhaseOnly
     }
 }
 
-# --- Set JuniperAdmin password from 1Password --------------------------------
-# The unattend.xml creates the JuniperAdmin account with a placeholder password.
-# This block replaces it with the real credential stored in 1Password before
-# anything else runs. Requires 1Password CLI (op) to be authenticated.
-#
-# 1Password item: "junadmin" (local Windows admin for imaged PCs)
-# Field: password
-# To update the password in 1Password: op item edit junadmin --vault=<vault>
-Write-Host '==> Setting JuniperAdmin password from 1Password...' -ForegroundColor Cyan
-if (-not $DryRun) {
-    try {
-        $opExe = 'C:\Program Files\1Password CLI\op.exe'
-        if (-not (Test-Path $opExe)) { $opExe = 'op' }   # fall back to PATH
-
-        # Use op read with the vault-qualified path so no --reveal flag is needed
-        # op:// URI format: op://<vault>/<item>/<field>
-        # Item "pc-deploy" in vault "Private", username field = junadmin
-        $junadminPass = & $opExe read 'op://Private/pc-deploy/password' 2>$null
-        if (-not $junadminPass) { throw 'op read returned empty — is the CLI authenticated?' }
-
-        $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
-        Set-LocalUser -Name 'JuniperAdmin' -Password $secPass
-        $junadminPass = $null   # clear from memory
-        Write-Host '    JuniperAdmin password set.' -ForegroundColor Green
-    } catch {
-        Write-Host "    WARN: Could not set JuniperAdmin password: $_" -ForegroundColor Yellow
-        Write-Host '    Run manually: op read "op://Juniper Design/junadmin/password" | ...'
-        Write-Host '    Make sure op CLI is installed and authenticated (op signin).'
+# --- Winget packages ----------------------------------------------------------
+# Skipped when running as SYSTEM (no user profile / store access)
+if ($runningAsSystem) {
+    Write-Log "Skipping $($WingetPackages.Count) winget package(s) - SYSTEM context" -Level WARN
+} else {
+    Write-Log 'Refreshing winget sources...'
+    if (-not $DryRun) {
+        $o = [IO.Path]::GetTempFileName()
+        Start-Process winget -ArgumentList 'source update' -NoNewWindow -Wait -RedirectStandardOutput $o -ErrorAction SilentlyContinue
+        Remove-Item $o -ErrorAction SilentlyContinue
     }
+    Write-Log "Installing $($WingetPackages.Count) winget package(s)..."
+    foreach ($pkg in $WingetPackages) { Install-Winget-Package $pkg }
 }
 
-# --- Upgrade winget source first ---------------------------------------------
-Write-Host '==> Refreshing winget sources...' -ForegroundColor Cyan
-if (-not $DryRun) { winget source update | Out-Null }
-
-# --- Winget packages ---------------------------------------------------------
-Write-Host ''
-Write-Host "==> Installing $($WingetPackages.Count) winget package(s)..." -ForegroundColor Cyan
-foreach ($pkg in $WingetPackages) { Install-Winget-Package $pkg }
-
-# --- MSI/EXE packages --------------------------------------------------------
+# --- MSI/EXE packages ---------------------------------------------------------
 if ($MsiPackages.Count -gt 0) {
-    Write-Host ''
-    Write-Host "==> Installing $($MsiPackages.Count) MSI package(s) from $PackageShare..." -ForegroundColor Cyan
+    Write-Log "Installing $($MsiPackages.Count) MSI package(s) from $PackageShare..."
     foreach ($pkg in $MsiPackages) { Install-Msi-Package $pkg }
+} else {
+    Write-Log 'No MSI packages configured - skipping'
 }
 
 # --- WSL2 + Ubuntu ------------------------------------------------------------
-# Two-part setup:
-#   1. winget Microsoft.WSL (above) installs the WSL2 Linux kernel package.
-#   2. DISM below enables the Windows optional features (Subsystem-Linux +
-#      VirtualMachinePlatform). A reboot is required after feature enablement;
-#      the RunOnce chain in 03-windows-update.ps1 handles that reboot, so this
-#      script just enables the features and schedules the Ubuntu install.
-# Ubuntu finishes initializing on first interactive launch (wsl -d Ubuntu).
-Write-Host ''
-Write-Host '==> Installing WSL2 + Ubuntu...' -ForegroundColor Cyan
+# DISM enables WSL features (works in SYSTEM context).
+# Ubuntu distro install via wsl.exe may not work as SYSTEM - skip if so.
+Write-Log 'Installing WSL2 + Ubuntu...'
+$wslReboot = $false
 if (-not $DryRun) {
-    # Enable required Windows features (silently, no reboot yet)
-    $features = @(
-        'Microsoft-Windows-Subsystem-Linux',
-        'VirtualMachinePlatform'
-    )
+    $features = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
     foreach ($feat in $features) {
-        Write-Host "  Enabling feature: $feat" -ForegroundColor Cyan
+        Write-Log "  Enabling feature: $feat" -PhaseOnly
         $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
         $p = Start-Process 'dism.exe' `
-            -ArgumentList "/online /enable-feature /featurename:$feat /all /norestart" `
+            -ArgumentList @("/online", "/enable-feature", "/featurename:$feat", "/all", "/norestart") `
             -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-        $out = Get-Content $o -Raw -ErrorAction SilentlyContinue
         Remove-Item $o,$e -ErrorAction SilentlyContinue
-        if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
-            Write-Host '    OK' -ForegroundColor Green
-        } else {
-            Write-Host "    WARN: DISM exit $($p.ExitCode) for $feat" -ForegroundColor Yellow
-        }
+        if ($p.ExitCode -eq 3010) { $wslReboot = $true; Write-Log "  Feature $feat enabled (reboot pending)" -PhaseOnly }
+        elseif ($p.ExitCode -eq 0) { Write-Log "  Feature $feat enabled" -PhaseOnly }
+        else { Write-Log "  WARN: DISM exit $($p.ExitCode) for $feat" -Level WARN }
     }
 
-    # Set WSL default version to 2
-    $o = [IO.Path]::GetTempFileName()
-    Start-Process wsl -ArgumentList '--set-default-version 2' `
-        -NoNewWindow -Wait -RedirectStandardOutput $o -ErrorAction SilentlyContinue
-    Remove-Item $o -ErrorAction SilentlyContinue
-
-    # Install Ubuntu distro (--no-launch so it doesn't open a console window)
-    Write-Host '  Installing Ubuntu distro (no-launch)...' -ForegroundColor Cyan
-    $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
-    $p = Start-Process wsl -ArgumentList '--install -d Ubuntu --no-launch' `
-        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-    $out = Get-Content $o -Raw -ErrorAction SilentlyContinue
-    $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
-    Remove-Item $o,$e -ErrorAction SilentlyContinue
-    if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
-        Write-Host '    Ubuntu installed (will finish initializing on first launch).' -ForegroundColor Green
+    if (-not $runningAsSystem) {
+        # Set WSL default version to 2 and install Ubuntu
+        Start-Process wsl -ArgumentList '--set-default-version 2' -NoNewWindow -Wait -ErrorAction SilentlyContinue
+        $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+        $p = Start-Process wsl -ArgumentList @('--install', '-d', 'Ubuntu', '--no-launch') `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+        $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
+        Remove-Item $o,$e -ErrorAction SilentlyContinue
+        if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
+            Write-Log 'Ubuntu installed (initializes on first wsl launch)'
+        } else {
+            Write-Log "WARN: wsl install exit $($p.ExitCode) $(if ($err) { $err.Trim() })" -Level WARN
+        }
     } else {
-        Write-Host "    WARN: wsl install exit $($p.ExitCode)" -ForegroundColor Yellow
-        if ($err) { Write-Host "    $($err.Trim())" -ForegroundColor DarkGray }
+        Write-Log 'Skipping Ubuntu distro install - SYSTEM context (run wsl --install -d Ubuntu manually after first login)' -Level WARN
     }
 }
 
-# --- Set PowerShell 7 as default shell ----------------------------------------
-# Registers pwsh.exe as the default shell for new terminals, Explorer "Open
-# PowerShell here", and the Windows Terminal default profile.
-Write-Host ''
-Write-Host '==> Setting PowerShell 7 as default shell...' -ForegroundColor Cyan
+# --- PowerShell 7 as default shell --------------------------------------------
+Write-Log 'Configuring PowerShell 7 as default shell...'
 if (-not $DryRun) {
     $pwsh = 'C:\Program Files\PowerShell\7\pwsh.exe'
     if (Test-Path $pwsh) {
-        # Set HKLM default shell (used by runas, Task Scheduler, etc.)
-        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
-            -Name Shell -Value 'explorer.exe' -ErrorAction SilentlyContinue
-        # Register pwsh as the OpenWithProgids default for .ps1 files
-        Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.ps1\UserChoice' `
-            -Name ProgId -Value 'Microsoft.PowerShellScript.1' -ErrorAction SilentlyContinue
-        # Windows Terminal: set PS7 as default profile (if WT is present)
-        $wtSettings = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
-        if (Test-Path $wtSettings) {
-            $wt = Get-Content $wtSettings -Raw | ConvertFrom-Json
-            $ps7profile = $wt.profiles.list | Where-Object { $_.source -match 'PowerShell' -and $_.name -match '7|Preview' } | Select-Object -First 1
-            if ($ps7profile) {
-                $wt.defaultProfile = $ps7profile.guid
-                $wt | ConvertTo-Json -Depth 20 | Set-Content $wtSettings -Encoding UTF8
-                Write-Host '    Windows Terminal default profile set to PS7.' -ForegroundColor Green
-            }
-        }
-        # Ensure pwsh.exe is on the system PATH
-        $syspath = [System.Environment]::GetEnvironmentVariable('Path','Machine')
+        # Ensure pwsh.exe is on system PATH
+        $syspath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
         $pwshDir = 'C:\Program Files\PowerShell\7'
         if ($syspath -notmatch [regex]::Escape($pwshDir)) {
             [System.Environment]::SetEnvironmentVariable('Path', "$syspath;$pwshDir", 'Machine')
-            Write-Host '    Added PS7 to system PATH.' -ForegroundColor Green
+            Write-Log '  Added PS7 to system PATH' -PhaseOnly
         }
-        Write-Host '    PowerShell 7 default shell configured.' -ForegroundColor Green
+        # Register .ps1 association
+        Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.ps1\UserChoice' `
+            -Name ProgId -Value 'Microsoft.PowerShellScript.1' -ErrorAction SilentlyContinue
+        # Windows Terminal default profile
+        $wtSettings = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+        if (Test-Path $wtSettings) {
+            try {
+                $wt = Get-Content $wtSettings -Raw | ConvertFrom-Json
+                $ps7 = $wt.profiles.list | Where-Object { $_.source -match 'PowerShell' -and $_.name -match '7|Preview' } | Select-Object -First 1
+                if ($ps7) {
+                    $wt.defaultProfile = $ps7.guid
+                    $wt | ConvertTo-Json -Depth 20 | Set-Content $wtSettings -Encoding UTF8
+                    Write-Log '  Windows Terminal default set to PS7' -PhaseOnly
+                }
+            } catch {
+                Write-Log "  WARN: WT settings update failed: $_" -Level WARN -PhaseOnly
+            }
+        }
+        Write-Log 'PowerShell 7 configured'
     } else {
-        Write-Host '    WARN: pwsh.exe not found — was PowerShell 7 installed?' -ForegroundColor Yellow
+        Write-Log 'WARN: pwsh.exe not found - PS7 may need a reboot before it appears' -Level WARN
     }
 }
 
-# --- npm global packages (Windows MCP, Desktop Commander, Claude Code) --------
-# Requires Node.js to be installed (winget OpenJS.NodeJS.LTS above).
-# Claude Code is the Anthropic CLI; Windows MCP and Desktop Commander are
-# MCP servers that Claude Code/Cowork uses to control this machine.
-Write-Host ''
-Write-Host '==> Installing npm global packages...' -ForegroundColor Cyan
-
+# --- npm global packages -------------------------------------------------------
+Write-Log 'Installing npm global packages...'
 $NpmGlobalPackages = @(
-    '@anthropic-ai/claude-code',         # Claude Code CLI
-    '@wonderwhy-er/desktop-commander',   # Desktop Commander MCP (npm-based)
-    # NOTE: Windows MCP is a Claude plugin — install it from Claude Desktop's
-    #       Settings > Extensions after first login, not via npm.
+    '@anthropic-ai/claude-code',
+    '@wonderwhy-er/desktop-commander',
 )
-
-if (-not $DryRun) {
-    # Refresh PATH so npm is available after Node.js was just installed
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-                [System.Environment]::GetEnvironmentVariable('Path','User')
-
+if ($runningAsSystem) {
+    Write-Log "Skipping $($NpmGlobalPackages.Count) npm global packages - SYSTEM context" -Level WARN
+} elseif (-not $DryRun) {
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                [System.Environment]::GetEnvironmentVariable('Path', 'User')
     $npm = (Get-Command npm -ErrorAction SilentlyContinue)?.Source
     if (-not $npm) { $npm = 'C:\Program Files\nodejs\npm.cmd' }
-
     if (Test-Path $npm) {
         foreach ($pkg in $NpmGlobalPackages) {
-            Write-Host "  npm -g : $pkg" -ForegroundColor Cyan
+            Write-Log "  npm -g: $pkg" -PhaseOnly
             $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
-            $p = Start-Process $npm -ArgumentList "install -g $pkg" `
+            $p = Start-Process $npm -ArgumentList @('install', '-g', $pkg) `
                 -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
             $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
             Remove-Item $o,$e -ErrorAction SilentlyContinue
             if ($p.ExitCode -ne 0) {
-                Write-Host "    WARN: npm exit $($p.ExitCode) for $pkg" -ForegroundColor Yellow
-                if ($err) { Write-Host "    $($err.Trim())" -ForegroundColor DarkGray }
+                Write-Log "  WARN: npm exit $($p.ExitCode) for $pkg" -Level WARN
+                if ($err) { Write-Log "  $($err.Trim())" -Level WARN -PhaseOnly }
             } else {
-                Write-Host '    OK' -ForegroundColor Green
+                Write-Log "  OK" -PhaseOnly
             }
         }
     } else {
-        Write-Host '    WARN: npm not found — Node.js may need a reboot to appear on PATH.' -ForegroundColor Yellow
-        Write-Host '    Re-run this script after reboot to install npm packages.'
+        Write-Log 'WARN: npm not found - Node.js may need a reboot to appear on PATH' -Level WARN
     }
 }
 
-# --- Activate Windows via UEFI OEM key (ACPI MSDM table) ----------------------
-# Most OEM PCs shipped with Win 8+ embed a product key in UEFI firmware (MSDM).
-# This reads the key silently, installs it, and activates Windows.
-# The key value is NEVER written to output — only slmgr's result text is shown.
-# Gracefully skips if no embedded key is found (VMs, non-OEM hardware).
-Write-Host ''
-Write-Host '==> Activating Windows (UEFI OEM key)...' -ForegroundColor Cyan
+# --- Set JuniperAdmin password from 1Password ---------------------------------
+# Requires: op CLI installed, OP_SERVICE_ACCOUNT_TOKEN set in environment
+# (or op signed in interactively). When running as SYSTEM, op needs
+# OP_SERVICE_ACCOUNT_TOKEN - set this in the JuniperImaging service env before imaging.
+#
+# 1Password item for the workstation local admin password:
+#   TODO: Confirm vault/item path with Jay - it should be distinct from
+#         op://Private/pc-deploy/ (that is the imaging SERVER's credential).
+#   Placeholder path: op://Private/junadmin/password
+Write-Log 'Setting JuniperAdmin password from 1Password...'
+if (-not $DryRun) {
+    try {
+        $opExe = 'C:\Program Files\1Password CLI\op.exe'
+        if (-not (Test-Path $opExe)) { $opExe = (Get-Command op -ErrorAction SilentlyContinue)?.Source }
+        if (-not $opExe) { throw 'op CLI not found' }
+
+        # OP_SERVICE_ACCOUNT_TOKEN must be in environment for SYSTEM context
+        if ($runningAsSystem -and -not $env:OP_SERVICE_ACCOUNT_TOKEN) {
+            throw 'OP_SERVICE_ACCOUNT_TOKEN not set - cannot authenticate op CLI as SYSTEM'
+        }
+
+        # TODO: Replace with confirmed 1Password item path for JuniperAdmin workstation password
+        $junadminPass = & $opExe read 'op://Private/junadmin/password' 2>$null
+        if (-not $junadminPass) { throw 'op read returned empty' }
+
+        $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
+        Set-LocalUser -Name 'JuniperAdmin' -Password $secPass
+        $junadminPass = $null
+        Write-Log 'JuniperAdmin password updated'
+    } catch {
+        Write-Log "WARN: Could not set JuniperAdmin password: $_" -Level WARN
+        Write-Log 'Run manually after login: op read op://Private/junadmin/password | Set-LocalUser -Name JuniperAdmin ...' -Level WARN
+    }
+}
+
+# --- Windows OEM activation ---------------------------------------------------
+Write-Log 'Activating Windows (UEFI OEM key)...'
 if (-not $DryRun) {
     try {
         $oemKey = (Get-WmiObject -Query 'SELECT OA3xOriginalProductKey FROM SoftwareLicensingService' `
                       -ErrorAction Stop).OA3xOriginalProductKey
         if ($oemKey -and $oemKey.Length -gt 0) {
-            # Install key — slmgr output is the result message, not the key
+            # slmgr output is the result message - key value never appears in logs
             $ipk = cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $oemKey 2>&1
-            Write-Host "    Key installed: $($ipk -join ' ')" -ForegroundColor Green
-            # Activate against Microsoft activation servers
+            Write-Log "Key installed: $($ipk -join ' ')"
             $ato = cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1
-            Write-Host "    Activation:    $($ato -join ' ')" -ForegroundColor Green
+            Write-Log "Activation: $($ato -join ' ')"
         } else {
-            Write-Host '    No OEM UEFI key found (VM or key not embedded) — skipping.' -ForegroundColor DarkGray
-            Write-Host '    Windows should activate automatically via digital license or KMS.'
+            Write-Log 'No OEM UEFI key found (VM or key not embedded) - digital license or KMS will activate'
         }
     } catch {
-        Write-Host "    WARN: OEM key read failed: $_" -ForegroundColor Yellow
+        Write-Log "WARN: OEM key read failed: $_" -Level WARN
     }
 }
 
-# --- Inventory agent -----------------------------------------------------------
-# Registers this machine with the Juniper inventory system (FastAPI + Postgres
-# on pc-deploy at 192.168.5.141:8080). Runs after all packages so the agent
-# captures the fully-configured machine state.
-Write-Host ''
-Write-Host '==> Registering with Juniper inventory system...' -ForegroundColor Cyan
+# --- Inventory agent ----------------------------------------------------------
+# Re-registers with a full post-install hardware snapshot (all packages installed).
+# The agent uses serial number to upsert the existing inventory record.
+Write-Log 'Re-registering with Juniper inventory system (post-install snapshot)...'
 if (-not $DryRun) {
     try {
-        Invoke-Expression (Invoke-RestMethod 'http://192.168.5.141:8080/static/install_agent.ps1')
-        Write-Host '    Inventory agent installed.' -ForegroundColor Green
+        Invoke-Expression (Invoke-RestMethod 'http://192.168.5.141:8080/static/install_agent.ps1' -TimeoutSec 15)
+        Write-Log 'Inventory agent: registration complete'
     } catch {
-        Write-Host "    WARN: Inventory registration failed: $_" -ForegroundColor Yellow
-        Write-Host '    The machine is still usable. Retry manually:'
-        Write-Host '      irm http://192.168.5.141:8080/static/install_agent.ps1 | iex'
+        Write-Log "WARN: Inventory registration failed: $_" -Level WARN
+        Write-Log 'Retry manually: irm http://192.168.5.141:8080/static/install_agent.ps1 | iex' -Level WARN -PhaseOnly
     }
 }
 
-Write-Host ''
-Write-Host '==> Package installation complete.' -ForegroundColor Green
-if ($DryRun) { Write-Host '    (Dry run - nothing was actually installed.)' -ForegroundColor Yellow }
+# --- Final summary ------------------------------------------------------------
+$dryNote = if ($DryRun) { ' (dry run)' } else { '' }
+$exitCode = if ($wslReboot) { 3010 } else { 0 }
+
+if ($wslReboot) {
+    Write-Log 'WSL feature enablement requires a reboot'
+    Write-PhaseSummary -ExitCode 3010 -Notes "WSL reboot pending$dryNote" -Reboot
+    exit 3010
+}
+
+Write-Log "Package installation complete$dryNote"
+Write-PhaseSummary -ExitCode 0 -Notes "winget=$(if ($runningAsSystem) {'skipped'} else {$WingetPackages.Count}), msi=$($MsiPackages.Count)$dryNote"
+exit 0

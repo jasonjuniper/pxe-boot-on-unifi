@@ -178,9 +178,9 @@
       </OOBE>
 
       <!-- Local admin account.
-           Password placeholder — overridden by 04-install-packages.ps1 via 1Password at
-           first logon. CHANGEME is never used on a real deployment.
-           Do NOT put a real password here. -->
+           Password placeholder — 04-install-packages.ps1 updates it via 1Password
+           during the autonomous post-install pipeline. CHANGEME is only active
+           until the orchestrator runs. Do NOT put a real password here. -->
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
@@ -199,36 +199,10 @@
         <Enabled>false</Enabled>
       </AutoLogon>
 
-      <!-- Post-install script chain.
-           These run at first logon from the deploy$ share on pc-deploy.
-           03-windows-update.ps1 registers itself in RunOnce and reboots as needed
-           until all updates are installed. -->
-      <FirstLogonCommands>
-        <SynchronousCommand wcm:action="add">
-          <Order>1</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\03-windows-update.ps1</CommandLine>
-          <Description>Windows Update</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>2</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\04-install-packages.ps1</CommandLine>
-          <Description>Install packages + inventory agent</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\07-remove-bloatware.ps1</CommandLine>
-          <Description>Remove bloatware</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
-          <CommandLine>powershell -ExecutionPolicy Bypass -File \\192.168.5.141\deploy$\scripts\08-set-file-associations.ps1</CommandLine>
-          <Description>Set 7-Zip as default for archive types</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-      </FirstLogonCommands>
+      <!-- No FirstLogonCommands: post-install automation is handled by
+           SetupComplete.cmd (fires before the login screen) + the JuniperImaging
+           scheduled task (SYSTEM, AtStartup) created by orchestrator.ps1.
+           No login is required for the imaging pipeline to complete. -->
 
     </component>
 

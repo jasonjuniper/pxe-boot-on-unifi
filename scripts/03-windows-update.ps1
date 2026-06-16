@@ -1,98 +1,90 @@
 # 03-windows-update.ps1
-# Forces all available Windows updates on the target PC, reboots as needed,
-# and loops until no more updates are pending.
+# Installs all pending Windows updates.
+# Part of the Juniper automated imaging pipeline - runs via orchestrator.ps1.
 #
-# Designed to run post-OS-install (from MDT Task Sequence, FirstLogonCommands, or manually).
-# Requires PSWindowsUpdate module (auto-installed from PSGallery if missing).
+# Exit codes (read by orchestrator.ps1):
+#   0    - no more pending updates; phase complete
+#   3010 - updates were installed; reboot required to continue
+#   1    - fatal error (orchestrator will log and advance anyway)
 #
-# REBOOT PERSISTENCE:
-#   When a reboot is required, this script registers itself in RunOnce so it
-#   automatically resumes after the machine comes back up. It also copies itself
-#   to C:\Windows\Temp\03-windows-update.ps1 so the RunOnce entry doesn't depend
-#   on the \\pc-deploy share being immediately accessible post-reboot.
-#
-# USAGE: .\03-windows-update.ps1
-#        .\03-windows-update.ps1 -MaxRounds 5 -NoReboot
-
-param(
-    [int]$MaxRounds = 10,
-    [switch]$NoReboot
-)
+# NOTE: Do NOT add -AutoReboot to Install-WindowsUpdate here.
+# The orchestrator reads the exit code and handles the reboot itself,
+# so it can log the event and update phase.json before rebooting.
 
 $ErrorActionPreference = 'Stop'
 
-$RunOnceName  = 'JuniperWindowsUpdate'
-$LocalCopy    = 'C:\Windows\Temp\03-windows-update.ps1'
-$RunOnceValue = "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File `"$LocalCopy`""
+. 'C:\ProgramData\JuniperSetup\Logging.ps1'
+Initialize-ImagingLogging -PhaseName 'windows-update'
+Write-PhaseHeader -Description 'Windows Update'
 
-# Auto-elevate if not running as Administrator
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host 'Relaunching elevated...' -ForegroundColor Yellow
-    Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`"" -Verb RunAs -Wait
-    exit
-}
-
-# Remove our own RunOnce entry if we were launched by it (cleanup)
-$runOnceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
-if (Get-ItemProperty -Path $runOnceKey -Name $RunOnceName -ErrorAction SilentlyContinue) {
-    Remove-ItemProperty -Path $runOnceKey -Name $RunOnceName -ErrorAction SilentlyContinue
-    Write-Host '==> Resumed after reboot (RunOnce entry cleared).' -ForegroundColor Cyan
-}
-
-# Stage a local copy so the RunOnce entry doesn't need the share after reboot
-$scriptSource = $MyInvocation.MyCommand.Path
-if ($scriptSource -and (Test-Path $scriptSource) -and $scriptSource -ne $LocalCopy) {
-    Copy-Item $scriptSource $LocalCopy -Force -ErrorAction SilentlyContinue
-}
-
-# --- Ensure PSWindowsUpdate is available ------------------------------------
+# ---- Ensure PSWindowsUpdate is available ------------------------------------
 if (-not (Get-Module -ListAvailable PSWindowsUpdate)) {
-    Write-Host '==> Installing PSWindowsUpdate module...' -ForegroundColor Cyan
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
-    Install-Module PSWindowsUpdate -Force -Scope AllUsers
+    Write-Log "Installing PSWindowsUpdate module..."
+    try {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+        Install-Module PSWindowsUpdate -Force -Scope AllUsers -ErrorAction Stop
+        Write-Log "PSWindowsUpdate installed"
+    } catch {
+        Write-Log "Failed to install PSWindowsUpdate: $_" -Level ERROR
+        Write-PhaseSummary -ExitCode 1 -Notes "PSWindowsUpdate install failed"
+        exit 1
+    }
 }
 Import-Module PSWindowsUpdate
 
-# --- Update loop -------------------------------------------------------------
-$round = 0
-do {
-    $round++
-    Write-Host ''
-    Write-Host "==> Windows Update round $round of $MaxRounds" -ForegroundColor Cyan
+# ---- Check for pending updates ----------------------------------------------
+Write-Log "Checking for pending updates..."
 
+$updates = $null
+try {
     $updates = Get-WUList -MicrosoftUpdate -AcceptAll 2>$null
-    if (-not $updates) {
-        Write-Host '    No pending updates. System is current.' -ForegroundColor Green
-        # Clean up the local staged copy
-        Remove-Item $LocalCopy -Force -ErrorAction SilentlyContinue
-        break
-    }
-
-    Write-Host "    Found $($updates.Count) update(s):" -ForegroundColor Yellow
-    $updates | Select-Object KB, Title | Format-Table -AutoSize | Out-String | Write-Host
-
-    if ($NoReboot) {
-        Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot -Confirm:$false
-    } else {
-        # Register RunOnce so the script resumes after reboot
-        Set-ItemProperty -Path $runOnceKey -Name $RunOnceName -Value $RunOnceValue
-        Write-Host ''
-        Write-Host "    RunOnce registered: will resume after reboot." -ForegroundColor Yellow
-        Write-Host '    Rebooting in 15 seconds (Ctrl+C to cancel)...' -ForegroundColor Yellow
-        Start-Sleep 15
-
-        Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -AutoReboot -Confirm:$false
-        # If AutoReboot fires, execution stops here.
-        # The RunOnce entry above ensures we pick back up after the reboot.
-        break
-    }
-
-} while ($round -lt $MaxRounds)
-
-if ($round -ge $MaxRounds) {
-    Write-Host "Reached $MaxRounds rounds - check Windows Update manually." -ForegroundColor Yellow
+} catch {
+    Write-Log "Get-WUList error: $_" -Level WARN
 }
 
-Write-Host ''
-Write-Host '==> Windows Update complete for this session.' -ForegroundColor Green
+if (-not $updates -or $updates.Count -eq 0) {
+    Write-Log "No pending updates - system is current"
+    Write-PhaseSummary -ExitCode 0 -Notes "0 updates pending"
+    exit 0
+}
+
+Write-Log "Found $($updates.Count) pending update(s):"
+foreach ($u in $updates) {
+    Write-Log "  $($u.KB)  $($u.Title)" -PhaseOnly
+}
+
+# ---- Install updates (no auto-reboot - orchestrator handles the reboot) -----
+Write-Log "Installing $($updates.Count) update(s)..."
+try {
+    Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot -Confirm:$false
+} catch {
+    Write-Log "Install-WindowsUpdate error: $_" -Level WARN
+}
+
+# Check if a reboot is pending after the install
+$rebootPending = $false
+try {
+    $rebootPending = (Get-WURebootStatus -Silent).RebootRequired
+} catch {
+    # Fallback: check registry
+    $rebootPending = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or
+                     (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations')
+}
+
+if ($rebootPending) {
+    Write-Log "$($updates.Count) update(s) installed - reboot required"
+    Write-PhaseSummary -ExitCode 3010 -Notes "$($updates.Count) updates installed" -Reboot
+    exit 3010
+} else {
+    # Updates installed but no reboot required - check again to be safe
+    $remaining = $null
+    try { $remaining = Get-WUList -MicrosoftUpdate -AcceptAll 2>$null } catch {}
+    if ($remaining -and $remaining.Count -gt 0) {
+        Write-Log "$($updates.Count) installed, $($remaining.Count) still pending - signaling reboot to re-run"
+        Write-PhaseSummary -ExitCode 3010 -Notes "$($updates.Count) installed, $($remaining.Count) remaining" -Reboot
+        exit 3010
+    }
+    Write-Log "$($updates.Count) update(s) installed, no reboot required"
+    Write-PhaseSummary -ExitCode 0 -Notes "$($updates.Count) updates installed"
+    exit 0
+}

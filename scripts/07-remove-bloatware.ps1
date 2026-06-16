@@ -1,8 +1,10 @@
 # 07-remove-bloatware.ps1
-# Removes unwanted pre-installed apps and disables junk Windows 10/11 features
-# on a freshly imaged PC.
+# Removes unwanted pre-installed apps and disables junk Windows 10/11 features.
+# Part of the Juniper automated imaging pipeline - runs via orchestrator.ps1.
 #
-# Customize the $AppxToRemove and $FeaturesToDisable lists for your environment.
+# Exit codes (read by orchestrator.ps1):
+#   0    - complete (a reboot is politely recommended but not required)
+#   1    - fatal error
 #
 # USAGE: .\07-remove-bloatware.ps1
 #        .\07-remove-bloatware.ps1 -DryRun
@@ -10,6 +12,10 @@
 param([switch]$DryRun)
 
 $ErrorActionPreference = 'SilentlyContinue'   # removal errors are non-fatal
+
+. 'C:\ProgramData\JuniperSetup\Logging.ps1'
+Initialize-ImagingLogging -PhaseName 'remove-bloatware'
+Write-PhaseHeader -Description 'Remove Bloatware'
 
 # ---------------------------------------------------------------------------
 # APPX PACKAGES TO REMOVE (provisioned + per-user)
@@ -83,41 +89,41 @@ $TasksToDisable = @(
 
 # ---------------------------------------------------------------------------
 
-Write-Host '==> Removing AppX packages...' -ForegroundColor Cyan
+Write-Log 'Removing AppX packages...'
+$removedCount = 0
 foreach ($name in $AppxToRemove) {
     $pkgs = Get-AppxPackage -Name $name -AllUsers 2>$null
     $prov  = Get-AppxProvisionedPackage -Online 2>$null | Where-Object { $_.DisplayName -like $name }
     if (-not $pkgs -and -not $prov) { continue }
-    Write-Host "  Remove: $name" -ForegroundColor Cyan
+    Write-Log "  Remove: $name" -PhaseOnly
     if (-not $DryRun) {
         $pkgs | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
         $prov  | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+        $removedCount++
     }
 }
+Write-Log "AppX: $removedCount package(s) removed"
 
-Write-Host ''
-Write-Host '==> Disabling optional Windows features...' -ForegroundColor Cyan
+Write-Log 'Disabling optional Windows features...'
 foreach ($feat in $FeaturesToDisable) {
     $f = Get-WindowsOptionalFeature -Online -FeatureName $feat -ErrorAction SilentlyContinue
     if (-not $f -or $f.State -ne 'Enabled') { continue }
-    Write-Host "  Disable: $feat" -ForegroundColor Cyan
+    Write-Log "  Disable feature: $feat" -PhaseOnly
     if (-not $DryRun) {
         Disable-WindowsOptionalFeature -Online -FeatureName $feat -NoRestart -ErrorAction SilentlyContinue
     }
 }
 
-Write-Host ''
-Write-Host '==> Disabling telemetry scheduled tasks...' -ForegroundColor Cyan
+Write-Log 'Disabling telemetry scheduled tasks...'
 foreach ($task in $TasksToDisable) {
     $t = Get-ScheduledTask -TaskPath (Split-Path $task -Parent) `
                            -TaskName  (Split-Path $task -Leaf) -ErrorAction SilentlyContinue
     if (-not $t -or $t.State -eq 'Disabled') { continue }
-    Write-Host "  Disable: $task" -ForegroundColor Cyan
+    Write-Log "  Disable task: $task" -PhaseOnly
     if (-not $DryRun) { Disable-ScheduledTask -TaskPath (Split-Path $task -Parent) -TaskName (Split-Path $task -Leaf) -ErrorAction SilentlyContinue }
 }
 
-Write-Host ''
-Write-Host '==> Disabling consumer experience / ads / widgets...' -ForegroundColor Cyan
+Write-Log 'Applying registry tweaks (ads, widgets, consumer features)...'
 if (-not $DryRun) {
     $regPaths = @{
         'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' = @{
@@ -151,7 +157,7 @@ if (-not $DryRun) {
     }
 }
 
-Write-Host ''
-Write-Host '==> Bloatware removal complete.' -ForegroundColor Green
-if ($DryRun) { Write-Host '    (Dry run - nothing was actually changed.)' -ForegroundColor Yellow }
-Write-Host '    A reboot is recommended to finalize feature changes.' -ForegroundColor Yellow
+$dryNote = if ($DryRun) { ' (dry run - no changes made)' } else { '' }
+Write-Log "Bloatware removal complete$dryNote"
+Write-PhaseSummary -ExitCode 0 -Notes "$removedCount AppX packages removed$dryNote"
+exit 0
