@@ -250,39 +250,26 @@ if ($runningAsSystem) {
     }
 }
 
-# --- Set JuniperAdmin password from 1Password ---------------------------------
-# Requires: op CLI installed, OP_SERVICE_ACCOUNT_TOKEN set in environment
-# (or op signed in interactively). When running as SYSTEM, op needs
-# OP_SERVICE_ACCOUNT_TOKEN - set this in the JuniperImaging service env before imaging.
-#
-# 1Password item for the workstation local admin password:
-#   TODO: Confirm vault/item path with Jay - it should be distinct from
-#         op://Private/pc-deploy/ (that is the imaging SERVER's credential).
-#   Placeholder path: op://Private/junadmin/password
-Write-Log 'Setting JuniperAdmin password from 1Password...'
+# --- Set JuniperAdmin password via inventory bootstrap API --------------------
+# Uses the inventory server's /api/management/bootstrap endpoint which reads
+# from C:\inventory\junadmin.key on pc-deploy. Works under SYSTEM context
+# (no op CLI or OP_SERVICE_ACCOUNT_TOKEN needed - just an HTTP call on the LAN).
+Write-Log 'Setting JuniperAdmin password from inventory bootstrap API...'
 if (-not $DryRun) {
     try {
-        $opExe = 'C:\Program Files\1Password CLI\op.exe'
-        if (-not (Test-Path $opExe)) { $opExe = (Get-Command op -ErrorAction SilentlyContinue)?.Source }
-        if (-not $opExe) { throw 'op CLI not found' }
-
-        # OP_SERVICE_ACCOUNT_TOKEN must be in environment for SYSTEM context
-        if ($runningAsSystem -and -not $env:OP_SERVICE_ACCOUNT_TOKEN) {
-            throw 'OP_SERVICE_ACCOUNT_TOKEN not set - cannot authenticate op CLI as SYSTEM'
-        }
-
-        # Item "pc-deploy" (Private vault) holds all imaging credentials
-        # including the JuniperAdmin local admin password for imaged workstations.
-        $junadminPass = & $opExe read 'op://Private/pc-deploy/password' 2>$null
-        if (-not $junadminPass) { throw 'op read returned empty' }
+        $bootstrapUrl = 'http://inventory.juniperdesign.local:8080/api/management/bootstrap'
+        $resp = Invoke-RestMethod $bootstrapUrl -TimeoutSec 10 -ErrorAction Stop
+        $junadminPass = $resp.password
+        if (-not $junadminPass) { throw 'Bootstrap API returned empty password' }
 
         $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
         Set-LocalUser -Name 'JuniperAdmin' -Password $secPass
         $junadminPass = $null
-        Write-Log 'JuniperAdmin password updated'
+        $resp = $null
+        Write-Log 'JuniperAdmin password updated successfully'
     } catch {
-        Write-Log "WARN: Could not set JuniperAdmin password: $_" -Level WARN
-        Write-Log 'Run manually after login: op read op://Private/pc-deploy/password | Set-LocalUser -Name JuniperAdmin ...' -Level WARN
+        Write-Log "Could not set JuniperAdmin password via bootstrap API: $_" -Level ERROR
+        Write-Log 'Machine will remain with CHANGEME password - log in manually and re-run' -Level ERROR
     }
 }
 

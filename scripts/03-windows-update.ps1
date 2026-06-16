@@ -21,8 +21,14 @@ Write-PhaseHeader -Description 'Windows Update'
 if (-not (Get-Module -ListAvailable PSWindowsUpdate)) {
     Write-Log "Installing PSWindowsUpdate module..."
     try {
-        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
-        Install-Module PSWindowsUpdate -Force -Scope AllUsers -ErrorAction Stop
+        # Fresh Windows installs need TLS 1.2 and NuGet bootstrapped first.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+        # Import PowerShellGet explicitly to resolve the loader issue on fresh Windows 11
+        # where the built-in v1 module sometimes fails to auto-load.
+        Import-Module PowerShellGet -Force -ErrorAction SilentlyContinue
+        Install-Module PSWindowsUpdate -Force -Scope AllUsers -AllowClobber -ErrorAction Stop
         Write-Log "PSWindowsUpdate installed"
     } catch {
         Write-Log "Failed to install PSWindowsUpdate: $_" -Level ERROR
@@ -30,7 +36,7 @@ if (-not (Get-Module -ListAvailable PSWindowsUpdate)) {
         exit 1
     }
 }
-Import-Module PSWindowsUpdate
+Import-Module PSWindowsUpdate -Force
 
 # ---- Check for pending updates ----------------------------------------------
 Write-Log "Checking for pending updates..."
