@@ -142,7 +142,7 @@ if ($existingTs) {
             -Template 'Client.xml' `
             -ID $TsId `
             -OperatingSystemPath "DS001:\Operating Systems\$($importedOs.Name)" `
-            -FullName 'JuniperAdmin' `
+            -FullName 'junadmin' `
             -OrgName $OrgName `
             -HomePage 'about:blank' | Out-Null
         Write-Host "    Task Sequence '$TsName' ($TsId) created." -ForegroundColor Green
