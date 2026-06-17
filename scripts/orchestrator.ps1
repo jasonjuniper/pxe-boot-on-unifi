@@ -101,6 +101,30 @@ function Invoke-Phase {
     return $p.ExitCode
 }
 
+function Sync-Scripts {
+    # Pulls fresh phase scripts from the deploy share before running each phase.
+    # Allows hotfixing phase scripts without re-imaging the machine.
+    # Silently skipped if the share is unreachable.
+    $shareScripts = '\\192.168.5.141\deploy$\scripts'
+    if (-not (Test-Path $shareScripts -ErrorAction SilentlyContinue)) { return }
+    try {
+        # Phase scripts go into $ScriptsDir
+        foreach ($f in $Phases.Values) {
+            $src = Join-Path $shareScripts $f
+            $dst = Join-Path $ScriptsDir $f
+            if (Test-Path $src) {
+                Copy-Item $src $dst -Force -ErrorAction SilentlyContinue
+            }
+        }
+        # Logging.ps1 lives at $SetupRoot (dot-sourced directly by each phase script)
+        $logSrc = Join-Path $shareScripts 'Logging.ps1'
+        if (Test-Path $logSrc) {
+            Copy-Item $logSrc "$SetupRoot\Logging.ps1" -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    # No Write-Log here - Logging.ps1 may have just been replaced
+}
+
 # ---- Bootstrap: first call from SetupComplete.cmd ---------------------------
 
 if ($Bootstrap) {
@@ -120,6 +144,18 @@ if ($Bootstrap) {
         -Description 'Juniper IT post-imaging automated setup' -Force | Out-Null
 
     Write-Log "Scheduled task '$TaskName' registered (AtStartup, SYSTEM)"
+
+    # Set all network connections to Private so WinRM cross-subnet access works.
+    # Without this, Windows leaves new connections as Public, which restricts
+    # the WinRM firewall rule to same-subnet only.
+    try {
+        Get-NetConnectionProfile |
+            Where-Object { $_.NetworkCategory -ne 'DomainAuthenticated' } |
+            Set-NetConnectionProfile -NetworkCategory Private -ErrorAction Stop
+        Write-Log "Network profile set to Private" -MasterOnly
+    } catch {
+        Write-Log "Network profile update failed (non-fatal): $_" -Level WARN -MasterOnly
+    }
 
     # Enable WinRM so IT can reach the machine remotely during and after imaging.
     # -SkipNetworkProfileCheck allows it even when the NIC profile is Public.
@@ -182,6 +218,7 @@ Save-PhaseState -Phase $phase -Round $round
 Write-Log "--- Phase: $phase (round $round) ---" -MasterOnly
 Write-Log "Starting phase '$phase' (round $round)"
 
+Sync-Scripts
 $exitCode = Invoke-Phase -PhaseName $phase
 
 Write-Log "Phase '$phase' exited: $exitCode"
@@ -210,6 +247,7 @@ if ($exitCode -eq 3010) {
         Save-PhaseState -Phase $nextPhase -Round $round2
         Write-Log "--- Phase: $nextPhase (round $round2) ---" -MasterOnly
         Write-Log "Starting phase '$nextPhase' (round $round2)"
+        Sync-Scripts
         $exitCode2 = Invoke-Phase -PhaseName $nextPhase
         Write-Log "Phase '$nextPhase' exited: $exitCode2" -MasterOnly
 

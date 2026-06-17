@@ -75,7 +75,7 @@ $FeaturesToDisable = @(
 # SCHEDULED TASKS TO DISABLE (consumer / telemetry junk)
 # ---------------------------------------------------------------------------
 $TasksToDisable = @(
-    # These exist on Win10 and may exist on Win11 — script skips silently if absent
+    # These exist on Win10 and may exist on Win11 - script skips silently if absent
     '\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser',
     '\Microsoft\Windows\Application Experience\ProgramDataUpdater',
     '\Microsoft\Windows\Autochk\Proxy',
