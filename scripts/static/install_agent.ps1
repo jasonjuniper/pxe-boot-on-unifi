@@ -110,10 +110,15 @@ try {
 
 # -- Build payload -------------------------------------------------------------
 
+# WinPE sets $JUNIPER_HOSTNAME_OVERRIDE before running this script via Invoke-Expression.
+# In that case use the override so inventory records the intended machine name, not the
+# WinPE default (MINWINPC).
+$_effectiveName = if ($JUNIPER_HOSTNAME_OVERRIDE) { $JUNIPER_HOSTNAME_OVERRIDE } else { $env:COMPUTERNAME }
+
 $payload = [ordered]@{
     agent_version   = $AgentVer
-    computer_name   = $env:COMPUTERNAME
-    hostname        = $env:COMPUTERNAME
+    computer_name   = $_effectiveName
+    hostname        = $_effectiveName
     mac             = $macs | Select-Object -First 1
     macs            = $macs
     ip              = $primaryIp

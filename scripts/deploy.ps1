@@ -683,8 +683,9 @@ try {
     }
     # Update OS in inventory using the selected edition (ingest/endpoint is always available,
     # unlike the PATCH route which requires auth). This ensures the next re-image defaults correctly.
+    # Must use bios_serial/chassis_serial (not serial_number) - that is what find_or_create_device reads.
     $osCaption = "Microsoft $($os.Label)"
-    $osPatch   = @{ serial_number = $hwSerial; hostname = $computerName; os_caption = $osCaption } | ConvertTo-Json -Compress
+    $osPatch   = @{ bios_serial = $hwSerial; chassis_serial = $hwSerial; hostname = $computerName; os_caption = $osCaption } | ConvertTo-Json -Compress
     Invoke-RestMethod "$InvApi/ingest/endpoint" -Method Post -Body $osPatch `
         -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
 } catch {
