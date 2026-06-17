@@ -609,19 +609,47 @@ if (-not $DryRun) {
 }
 
 # OEM UEFI key activation (reads embedded key from ACPI MSDM table)
+# Machines that shipped with Home and were imaged with Pro will have an edition
+# mismatch - the Home key cannot be applied to a Pro install.  In that case we
+# skip activation here and let Windows auto-activate via digital license.
 Write-Log 'Activating Windows via OEM UEFI key...'
 if (-not $DryRun) {
     try {
-        $oemKey = (Get-WmiObject -Query 'SELECT OA3xOriginalProductKey FROM SoftwareLicensingService' `
-                      -ErrorAction Stop).OA3xOriginalProductKey
-        if ($oemKey -and $oemKey.Length -gt 0) {
-            # Key value is never logged - only slmgr result text appears
-            $ipk = cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $oemKey 2>&1
-            Write-Log "Key installed: $($ipk -join ' ')"
-            $ato = cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1
-            Write-Log "Activation: $($ato -join ' ')"
-        } else {
+        $sl = Get-WmiObject -Query `
+            'SELECT OA3xOriginalProductKey, OA3xOriginalProductKeyDescription FROM SoftwareLicensingService' `
+            -ErrorAction Stop
+        $oemKey  = $sl.OA3xOriginalProductKey
+        $oemDesc = $sl.OA3xOriginalProductKeyDescription
+
+        if (-not $oemKey -or $oemKey.Length -eq 0) {
             Write-Log 'No OEM UEFI key found (VM or no embedded key) - digital license or KMS will activate'
+        } else {
+            # Detect edition mismatch before touching slmgr.
+            # OA3xOriginalProductKeyDescription contains the key's intended edition.
+            $osCaption  = (Get-WmiObject Win32_OperatingSystem).Caption
+            $keyIsHome  = $oemDesc -match '\bHome\b'
+            $keyIsPro   = $oemDesc -match '\bPro\b'
+            $osIsPro    = $osCaption -match '\bPro\b'
+            $osIsHome   = $osCaption -match '\bHome\b'
+            $mismatch   = ($keyIsHome -and $osIsPro) -or ($keyIsPro -and $osIsHome)
+
+            if ($mismatch) {
+                $keyEdition = if ($keyIsHome) { 'Home' } elseif ($keyIsPro) { 'Pro' } else { 'unknown' }
+                Write-Log "OEM key is for Windows $keyEdition but machine is imaged with a different edition - skipping OEM key, Windows will activate via digital license" -Level WARN
+            } else {
+                # Key value is never logged - only slmgr result text appears
+                $ipkText = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $oemKey 2>&1) -join ' '
+                Write-Log "Key install: $ipkText"
+
+                if ($ipkText -match '0xC004F069') {
+                    Write-Log 'Edition mismatch detected after key install - Windows will activate via digital license' -Level WARN
+                } elseif ($ipkText -match '0xC004') {
+                    Write-Log 'OEM key rejected by activation server - Windows will activate via digital license or needs manual activation' -Level WARN
+                } else {
+                    $ato = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1) -join ' '
+                    Write-Log "Activation: $ato"
+                }
+            }
         }
     } catch {
         Write-Log "WARN: OEM key read failed: $_" -Level WARN
