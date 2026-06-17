@@ -381,8 +381,6 @@ if ($serialClean) {
         if (-not $match) { $match = @($results) | Select-Object -First 1 }
         if ($match) {
             # Map inventory OS string to local os_key ('1'=Win11Home, '2'=Win11Pro, '3'=Win10Pro)
-            # Use '' for unrecognized strings so UEFI detection (or manual selection) decides.
-            # Do NOT default to Pro - it causes wrong edition on Home-licensed machines.
             $osKeyFromInv = switch -Wildcard ($match.os) {
                 '*11*Home*'  { '1' }
                 '*11*Pro*'   { '2' }
@@ -440,7 +438,6 @@ if ($prior) {
 
     $timedOut = $false
     if ($defaultOsKey) {
-        # Known edition - offer 30 s countdown
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $timedOut = $true
         while ($sw.Elapsed.TotalSeconds -lt 30) {
@@ -528,8 +525,8 @@ $Script:WpeTargetName = $computerName
 
 # Send first remote log entry immediately so the machine appears on pc-deploy
 try {
-    $ts0      = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $uefiLog  = if ($oemKeyDesc) { "UEFI: $oemKeyDesc" } else { 'UEFI: no OEM key detected (WMI+MSDM both failed)' }
+    $ts0     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $uefiLog = if ($oemKeyDesc) { "UEFI: $oemKeyDesc" } else { 'UEFI: no OEM key detected (WMI+MSDM both failed)' }
     $body0 = [ordered]@{
         computer_name = $computerName
         lines = @(
@@ -733,4 +730,45 @@ $fwLines    = Get-Content $fwOut -ErrorAction SilentlyContinue
 $pxeGuid    = $null
 $pxeRemoved = 0
 foreach ($fwLine in $fwLines) {
-    i
+    if ($fwLine -match '^\s+identifier\s+(\{[0-9a-fA-F\-]+\})') {
+        $pxeGuid = $Matches[1]
+    }
+    if ($pxeGuid -and
+        $pxeGuid -notin @('{bootmgr}','{fwbootmgr}') -and
+        $fwLine  -match 'description\s+.*(PXE|EFI Network|IPv4|IPv6|Network Boot)') {
+        $pdel = Start-Process bcdedit -ArgumentList "/delete `"$pxeGuid`"" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:TEMP\bcd_del_o.txt" `
+            -RedirectStandardError  "$env:TEMP\bcd_del_e.txt"
+        if ($pdel.ExitCode -eq 0) {
+            Write-Host "  Removed PXE entry: $pxeGuid" -ForegroundColor DarkGray
+            $pxeRemoved++
+        } else {
+            Write-Host "  PXE entry deprioritized (firmware-protected): $pxeGuid" -ForegroundColor DarkGray
+        }
+        $pxeGuid = $null
+    }
+    if ($fwLine -match '^\s*$') { $pxeGuid = $null }
+}
+if ($pxeRemoved -gt 0) {
+    Write-Host "  PXE: $pxeRemoved boot entr$(if ($pxeRemoved -eq 1){'y'}else{'ies'}) removed." -ForegroundColor Green
+} else {
+    Write-Host '  PXE: no deletable entries found (will be lower priority than Windows).' -ForegroundColor DarkGray
+}
+
+# --- Write final WinPE log entry before disconnecting share -----------------
+
+Write-DeployLog "WinPE phase complete - rebooting into Windows"
+
+# --- Cleanup and reboot -----------------------------------------------------
+
+try { net use $DeployShare /delete *>$null } catch {}
+
+Write-Host ''
+Write-Host '  ============================================' -ForegroundColor Green
+Write-Host "   Done: $($os.Label) -> $computerName" -ForegroundColor Green
+Write-Host '   Rebooting in 15 seconds...               ' -ForegroundColor Green
+Write-Host '  ============================================' -ForegroundColor Green
+Write-Host ''
+Start-Sleep 15
+wpeutil reboot
