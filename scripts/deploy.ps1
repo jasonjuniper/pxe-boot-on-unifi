@@ -297,20 +297,57 @@ $primaryMac = if ($primaryNic) { $primaryNic['mac'] } else { '' }
 # has no embedded MSDM key (digital license, volume, or VM).
 $oemKeyDesc   = ''
 $oemOsDefault = ''
-try {
-    $slsObj = Get-WmiObject -Namespace root\cimv2 -Class SoftwareLicensingService -ErrorAction Stop
-    if ($slsObj.OA3xOriginalProductKey) {
-        $rawDesc    = $slsObj.OA3xOriginalProductKeyDescription
-        $oemKeyDesc = if ($rawDesc) { $rawDesc } else { '(key present, description unavailable)' }
-        $oemOsDefault = switch -Wildcard ($oemKeyDesc) {
-            '*11*Home*'         { '1' }
-            '*11*Pro*'          { '2' }
-            '*11*Professional*' { '2' }
-            '*10*'              { '3' }
-            default             { '' }
+# WMI can be slow to start in WinPE - retry up to 3 times before giving up.
+$slsRetry = 0
+do {
+    try {
+        $slsObj = Get-WmiObject -Namespace root\cimv2 -Class SoftwareLicensingService -ErrorAction Stop
+        if ($slsObj.OA3xOriginalProductKey) {
+            $rawDesc    = $slsObj.OA3xOriginalProductKeyDescription
+            $oemKeyDesc = if ($rawDesc) { $rawDesc } else { '(key present, description unavailable)' }
+            $oemOsDefault = switch -Wildcard ($oemKeyDesc) {
+                '*11*Home*'         { '1' }
+                '*11*Pro*'          { '2' }
+                '*11*Professional*' { '2' }
+                '*10*'              { '3' }
+                default             { '' }
+            }
         }
+        break  # WMI responded (key may or may not exist)
+    } catch {
+        $slsRetry++
+        if ($slsRetry -lt 3) { Start-Sleep -Seconds 1 }
     }
-} catch {}
+} while ($slsRetry -lt 3)
+
+# If WMI gave nothing, try reading the MSDM ACPI firmware table directly.
+# This confirms a key is present even when SoftwareLicensingService is unavailable,
+# so the operator is warned to select carefully rather than defaulting to Pro.
+if (-not $oemKeyDesc) {
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class AcpiFirmware {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern uint GetSystemFirmwareTable(
+        uint FirmwareTableProviderSignature,
+        uint FirmwareTableID,
+        IntPtr pFirmwareTableBuffer,
+        uint BufferSize);
+}
+'@ -ErrorAction Stop
+        # ACPI = 0x41435049, MSDM = 0x4D44534D
+        $acpiSig  = [uint32]0x41435049
+        $msdmSig  = [uint32]0x4D44534D
+        $tblSize  = [AcpiFirmware]::GetSystemFirmwareTable($acpiSig, $msdmSig, [IntPtr]::Zero, 0)
+        if ($tblSize -gt 56) {
+            # Table is present and long enough to hold a product key.
+            # Cannot determine the edition from raw bytes alone - warn operator.
+            $oemKeyDesc = '(OEM key in MSDM - edition unreadable, select carefully)'
+        }
+    } catch {}
+}
 
 # --- Detect Hardware --------------------------------------------------------
 
@@ -370,15 +407,20 @@ $computerName = ''
 $useDefaults  = $false
 
 if ($prior) {
+    # UEFI license key overrides inventory OS for edition selection.
+    # Inventory records the last imaged edition, which may have been wrong.
+    # The UEFI key reflects what the machine is actually licensed for.
+    $defaultOsKey = if ($oemOsDefault) { $oemOsDefault } else { $prior.os_key }
+
     Write-Host '  -- Inventory match found --------------------------------' -ForegroundColor Green
     Write-Host "    Name:      $($prior.hostname)" -ForegroundColor Green
     Write-Host "    Last OS:   $($prior.os)" -ForegroundColor DarkGray
     if ($prior.last_seen) { Write-Host "    Last seen: $($prior.last_seen)" -ForegroundColor DarkGray }
     Write-Host ''
-    Write-Host "  Default OS:   [$($prior.os_key)] $($OsOptions[$prior.os_key].Label)" -ForegroundColor Cyan
+    Write-Host "  Default OS:   [$defaultOsKey] $($OsOptions[$defaultOsKey].Label)" -ForegroundColor Cyan
     Write-Host "  Default Name: $($prior.hostname)" -ForegroundColor Cyan
     if ($oemOsDefault -and $oemOsDefault -ne $prior.os_key) {
-        Write-Host "  NOTE: UEFI key suggests $($OsOptions[$oemOsDefault].Label) - press a key to override" -ForegroundColor Yellow
+        Write-Host "  (UEFI license: $($OsOptions[$oemOsDefault].Label) - overrides inventory: $($OsOptions[$prior.os_key].Label))" -ForegroundColor Yellow
     }
     Write-Host ''
     Write-Host '  Press any key to change, or wait 30 s to accept defaults.' -ForegroundColor DarkGray
@@ -395,7 +437,7 @@ if ($prior) {
     Write-Host ''; $sw.Stop()
 
     if ($timedOut) {
-        $osKey       = $prior.os_key
+        $osKey        = $defaultOsKey
         $computerName = $prior.hostname.ToUpper()
         $useDefaults  = $true
         Write-Host "  Using: $($OsOptions[$osKey].Label) / $computerName" -ForegroundColor Green
