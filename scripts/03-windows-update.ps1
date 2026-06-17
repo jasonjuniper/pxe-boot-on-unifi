@@ -53,6 +53,26 @@ foreach ($reg in @(
     }
 }
 
+# ---- Clear WU download cache ------------------------------------------------
+# Stale or partially-downloaded packages cause WU_E_DS_NODATA (0x80248007)
+# where updates appear in the catalog but fail to install.  Clearing the
+# Download folder forces a clean re-fetch on this pass.
+Write-Log 'Clearing Windows Update download cache...'
+try {
+    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+    $dlDir = 'C:\Windows\SoftwareDistribution\Download'
+    if (Test-Path $dlDir) {
+        Remove-Item "$dlDir\*" -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log '  Download cache cleared'
+    }
+    Start-Service wuauserv -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+} catch {
+    Write-Log "  WARN: Could not clear WU download cache: $_" -Level WARN
+    try { Start-Service wuauserv -ErrorAction SilentlyContinue } catch {}
+}
+
 # ---- Search for pending updates via COM API ---------------------------------
 # Uses the built-in Windows Update Agent COM object - no PowerShellGet or module
 # installation required, works natively in SYSTEM context on any Windows version.
