@@ -1,11 +1,11 @@
-# deploy.ps1 — Juniper Design WinPE Deployment Script
+# deploy.ps1 - Juniper Design WinPE Deployment Script
 #
 # Runs inside WinPE on the target machine (launched by startnet.cmd).
 # Prompts for OS selection and computer name, partitions disk 0,
 # applies the Windows image via DISM, injects unattend.xml with the
 # chosen computer name, sets up the boot sector, and reboots.
 #
-# DEPLOYMENT SHARE: \\192.168.5.141\deploy$ (no credentials — share is
+# DEPLOYMENT SHARE: \\192.168.5.141\deploy$ (no credentials - share is
 # open read-only to Everyone; no secrets are stored there)
 #
 # SHARE LAYOUT (C:\deploy on pc-deploy):
@@ -21,7 +21,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$DeployServer = '192.168.5.141'   # pc-deploy — use IP, DNS may not work in WinPE
+$DeployServer = '192.168.5.141'   # pc-deploy - use IP, DNS may not work in WinPE
 $DeployShare  = "\\$DeployServer\deploy$"
 
 $OsOptions = @{
@@ -39,7 +39,7 @@ $OsOptions = @{
     }
 }
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# --- Helpers ----------------------------------------------------------------
 
 function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
     # Strip leading manufacturer name if WMI duplicates it (e.g. "HP HP EliteBook")
@@ -56,7 +56,7 @@ function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
 function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [string]$Model) {
     $manifestPath = "$DeployShare\drivers\manifest.json"
     if (-not (Test-Path $manifestPath)) {
-        Write-Host '  INFO: No driver manifest at deploy$\drivers\manifest.json — skipping.' -ForegroundColor DarkGray
+        Write-Host '  INFO: No driver manifest at deploy$\drivers\manifest.json - skipping.' -ForegroundColor DarkGray
         return
     }
 
@@ -95,7 +95,7 @@ function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [st
     if ($p.ExitCode -eq 0) {
         Write-Host '  Drivers injected successfully.' -ForegroundColor Green
     } else {
-        Write-Host "  WARN: DISM driver injection returned exit $($p.ExitCode) — some drivers may need post-install." -ForegroundColor Yellow
+        Write-Host "  WARN: DISM driver injection returned exit $($p.ExitCode) - some drivers may need post-install." -ForegroundColor Yellow
     }
 }
 
@@ -121,7 +121,7 @@ function Wait-ForNetwork {
     return $false
 }
 
-# ─── Start ──────────────────────────────────────────────────────────────────
+# --- Start ------------------------------------------------------------------
 
 Write-Banner
 
@@ -144,7 +144,7 @@ if (-not (Test-Path $DeployShare)) {
     exit
 }
 
-# ─── Detect Hardware Model ───────────────────────────────────────────────────
+# --- Detect Hardware Model ---------------------------------------------------
 
 $hwWmiCS  = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
 $hwWmiBios = Get-WmiObject -Class Win32_BIOS -ErrorAction SilentlyContinue
@@ -152,7 +152,7 @@ $hwMfr    = if ($hwWmiCS)   { $hwWmiCS.Manufacturer.Trim() } else { 'Unknown' }
 $hwModel  = if ($hwWmiCS)   { $hwWmiCS.Model.Trim()        } else { 'Unknown' }
 $hwSerial = if ($hwWmiBios) { $hwWmiBios.SerialNumber.Trim() } else { 'Unknown' }
 
-Write-Host '  ── Hardware Detected ───────────────────────────' -ForegroundColor DarkCyan
+Write-Host '  -- Hardware Detected ---------------------------' -ForegroundColor DarkCyan
 Write-Host "    Manufacturer : $hwMfr"
 Write-Host "    Model        : $hwModel"
 Write-Host "    Serial       : $hwSerial"
@@ -174,14 +174,14 @@ if (Test-Path $manifestPath) {
     if ($driverHit) {
         Write-Host '    Drivers      : FOUND in warehouse' -ForegroundColor Green
     } else {
-        Write-Host '    Drivers      : NOT in warehouse — inbox drivers only' -ForegroundColor Yellow
+        Write-Host '    Drivers      : NOT in warehouse - inbox drivers only' -ForegroundColor Yellow
     }
 } else {
     Write-Host '    Drivers      : no manifest found' -ForegroundColor DarkGray
 }
 Write-Host ''
 
-# ─── OS Selection ────────────────────────────────────────────────────────────
+# --- OS Selection ------------------------------------------------------------
 
 Write-Host ''
 Write-Host '  Select OS to deploy:' -ForegroundColor Cyan
@@ -208,7 +208,7 @@ if (-not (Test-Path $wimPath)) {
     exit
 }
 
-# ─── Computer Name ───────────────────────────────────────────────────────────
+# --- Computer Name -----------------------------------------------------------
 
 Write-Host ''
 Write-Host '  Computer name:' -ForegroundColor Cyan
@@ -224,10 +224,10 @@ while ($true) {
     Write-Host '    Invalid. Use letters, numbers, hyphens. Max 15 chars.' -ForegroundColor Yellow
 }
 
-# ─── Disk 0 Info + Confirmation ──────────────────────────────────────────────
+# --- Disk 0 Info + Confirmation ----------------------------------------------
 
 Write-Host ''
-Write-Host '  ── Target: Disk 0 ──────────────────────────────' -ForegroundColor Cyan
+Write-Host '  -- Target: Disk 0 ------------------------------' -ForegroundColor Cyan
 $disk = Get-Disk | Where-Object Number -eq 0 | Select-Object -First 1
 if ($disk) {
     Write-Host "    Model : $($disk.FriendlyName)"
@@ -250,7 +250,7 @@ if ($confirm -ne 'YES') {
     exit
 }
 
-# ─── Partition Disk 0 (GPT / UEFI) ──────────────────────────────────────────
+# --- Partition Disk 0 (GPT / UEFI) ------------------------------------------
 
 Write-Host ''
 Write-Host '  Partitioning disk 0 (GPT/UEFI)...' -ForegroundColor Cyan
@@ -280,7 +280,7 @@ if ($p.ExitCode -ne 0) {
 }
 Write-Host '  Partitioned: S: (EFI), C: (Windows).' -ForegroundColor Green
 
-# ─── Apply WIM ───────────────────────────────────────────────────────────────
+# --- Apply WIM ---------------------------------------------------------------
 
 Write-Host ''
 Write-Host "  Applying $($os.Label) (index $($os.WimIndex))..." -ForegroundColor Cyan
@@ -295,20 +295,20 @@ if ($p.ExitCode -ne 0) {
 }
 Write-Host '  Image applied.' -ForegroundColor Green
 
-# ─── Inject Drivers (offline) ────────────────────────────────────────────────
+# --- Inject Drivers (offline) ------------------------------------------------
 
 Write-Host ''
 Write-Host '  Injecting hardware drivers...' -ForegroundColor Cyan
 Invoke-DriverInjection -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
 
-# ─── Inject unattend.xml with computer name ───────────────────────────────────
+# --- Inject unattend.xml with computer name -----------------------------------
 
 Write-Host ''
 Write-Host '  Writing unattend.xml...' -ForegroundColor Cyan
 
 $unattendSrc = Join-Path $DeployShare $os.Unattend
 if (-not (Test-Path $unattendSrc)) {
-    Write-Host "  WARN: Unattend not found at $unattendSrc — skipping." -ForegroundColor Yellow
+    Write-Host "  WARN: Unattend not found at $unattendSrc - skipping." -ForegroundColor Yellow
 } else {
     New-Item 'C:\Windows\Panther' -ItemType Directory -Force | Out-Null
     $xml = Get-Content $unattendSrc -Raw
@@ -318,7 +318,7 @@ if (-not (Test-Path $unattendSrc)) {
     Write-Host "  unattend.xml written (ComputerName=$computerName)." -ForegroundColor Green
 }
 
-# ─── Boot sector ─────────────────────────────────────────────────────────────
+# --- Boot sector -------------------------------------------------------------
 
 Write-Host ''
 Write-Host '  Configuring UEFI boot...' -ForegroundColor Cyan
@@ -330,7 +330,7 @@ if ($p.ExitCode -ne 0) {
 }
 Write-Host '  Boot sector configured.' -ForegroundColor Green
 
-# ─── Cleanup and reboot ───────────────────────────────────────────────────────
+# --- Cleanup and reboot -------------------------------------------------------
 
 try { net use $DeployShare /delete *>$null } catch {}
 
