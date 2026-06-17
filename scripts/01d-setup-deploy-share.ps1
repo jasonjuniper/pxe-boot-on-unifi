@@ -7,7 +7,7 @@
 #
 # WHY Everyone:Read on a hidden share?
 #   WinPE has no domain membership and no local accounts to authenticate with.
-#   The deploy$ share holds no secrets — all secrets are in 1Password and
+#   The deploy$ share holds no secrets - all secrets are in 1Password and
 #   retrieved at runtime via 'op read' AFTER Windows is installed.
 #   Windows ISOs are publicly available, and unattend files contain only
 #   organizational settings (no passwords, keys, or PSKs).
@@ -22,7 +22,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ─── Create directories ────────────────────────────────────────────────────────
+# --- Create directories --------------------------------------------------------
 Write-Host "==> Creating deploy folder structure under $DeployRoot" -ForegroundColor Cyan
 
 $dirs = @(
@@ -32,7 +32,7 @@ $dirs = @(
     "$DeployRoot\scripts",      # 03-09 post-install scripts + deploy.ps1
     "$DeployRoot\packages",     # MSI/EXE installers
     "$DeployRoot\winpe",        # optional: source copies of startnet.cmd + deploy-boot.ps1
-    "$DeployRoot\drivers",      # driver packs per model — see drivers\manifest.json
+    "$DeployRoot\drivers",      # driver packs per model - see drivers\manifest.json
     "$DeployRoot\winpe-media"   # WinPE boot media tree for USB drive creation (01e-make-usb.ps1)
 )
 
@@ -45,7 +45,7 @@ foreach ($d in $dirs) {
     }
 }
 
-# ─── Create / update share ─────────────────────────────────────────────────────
+# --- Create / update share -----------------------------------------------------
 Write-Host ''
 Write-Host "==> Configuring share: $ShareName" -ForegroundColor Cyan
 
@@ -66,7 +66,7 @@ Grant-SmbShareAccess -Name $ShareName -AccountName 'Everyone' `
 Write-Host "  Share created: \\$(hostname)\$ShareName -> $DeployRoot" -ForegroundColor Green
 Write-Host '  Permissions: SYSTEM + Administrators (Full), Everyone (Read)' -ForegroundColor DarkGray
 
-# ─── Copy scripts and unattend files from this repo ───────────────────────────
+# --- Copy scripts and unattend files from this repo ---------------------------
 Write-Host ''
 Write-Host '==> Populating share with scripts and unattend files' -ForegroundColor Cyan
 
@@ -112,7 +112,7 @@ if (Test-Path $manifestSrc) {
     Write-Host '  WARN: drivers\manifest.json not found in repo (skipped)' -ForegroundColor Yellow
 }
 
-# ─── Copy WinPE media tree for USB drive creation ─────────────────────────────
+# --- Copy WinPE media tree for USB drive creation -----------------------------
 Write-Host ''
 Write-Host '==> Copying WinPE media tree to deploy$\winpe-media (for 01e-make-usb.ps1)' -ForegroundColor Cyan
 
@@ -137,7 +137,7 @@ if (Test-Path "$tftpRoot\EFI\Boot\bootx64.efi") {
     Write-Host '  Run 01c-build-winpe.ps1 first to build the WinPE image.' -ForegroundColor Yellow
 }
 
-# ─── Firewall: open SMB for PXE clients on the local subnet ────────────────────
+# --- Firewall: open SMB for PXE clients on the local subnet --------------------
 Write-Host ''
 Write-Host '==> Verifying Windows Firewall allows SMB inbound' -ForegroundColor Cyan
 $fwRule = Get-NetFirewallRule -Name 'FPS-SMB-In-TCP' -ErrorAction SilentlyContinue
@@ -149,7 +149,7 @@ if ($fwRule -and $fwRule.Enabled -eq 'True') {
     Write-Host '  Enabled SMB inbound firewall rule.' -ForegroundColor Green
 }
 
-# ─── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ----------------------------------------------------------------------
 Write-Host ''
 Write-Host '=== Deploy Share Setup Complete ===' -ForegroundColor Green
 Write-Host ''

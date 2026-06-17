@@ -1,5 +1,5 @@
 # setup-inventory-native.ps1
-# Deploys the Computer Inventory server natively on pc-deploy — no Docker.
+# Deploys the Computer Inventory server natively on pc-deploy - no Docker.
 # Run AS ADMINISTRATOR on pc-deploy (192.168.5.141).
 #
 # PREREQUISITES:
@@ -10,16 +10,16 @@
 #      or set -AppSrc to the app directory path)
 #
 # WHAT IT INSTALLS:
-#   PostgreSQL 16      → Windows service 'postgresql-x64-16'
-#   Python 3.12        → C:\Program Files\Python312\
-#   nmap               → C:\Program Files (x86)\Nmap\
-#   NSSM               → C:\nssm\  (wraps uvicorn as a Windows service)
-#   Inventory app      → C:\inventory\
+#   PostgreSQL 16      -> Windows service 'postgresql-x64-16'
+#   Python 3.12        -> C:\Program Files\Python312\
+#   nmap               -> C:\Program Files (x86)\Nmap\
+#   NSSM               -> C:\nssm\  (wraps uvicorn as a Windows service)
+#   Inventory app      -> C:\inventory\
 #
-# SECRETS — all pulled from 1Password at install time. The DATABASE_URL is
+# SECRETS - all pulled from 1Password at install time. The DATABASE_URL is
 # stored in the NSSM service's registry Environment block
 # (HKLM\SYSTEM\CurrentControlSet\Services\JuniperInventory) which requires
-# Admin rights to read — never written to a plaintext file on disk.
+# Admin rights to read - never written to a plaintext file on disk.
 #
 # 1Password items to create before running:
 #   op://Private/inventory-server/db-password       (password for 'inv' PG user)
@@ -54,13 +54,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
-# ─── Privilege check ─────────────────────────────────────────────────────────
+# --- Privilege check ---------------------------------------------------------
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host 'ERROR: Run this script AS ADMINISTRATOR.' -ForegroundColor Red; exit 1
 }
 
-# ─── op CLI check ─────────────────────────────────────────────────────────────
+# --- op CLI check -------------------------------------------------------------
 $opExe = (Get-Command op -ErrorAction SilentlyContinue)?.Source
 if (-not $opExe) { $opExe = 'C:\Program Files\1Password CLI\op.exe' }
 if (-not (Test-Path $opExe)) {
@@ -69,7 +69,7 @@ if (-not (Test-Path $opExe)) {
 try { & $opExe account list --format=json 2>$null | ConvertFrom-Json | Out-Null }
 catch { Write-Host 'ERROR: op not authenticated. Run: op signin' -ForegroundColor Red; exit 1 }
 
-# ─── Locate app source ────────────────────────────────────────────────────────
+# --- Locate app source --------------------------------------------------------
 if (-not $AppSrc) {
     # Try common relative paths from this script
     $candidates = @(
@@ -89,7 +89,7 @@ if (-not $AppSrc -or -not (Test-Path (Join-Path $AppSrc 'main.py'))) {
 $AppSrc = (Resolve-Path $AppSrc).Path
 Write-Host "App source: $AppSrc" -ForegroundColor DarkGray
 
-# ─── Read secrets from 1Password ─────────────────────────────────────────────
+# --- Read secrets from 1Password ---------------------------------------------
 Write-Host ''
 Write-Host '==> Reading secrets from 1Password...' -ForegroundColor Cyan
 
@@ -106,7 +106,7 @@ $unifiUser = (& $opExe read $OpUnifiUser 2>$null) -as [string]
 $unifiPw   = (& $opExe read $OpUnifiPw  2>$null) -as [string]
 Write-Host '  Secrets loaded.' -ForegroundColor Green
 
-# ─── PostgreSQL 16 ───────────────────────────────────────────────────────────
+# --- PostgreSQL 16 -----------------------------------------------------------
 $pgBin = 'C:\Program Files\PostgreSQL\16\bin'
 $psql  = Join-Path $pgBin 'psql.exe'
 
@@ -129,7 +129,7 @@ if (-not $SkipPostgres) {
     Write-Host '==> Skipping PostgreSQL install (-SkipPostgres).' -ForegroundColor DarkGray
 }
 
-# ─── Create DB user + database ────────────────────────────────────────────────
+# --- Create DB user + database ------------------------------------------------
 Write-Host ''; Write-Host "==> Configuring database '$PgDb'..." -ForegroundColor Cyan
 
 if (Test-Path $psql) {
@@ -152,16 +152,16 @@ if (Test-Path $psql) {
         $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
         Start-Process $psql "-U postgres -p $PgPort -c `"CREATE DATABASE $PgDb OWNER $PgUser ENCODING 'UTF8'`"" -Wait -NoNewWindow -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
         Remove-Item $o,$e -ErrorAction SilentlyContinue
-        Write-Host "  Created database '$PgDb' (empty — run with -RestoreFrom to populate)." -ForegroundColor Green
+        Write-Host "  Created database '$PgDb' (empty - run with -RestoreFrom to populate)." -ForegroundColor Green
     } else {
         Write-Host "  Database '$PgDb' already exists." -ForegroundColor DarkGray
     }
     $env:PGPASSWORD = ''
 } else {
-    Write-Host "  WARN: psql not found at $psql — skipping DB setup." -ForegroundColor Yellow
+    Write-Host "  WARN: psql not found at $psql - skipping DB setup." -ForegroundColor Yellow
 }
 
-# ─── Python 3.12 ─────────────────────────────────────────────────────────────
+# --- Python 3.12 -------------------------------------------------------------
 $pyExe = 'C:\Program Files\Python312\python.exe'
 if (-not $SkipPython) {
     Write-Host ''; Write-Host '==> Installing Python 3.12...' -ForegroundColor Cyan
@@ -177,7 +177,7 @@ if (-not $SkipPython) {
     if (-not (Test-Path $pyExe)) { $pyExe = (Get-Command python -ErrorAction SilentlyContinue)?.Source }
 }
 
-# ─── nmap ─────────────────────────────────────────────────────────────────────
+# --- nmap ---------------------------------------------------------------------
 Write-Host ''; Write-Host '==> Checking nmap...' -ForegroundColor Cyan
 if (Test-Path 'C:\Program Files (x86)\Nmap\nmap.exe') {
     Write-Host '  Already installed.' -ForegroundColor DarkGray
@@ -186,7 +186,7 @@ if (Test-Path 'C:\Program Files (x86)\Nmap\nmap.exe') {
     Write-Host '  nmap installed.' -ForegroundColor Green
 }
 
-# ─── NSSM ─────────────────────────────────────────────────────────────────────
+# --- NSSM ---------------------------------------------------------------------
 $nssmExe = 'C:\nssm\nssm.exe'
 Write-Host ''; Write-Host '==> Checking NSSM...' -ForegroundColor Cyan
 if (-not (Test-Path $nssmExe)) {
@@ -202,7 +202,7 @@ if (-not (Test-Path $nssmExe)) {
     Write-Host '  Already present.' -ForegroundColor DarkGray
 }
 
-# ─── Deploy app files ─────────────────────────────────────────────────────────
+# --- Deploy app files ---------------------------------------------------------
 Write-Host ''; Write-Host "==> Deploying app to $InstallRoot ..." -ForegroundColor Cyan
 $appDst = Join-Path $InstallRoot 'app'
 foreach ($d in @($InstallRoot, $appDst, "$InstallRoot\exports", "$InstallRoot\scanners", "$InstallRoot\logs")) {
@@ -222,11 +222,11 @@ $mainTxt = Get-Content $mainPy -Raw
 if ($mainTxt -match 'Path\("/app/exports"\)') {
     $mainTxt = $mainTxt -replace [regex]::Escape('Path("/app/exports")'), 'Path(os.environ.get("EXPORT_DIR", str(Path(__file__).parent.parent / "exports")))'
     $mainTxt | Set-Content $mainPy -Encoding UTF8 -NoNewline
-    Write-Host '  Patched main.py: /app/exports → EXPORT_DIR env var.' -ForegroundColor Green
+    Write-Host '  Patched main.py: /app/exports -> EXPORT_DIR env var.' -ForegroundColor Green
 }
 Write-Host '  App files deployed.' -ForegroundColor Green
 
-# ─── Virtual environment + pip ────────────────────────────────────────────────
+# --- Virtual environment + pip ------------------------------------------------
 Write-Host ''; Write-Host '==> Installing Python packages...' -ForegroundColor Cyan
 $venvDir = Join-Path $InstallRoot 'venv'
 if (-not (Test-Path "$venvDir\Scripts\python.exe")) {
@@ -244,7 +244,7 @@ if ($p.ExitCode -ne 0) {
 } else { Write-Host '  Packages installed.' -ForegroundColor Green }
 Remove-Item $o,$e -ErrorAction SilentlyContinue
 
-# ─── Restore backup (optional) ────────────────────────────────────────────────
+# --- Restore backup (optional) ------------------------------------------------
 if ($RestoreFrom -and (Test-Path $RestoreFrom)) {
     Write-Host ''; Write-Host "==> Restoring database from $(Split-Path $RestoreFrom -Leaf)..." -ForegroundColor Cyan
     $env:PGPASSWORD = $pgSuperPw
@@ -258,7 +258,7 @@ if ($RestoreFrom -and (Test-Path $RestoreFrom)) {
     Remove-Item $o,$e -ErrorAction SilentlyContinue
 }
 
-# ─── Windows service via NSSM ─────────────────────────────────────────────────
+# --- Windows service via NSSM -------------------------------------------------
 Write-Host ''; Write-Host "==> Configuring Windows service '$ServiceName'..." -ForegroundColor Cyan
 
 $uvicornExe = "$venvDir\Scripts\uvicorn.exe"
@@ -277,7 +277,7 @@ if ($existingSvc) {
     "main:app --host 0.0.0.0 --port $Port --app-dir `"$appDst`""
 & $nssmExe set $ServiceName AppDirectory    $appDst
 & $nssmExe set $ServiceName DisplayName     'Juniper Inventory Server'
-& $nssmExe set $ServiceName Description     'Computer Inventory web service (FastAPI/uvicorn) — Juniper Design'
+& $nssmExe set $ServiceName Description     'Computer Inventory web service (FastAPI/uvicorn) - Juniper Design'
 & $nssmExe set $ServiceName Start           SERVICE_AUTO_START
 & $nssmExe set $ServiceName ObjectName      LocalSystem
 & $nssmExe set $ServiceName AppStdout       "$InstallRoot\logs\inventory.log"
@@ -300,14 +300,14 @@ $dbPw = ''; $pgSuperPw = ''; $unifiPw = ''; $dbUrl = ''
 
 Write-Host "  Service '$ServiceName' configured." -ForegroundColor Green
 
-# ─── Firewall ─────────────────────────────────────────────────────────────────
+# --- Firewall -----------------------------------------------------------------
 $fwName = "Juniper Inventory Port $Port"
 if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -DisplayName $fwName -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow | Out-Null
     Write-Host "  Firewall: opened port $Port." -ForegroundColor Green
 }
 
-# ─── Start + health check ─────────────────────────────────────────────────────
+# --- Start + health check -----------------------------------------------------
 Write-Host ''; Write-Host "==> Starting '$ServiceName'..." -ForegroundColor Cyan
 & $nssmExe start $ServiceName
 Start-Sleep 6
@@ -316,18 +316,18 @@ $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($svc?.Status -eq 'Running') {
     try {
         $hc = Invoke-RestMethod "http://localhost:$Port/healthz" -TimeoutSec 10
-        if ($hc.ok) { Write-Host "  Service UP — http://localhost:$Port/" -ForegroundColor Green }
+        if ($hc.ok) { Write-Host "  Service UP - http://localhost:$Port/" -ForegroundColor Green }
     } catch {
-        Write-Host "  Service running but /healthz not yet ready — check logs." -ForegroundColor Yellow
+        Write-Host "  Service running but /healthz not yet ready - check logs." -ForegroundColor Yellow
     }
 } else {
     Write-Host "  WARN: Service not running. Check: Get-Content $InstallRoot\logs\inventory-err.log" -ForegroundColor Yellow
 }
 
-# ─── Done ─────────────────────────────────────────────────────────────────────
+# --- Done ---------------------------------------------------------------------
 Write-Host ''
 Write-Host ('=' * 60) -ForegroundColor Green
-Write-Host '  Juniper Inventory — Native Install Complete' -ForegroundColor Green
+Write-Host '  Juniper Inventory - Native Install Complete' -ForegroundColor Green
 Write-Host ('=' * 60)
 Write-Host ''
 Write-Host "  Web UI  : http://$(hostname):$Port/"

@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $opExe    = 'C:\Users\ENG2\AppData\Local\Microsoft\WinGet\Packages\AgileBits.1Password.CLI_Microsoft.Winget.Source_8wekyb3d8bbwe\op.exe'
 $dpapiOut = 'C:\Users\ENG2\.juniper-unifi.xml'
 
-# ── Read from 1Password ────────────────────────────────────────────────────────
+# -- Read from 1Password --------------------------------------------------------
 Write-Host "Reading UniFi credentials from 1Password..." -ForegroundColor Cyan
 
 # Try both common field names for host
@@ -41,7 +41,7 @@ Write-Host "  Got host:     $unifiHost" -ForegroundColor Green
 Write-Host "  Got username: $unifiUser" -ForegroundColor Green
 Write-Host "  Got password: [hidden]"   -ForegroundColor Green
 
-# ── Store DPAPI-encrypted ──────────────────────────────────────────────────────
+# -- Store DPAPI-encrypted ------------------------------------------------------
 Write-Host ""
 Write-Host "Saving to $dpapiOut ..." -ForegroundColor Cyan
 
@@ -51,7 +51,7 @@ $credObj      = [PSCredential]::new("unifi-credentials", $securePay)
 $credObj | Export-Clixml $dpapiOut
 Write-Host "  Saved (DPAPI-encrypted, readable only by this Windows account)." -ForegroundColor Green
 
-# ── Update JuniperInventory service on pc-deploy via WinRM ────────────────────
+# -- Update JuniperInventory service on pc-deploy via WinRM --------------------
 Write-Host ""
 Write-Host "Connecting to pc-deploy (192.168.5.141) via WinRM..." -ForegroundColor Cyan
 

@@ -1,4 +1,4 @@
-# setup-inventory-ps51.ps1 — PS5.1 compatible, no op CLI required
+# setup-inventory-ps51.ps1 - PS5.1 compatible, no op CLI required
 # Secrets passed as parameters by the remote launcher.
 # Writes progress to stdout (redirected to setup.log by caller).
 
@@ -44,7 +44,7 @@ Log "=== Juniper Inventory Native Setup ==="
 Log "PS version: $($PSVersionTable.PSVersion)"
 Log "Running as: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 
-# ── PostgreSQL cluster init + service ─────────────────────────────────────────
+# -- PostgreSQL cluster init + service -----------------------------------------
 Log ""; Log "==> Phase 1: PostgreSQL"
 
 $pgSvc = Get-Service postgresql-x64-16 -ErrorAction SilentlyContinue
@@ -91,7 +91,7 @@ if ($pgSvc -and $pgSvc.Status -ne 'Running') {
 $pgSvc = Get-Service postgresql-x64-16 -ErrorAction SilentlyContinue
 Log "PG service status: $(if($pgSvc){$pgSvc.Status}else{'NOT FOUND'})"
 
-# ── Create role + database ─────────────────────────────────────────────────────
+# -- Create role + database -----------------------------------------------------
 Log ""; Log "==> Phase 2: DB role + database"
 $psql = "$pgBin\psql.exe"
 if (Test-Path $psql) {
@@ -109,7 +109,7 @@ if (Test-Path $psql) {
     $env:PGPASSWORD = ''
 } else { LogE "psql not found at $psql" }
 
-# ── Python 3.12 ───────────────────────────────────────────────────────────────
+# -- Python 3.12 ---------------------------------------------------------------
 Log ""; Log "==> Phase 3: Python 3.12"
 if (-not (Test-Path $PyExe)) {
     $inst = "$env:TEMP\python312.exe"
@@ -126,7 +126,7 @@ if (Test-Path $PyExe) {
     $r = Exec $PyExe "--version"; Log "Python: $(($r.Out+$r.Err).Trim())"
 } else { LogE "Python not found at $PyExe" }
 
-# ── NSSM ──────────────────────────────────────────────────────────────────────
+# -- NSSM ----------------------------------------------------------------------
 Log ""; Log "==> Phase 4: NSSM"
 if (-not (Test-Path $NssmExe)) {
     $nssmZip = "$env:TEMP\nssm.zip"
@@ -139,7 +139,7 @@ if (-not (Test-Path $NssmExe)) {
     Log "NSSM installed."
 } else { Log "NSSM already present." }
 
-# ── App deployment ─────────────────────────────────────────────────────────────
+# -- App deployment -------------------------------------------------------------
 Log ""; Log "==> Phase 5: App deployment"
 if (-not (Test-Path $InstallRoot)) { New-Item $InstallRoot -ItemType Directory -Force | Out-Null }
 if (Test-Path $AppSrc) {
@@ -178,7 +178,7 @@ if (Test-Path $reqFile) {
 $exp = "$InstallRoot\exports"
 if (-not (Test-Path $exp)) { New-Item $exp -ItemType Directory -Force | Out-Null }
 
-# ── Restore DB backup ──────────────────────────────────────────────────────────
+# -- Restore DB backup ----------------------------------------------------------
 if ($RestoreFrom -and (Test-Path $RestoreFrom)) {
     Log ""; Log "==> Phase 6: Restore DB from $RestoreFrom"
     $env:PGPASSWORD = $DbPw
@@ -187,7 +187,7 @@ if ($RestoreFrom -and (Test-Path $RestoreFrom)) {
     $env:PGPASSWORD = ''
 }
 
-# ── NSSM service ──────────────────────────────────────────────────────────────
+# -- NSSM service --------------------------------------------------------------
 Log ""; Log "==> Phase 7: Windows service"
 $uvicorn = "$InstallRoot\venv\Scripts\uvicorn.exe"
 $dbUrl   = "postgresql+psycopg://${PgUser}:${DbPw}@localhost:${PgPort}/${PgDb}"
@@ -236,7 +236,7 @@ Start-Sleep 5
 $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
 Log "Service status: $(if($svc){$svc.Status}else{'NOT FOUND'})"
 
-# ── Verify ────────────────────────────────────────────────────────────────────
+# -- Verify --------------------------------------------------------------------
 Log ""; Log "==> Phase 8: Verification"
 Start-Sleep 5
 try {

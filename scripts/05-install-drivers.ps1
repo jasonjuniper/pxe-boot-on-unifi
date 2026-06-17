@@ -4,7 +4,7 @@
 # Detects the machine model via WMI, looks up the driver pack in the
 # manifest on the deploy share, and installs any missing drivers with
 # pnputil. This is a complement to the offline DISM injection done in
-# WinPE — it catches anything that needs to run in a live Windows session
+# WinPE - it catches anything that needs to run in a live Windows session
 # (e.g. software components, app-install-style drivers) and handles
 # re-imaging or in-place driver updates.
 #
@@ -20,7 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ─── Detect model ─────────────────────────────────────────────────────────────
+# --- Detect model -------------------------------------------------------------
 Write-Host '==> Detecting hardware model...' -ForegroundColor Cyan
 
 $wmiCS   = Get-WmiObject -Class Win32_ComputerSystem
@@ -33,7 +33,7 @@ Write-Host "  Manufacturer : $hwMfr"
 Write-Host "  Model        : $hwModel"
 Write-Host "  Serial       : $hwSerial"
 
-# ─── Check for problem devices ────────────────────────────────────────────────
+# --- Check for problem devices ------------------------------------------------
 $problemDevices = Get-PnpDevice | Where-Object { $_.Status -in 'Error', 'Unknown', 'Degraded' }
 if ($problemDevices.Count -gt 0) {
     Write-Host ''
@@ -45,10 +45,10 @@ if ($problemDevices.Count -gt 0) {
         Write-Host '  Skipping driver install (use -Force to install anyway).' -ForegroundColor DarkGray
         exit 0
     }
-    Write-Host '  -Force specified — installing driver pack anyway.' -ForegroundColor DarkGray
+    Write-Host '  -Force specified - installing driver pack anyway.' -ForegroundColor DarkGray
 }
 
-# ─── Load manifest ────────────────────────────────────────────────────────────
+# --- Load manifest ------------------------------------------------------------
 Write-Host ''
 Write-Host '==> Looking up driver pack...' -ForegroundColor Cyan
 
@@ -101,7 +101,7 @@ if (-not (Test-Path $driverPath)) {
 $infFiles = Get-ChildItem $driverPath -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue
 Write-Host "  Found $($infFiles.Count) .inf file(s)." -ForegroundColor Green
 
-# ─── Install drivers ──────────────────────────────────────────────────────────
+# --- Install drivers ----------------------------------------------------------
 Write-Host ''
 Write-Host "==> Installing drivers for $hwModel from $driverPath ..." -ForegroundColor Cyan
 
@@ -119,10 +119,10 @@ Remove-Item $o,$e -ErrorAction SilentlyContinue
 if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 259) {   # 259 = no drivers added (all current)
     Write-Host '  Driver installation complete.' -ForegroundColor Green
 } else {
-    Write-Host "  WARN: pnputil exited $($p.ExitCode) — some drivers may not have installed." -ForegroundColor Yellow
+    Write-Host "  WARN: pnputil exited $($p.ExitCode) - some drivers may not have installed." -ForegroundColor Yellow
 }
 
-# ─── Re-check problem devices ─────────────────────────────────────────────────
+# --- Re-check problem devices -------------------------------------------------
 Write-Host ''
 Write-Host '==> Re-checking device status...' -ForegroundColor Cyan
 $stillBroken = Get-PnpDevice | Where-Object { $_.Status -in 'Error', 'Unknown', 'Degraded' }

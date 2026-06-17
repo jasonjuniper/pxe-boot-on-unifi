@@ -1,10 +1,10 @@
 # 02-setup-dhcp-options.ps1
 # Documents and verifies the DHCP/PXE configuration for pc-deploy.
 #
-# Stack: tftpd64 (proxy DHCP) + WinPE — NOT WDS.
+# Stack: tftpd64 (proxy DHCP) + WinPE - NOT WDS.
 #
 # WHAT IS CONFIGURED ON THE UBIQUITI (192.168.0.1):
-#   - Fixed IP reservation: pc-deploy (c8:f7:50:a3:34:ed) → 192.168.5.141
+#   - Fixed IP reservation: pc-deploy (c8:f7:50:a3:34:ed) -> 192.168.5.141
 #   - DHCP option 66 (TFTP Server Name): 192.168.5.141
 #   - DHCP option 67 (Boot File): EFI\Boot\bootx64.efi
 #     (set manually in UniFi > Networks > Default > DHCP Options)
@@ -46,7 +46,7 @@ $color = if ($udp69) { 'Green' } else { 'Red' }
 Write-Host "UDP port 69 (TFTP)      : $(if ($udp69) { 'Listening' } else { 'NOT listening' })" -ForegroundColor $color
 
 # Verify boot file is present
-$bootFile = "$TftpServerIp"   # just a placeholder — test the local path
+$bootFile = "$TftpServerIp"   # just a placeholder - test the local path
 $localBoot = 'C:\tftpd64\EFI\Boot\bootx64.efi'
 $color = if (Test-Path $localBoot) { 'Green' } else { 'Red' }
 Write-Host "Boot file present       : $(if (Test-Path $localBoot) { $localBoot } else { "MISSING: $localBoot" })" -ForegroundColor $color

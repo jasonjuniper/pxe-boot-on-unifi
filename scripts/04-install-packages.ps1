@@ -635,38 +635,4 @@ if (-not $DryRun) {
 
             if ($mismatch) {
                 $keyEdition = if ($keyIsHome) { 'Home' } elseif ($keyIsPro) { 'Pro' } else { 'unknown' }
-                Write-Log "OEM key is for Windows $keyEdition but machine is imaged with a different edition - skipping OEM key, Windows will activate via digital license" -Level WARN
-            } else {
-                # Key value is never logged - only slmgr result text appears
-                $ipkText = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $oemKey 2>&1) -join ' '
-                Write-Log "Key install: $ipkText"
-
-                if ($ipkText -match '0xC004F069') {
-                    Write-Log 'Edition mismatch detected after key install - Windows will activate via digital license' -Level WARN
-                } elseif ($ipkText -match '0xC004') {
-                    Write-Log 'OEM key rejected by activation server - Windows will activate via digital license or needs manual activation' -Level WARN
-                } else {
-                    $ato = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1) -join ' '
-                    Write-Log "Activation: $ato"
-                }
-            }
-        }
-    } catch {
-        Write-Log "WARN: OEM key read failed: $_" -Level WARN
-    }
-}
-
-# ===========================================================================
-# Final summary
-# ===========================================================================
-$dryNote = if ($DryRun) { ' (dry run)' } else { '' }
-
-if ($wslReboot) {
-    Write-Log 'WSL feature enablement requires a reboot'
-    Write-PhaseSummary -ExitCode 3010 -Notes "WSL reboot pending$dryNote" -Reboot
-    exit 3010
-}
-
-Write-Log "Package installation complete$dryNote"
-Write-PhaseSummary -ExitCode 0 -Notes "catalog=$($catalogPackages.Count), winget=$(if ($runningAsSystem) { 'skipped' } else { $WingetPackages.Count }), msi=$($MsiPackages.Count)$dryNote"
-exit 0
+                Write-Log "OEM key is for Windows $keyEdition but machine is imaged with a diff

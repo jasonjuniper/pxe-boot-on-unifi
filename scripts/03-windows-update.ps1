@@ -193,26 +193,4 @@ if ($rc -eq 5) {
 }
 
 if ($rc -eq 4) {
-    # Some updates failed - Windows Update often needs multiple passes.
-    # Reboot and retry rather than giving up; the search on next round
-    # will skip already-installed updates and retry the rest.
-    Write-Log "Some updates failed ($succeeded/$count succeeded) - rebooting to retry" -Level WARN
-    Write-PhaseSummary -ExitCode 3010 -Notes "$succeeded/$count OK, $failed failed, retrying after reboot" -Reboot
-    exit 3010
-}
-
-# Installed but no reboot flag - check for chained prereqs
-$remaining = 0
-try {
-    $remaining = $searcher.Search("IsInstalled=0").Updates.Count
-} catch {}
-
-if ($remaining -gt 0) {
-    Write-Log "$count installed, $remaining more pending - signaling reboot to re-run"
-    Write-PhaseSummary -ExitCode 3010 -Notes "$count installed, $remaining remaining" -Reboot
-    exit 3010
-}
-
-Write-Log "$count update(s) installed successfully"
-Write-PhaseSummary -ExitCode 0 -Notes "$count updates installed"
-exit 0
+    # Some updates failed - Windows Update often

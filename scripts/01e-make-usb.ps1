@@ -1,9 +1,9 @@
-# 01e-make-usb.ps1 — Write a bootable WinPE USB drive
+# 01e-make-usb.ps1 - Write a bootable WinPE USB drive
 #
 # Runs ON ENG-2 (this machine) as Administrator.
 # Pulls the WinPE media tree from pc-deploy, formats a USB drive FAT32,
 # and copies the media tree so the USB is UEFI-bootable (no special boot
-# sector tool needed — UEFI firmware finds EFI\Boot\bootx64.efi on any
+# sector tool needed - UEFI firmware finds EFI\Boot\bootx64.efi on any
 # FAT32 volume).
 #
 # Usage:
@@ -31,14 +31,14 @@ function Write-OK  ([string]$msg) { Write-Host "  OK: $msg" -ForegroundColor Gre
 function Write-Warn([string]$msg) { Write-Host "  !! $msg"  -ForegroundColor Yellow }
 function Write-Err ([string]$msg) { Write-Host "  ERROR: $msg" -ForegroundColor Red }
 
-# ─── Admin check ─────────────────────────────────────────────────────────────
+# --- Admin check -------------------------------------------------------------
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Err 'This script must be run as Administrator.'
     exit 1
 }
 
-# ─── Locate WinPE media source ────────────────────────────────────────────────
+# --- Locate WinPE media source ------------------------------------------------
 Write-Host ''
 Write-Host '  ============================================' -ForegroundColor Cyan
 Write-Host '   Juniper Design  -  WinPE USB Writer       ' -ForegroundColor Cyan
@@ -56,11 +56,11 @@ $deployShare = "\\$DeployServer\deploy$"
 try { net use $deployShare /persistent:no *>$null } catch {}
 
 if (-not (Test-Path $MediaSource)) {
-    # Fallback 1: winpemedia$ share (C:\WinPE_amd64\media on pc-deploy) — correct USB BCD
+    # Fallback 1: winpemedia$ share (C:\WinPE_amd64\media on pc-deploy) - correct USB BCD
     $winpeMediaShare = "\\$DeployServer\winpemedia$"
     try { net use $winpeMediaShare /persistent:no *>$null } catch {}
 
-    # Fallback 2: tftpd64$ — NOTE: contains PXE BCD, not USB BCD; BCD will be fixed below
+    # Fallback 2: tftpd64$ - NOTE: contains PXE BCD, not USB BCD; BCD will be fixed below
     $tftpShare = "\\$DeployServer\tftpd64$"
     try { net use $tftpShare /persistent:no *>$null } catch {}
 
@@ -90,14 +90,14 @@ if (Test-Path "$winpeMediaShare2\boot\bcd") {
     $usbBcdSource = "$winpeMediaShare2\boot\bcd"
 }
 
-# Quick sanity — bootloader must exist
+# Quick sanity - bootloader must exist
 if (-not (Test-Path "$MediaSource\EFI\Boot\bootx64.efi")) {
     Write-Err "WinPE media source looks incomplete (missing EFI\Boot\bootx64.efi): $MediaSource"
     exit 1
 }
 Write-OK "WinPE media source looks good."
 
-# ─── Pick USB disk ────────────────────────────────────────────────────────────
+# --- Pick USB disk ------------------------------------------------------------
 Write-Step 'Enumerating removable disks...'
 $removableDisks = Get-Disk | Where-Object BusType -in 'USB','SCSI' | Sort-Object Number
 
@@ -149,7 +149,7 @@ if ($targetDisk.Size -gt 64GB) {
 
 $gb = [math]::Round($targetDisk.Size / 1GB, 1)
 Write-Host ''
-Write-Host "  Target: Disk $DiskNumber — $($targetDisk.FriendlyName) ($gb GB)" -ForegroundColor Yellow
+Write-Host "  Target: Disk $DiskNumber - $($targetDisk.FriendlyName) ($gb GB)" -ForegroundColor Yellow
 Write-Host ''
 if ($Force) {
     Write-Host '  -Force specified; skipping confirmation.' -ForegroundColor DarkGray
@@ -161,7 +161,7 @@ if ($Force) {
     }
 }
 
-# ─── Format USB with diskpart ─────────────────────────────────────────────────
+# --- Format USB with diskpart -------------------------------------------------
 Write-Step "Formatting Disk $DiskNumber as FAT32 (MBR, single partition)..."
 
 $diskpartScript = @"
@@ -210,7 +210,7 @@ if (-not $usbVolume) {
 $usbDrive = "$($usbVolume.DriveLetter):"
 Write-OK "USB volume is at $usbDrive"
 
-# ─── Copy WinPE media tree ────────────────────────────────────────────────────
+# --- Copy WinPE media tree ----------------------------------------------------
 Write-Step "Copying WinPE media from $MediaSource to $usbDrive ..."
 
 $robocopyOut = "$env:TEMP\robocopy-usb-out.txt"
@@ -229,7 +229,7 @@ if ($p.ExitCode -gt 7) {
 }
 Write-OK "Files copied (robocopy exit $($p.ExitCode))."
 
-# ─── Fix BCD for USB boot ─────────────────────────────────────────────────────
+# --- Fix BCD for USB boot -----------------------------------------------------
 # The tftpd64 BCD uses PXE (network) device entries which don't work for USB.
 # Replace with the correct USB BCD from the WinPE workspace.
 if ($usbBcdSource) {
@@ -237,19 +237,19 @@ if ($usbBcdSource) {
     Copy-Item $usbBcdSource "$usbDrive\boot\bcd" -Force
     Write-OK 'BCD corrected for USB boot.'
 } else {
-    Write-Warn 'winpemedia$ share not found on pc-deploy — BCD not replaced.'
+    Write-Warn 'winpemedia$ share not found on pc-deploy - BCD not replaced.'
     Write-Warn 'If boot fails with 0xc0000098, run: New-SmbShare -Name winpemedia$ -Path C:\WinPE_amd64\media -FullAccess Everyone'
     Write-Warn 'Then re-run this script.'
 }
 
-# ─── Verify ───────────────────────────────────────────────────────────────────
+# --- Verify -------------------------------------------------------------------
 Write-Step 'Verifying bootloader on USB...'
 $bootloader = "$usbDrive\EFI\Boot\bootx64.efi"
 if (Test-Path $bootloader) {
     $size = [math]::Round((Get-Item $bootloader).Length / 1KB, 0)
     Write-OK "bootx64.efi present ($size KB)"
 } else {
-    Write-Err "bootx64.efi NOT found at $bootloader — USB may not boot!"
+    Write-Err "bootx64.efi NOT found at $bootloader - USB may not boot!"
     exit 1
 }
 
@@ -258,7 +258,7 @@ if (Test-Path $bootWim) {
     $sizeMB = [math]::Round((Get-Item $bootWim).Length / 1MB, 0)
     Write-OK "boot.wim present ($sizeMB MB)"
 } else {
-    Write-Warn 'boot.wim not found at \sources\boot.wim — check media source.'
+    Write-Warn 'boot.wim not found at \sources\boot.wim - check media source.'
 }
 
 Write-Host ''

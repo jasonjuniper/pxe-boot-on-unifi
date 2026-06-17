@@ -27,7 +27,7 @@ param(
     # Folder containing the winpe\ sources (startnet.cmd, deploy.ps1)
     # Defaults to the directory containing this script's parent (repo root)
     [string]$RepoRoot     = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
-    # Juniper brand kit root — supplies the WinPE background generator and deploy HTA
+    # Juniper brand kit root - supplies the WinPE background generator and deploy HTA
     [string]$BrandKitRoot = 'C:\dev\juniper-brand-kit'
 )
 
@@ -45,7 +45,7 @@ $ocRoot   = "$adkRoot\Windows Preinstallation Environment\amd64\WinPE_OCs"
 Write-Host '==> WinPE Build + TFTP Setup' -ForegroundColor Cyan
 Write-Host ''
 
-# ─── Validate ADK ──────────────────────────────────────────────────────────────
+# --- Validate ADK --------------------------------------------------------------
 if (-not (Test-Path $copype)) {
     Write-Host "ERROR: copype.cmd not found at $copype" -ForegroundColor Red
     Write-Host 'Make sure ADK + WinPE Add-on are installed (run 01-setup-wds.ps1).'
@@ -60,7 +60,7 @@ Write-Host "  WinPE work : $WorkDir"
 Write-Host "  TFTP root  : $TftpRoot"
 Write-Host ''
 
-# ─── Step 1: tftpd64 ───────────────────────────────────────────────────────────
+# --- Step 1: tftpd64 -----------------------------------------------------------
 Write-Host '==> Step 1: tftpd64' -ForegroundColor Cyan
 
 $tftpdExe = "$TftpRoot\tftpd64.exe"
@@ -106,7 +106,7 @@ if ($tftpdSvc) {
     Remove-Item $tftpdZip -Force -ErrorAction SilentlyContinue
 
     if (-not (Test-Path $tftpdExe)) {
-        # The zip might have a subdirectory — flatten it
+        # The zip might have a subdirectory - flatten it
         $inner = Get-ChildItem $TftpRoot -Recurse -Filter 'tftpd64.exe' | Select-Object -First 1
         if ($inner) {
             Get-ChildItem $inner.DirectoryName | Move-Item -Destination $TftpRoot -Force
@@ -121,7 +121,7 @@ if ($tftpdSvc) {
     Write-Host "  tftpd64 extracted to $TftpRoot." -ForegroundColor Green
 }
 
-# ─── Step 2: copype ────────────────────────────────────────────────────────────
+# --- Step 2: copype ------------------------------------------------------------
 Write-Host ''
 Write-Host '==> Step 2: Create WinPE workspace (copype)' -ForegroundColor Cyan
 
@@ -140,7 +140,7 @@ if (Test-Path $WorkDir) {
     Write-Host "  Cleanup-Mountpoints complete."
     Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path $WorkDir) {
-        Write-Host "  WARN: Could not fully remove $WorkDir — some files may still be locked." -ForegroundColor Yellow
+        Write-Host "  WARN: Could not fully remove $WorkDir - some files may still be locked." -ForegroundColor Yellow
         Write-Host "  Rebooting pc-deploy and re-running this script may be required."
     } else {
         Write-Host "  Workspace removed." -ForegroundColor Green
@@ -165,7 +165,7 @@ if ($p.ExitCode -ne 0) {
 }
 Write-Host "  WinPE workspace created at $WorkDir." -ForegroundColor Green
 
-# ─── Step 3: Mount boot.wim ────────────────────────────────────────────────────
+# --- Step 3: Mount boot.wim ----------------------------------------------------
 Write-Host ''
 Write-Host '==> Step 3: Mount boot.wim' -ForegroundColor Cyan
 
@@ -187,7 +187,7 @@ try {
 }
 Write-Host '  boot.wim mounted.' -ForegroundColor Green
 
-# ─── Step 4: Add optional components ───────────────────────────────────────────
+# --- Step 4: Add optional components -------------------------------------------
 Write-Host ''
 Write-Host '==> Step 4: Add optional components' -ForegroundColor Cyan
 
@@ -226,7 +226,7 @@ foreach ($oc in $ocs) {
 }
 Write-Host '  Optional components added.' -ForegroundColor Green
 
-# ─── Step 5: Inject startnet.cmd and deploy-boot.ps1 ─────────────────────────
+# --- Step 5: Inject startnet.cmd and deploy-boot.ps1 -------------------------
 # deploy-boot.ps1 is the minimal bootstrap baked into the WIM.
 # The full deploy logic lives on the share at deploy$\scripts\deploy.ps1
 # so it can be updated without rebuilding the WIM.
@@ -256,22 +256,22 @@ Copy-Item (Join-Path $winpeSourceDir 'startnet.cmd')    "$mountDir\Windows\Syste
 Copy-Item (Join-Path $winpeSourceDir 'deploy-boot.ps1') "$mountDir\Windows\System32\deploy-boot.ps1" -Force
 Write-Host "  Injected startnet.cmd and deploy-boot.ps1 from $winpeSourceDir" -ForegroundColor Green
 
-# Inject toolkit.ps1 — network diagnostic tool (press T at boot to launch)
+# Inject toolkit.ps1 - network diagnostic tool (press T at boot to launch)
 $toolkitSrc = Join-Path $winpeSourceDir 'toolkit.ps1'
 if (Test-Path $toolkitSrc) {
     Copy-Item $toolkitSrc "$mountDir\Windows\System32\toolkit.ps1" -Force
     Write-Host "  Injected toolkit.ps1" -ForegroundColor Green
 } else {
-    Write-Host "  WARN: toolkit.ps1 not found in $winpeSourceDir — skipping." -ForegroundColor Yellow
+    Write-Host "  WARN: toolkit.ps1 not found in $winpeSourceDir - skipping." -ForegroundColor Yellow
 }
 
-# ─── Step 5b: Inject Juniper branding ─────────────────────────────────────────
+# --- Step 5b: Inject Juniper branding -----------------------------------------
 Write-Host ''
 Write-Host '==> Step 5b: Inject Juniper branding' -ForegroundColor Cyan
 
 $brandWinPE = Join-Path $BrandKitRoot 'winpe'
 if (-not (Test-Path $BrandKitRoot)) {
-    Write-Host "  WARN: Brand kit not found at $BrandKitRoot — skipping branding." -ForegroundColor Yellow
+    Write-Host "  WARN: Brand kit not found at $BrandKitRoot - skipping branding." -ForegroundColor Yellow
 } else {
     # Generate the branded background JPEG
     $bgScript = Join-Path $brandWinPE 'build-winpe-bg.ps1'
@@ -315,7 +315,7 @@ if (-not (Test-Path $BrandKitRoot)) {
     }
 }
 
-# ─── Step 6: Unmount and commit ────────────────────────────────────────────────
+# --- Step 6: Unmount and commit ------------------------------------------------
 Write-Host ''
 Write-Host '==> Step 6: Unmount and commit boot.wim' -ForegroundColor Cyan
 
@@ -327,11 +327,11 @@ try {
 }
 Write-Host '  boot.wim committed.' -ForegroundColor Green
 
-# ─── Step 7: Populate TFTP root ────────────────────────────────────────────────
+# --- Step 7: Populate TFTP root ------------------------------------------------
 Write-Host ''
 Write-Host "==> Step 7: Populate TFTP root ($TftpRoot)" -ForegroundColor Cyan
 
-# Preserve tftpd64.exe and any existing ini — copy only WinPE media
+# Preserve tftpd64.exe and any existing ini - copy only WinPE media
 $tftpdExeBackup = $null
 if (Test-Path $tftpdExe) { $tftpdExeBackup = $tftpdExe }
 
@@ -351,7 +351,7 @@ Copy-Item "$WorkDir\media\sources\boot.wim" "$TftpRoot\sources\boot.wim" -Force
 
 Write-Host "  Boot media copied to $TftpRoot." -ForegroundColor Green
 
-# ─── Step 8: Write tftpd64.ini ─────────────────────────────────────────────────
+# --- Step 8: Write tftpd64.ini -------------------------------------------------
 Write-Host ''
 Write-Host '==> Step 8: Write tftpd64.ini' -ForegroundColor Cyan
 
@@ -379,18 +379,18 @@ $iniPath = "$TftpRoot\tftpd64.ini"
 $ini | Set-Content $iniPath -Encoding ASCII
 Write-Host "  tftpd64.ini written to $iniPath." -ForegroundColor Green
 
-# ─── Step 9: Install tftpd64 as a service ──────────────────────────────────────
+# --- Step 9: Install tftpd64 as a service --------------------------------------
 Write-Host ''
 Write-Host '==> Step 9: Install tftpd64 service' -ForegroundColor Cyan
 
-# tftpd64.exe is a GUI app — it cannot self-register as a service.
+# tftpd64.exe is a GUI app - it cannot self-register as a service.
 # Use NSSM (already present at C:\nssm\nssm.exe for the inventory service) to wrap it.
 $nssmBin  = 'C:\nssm\nssm.exe'
 $iniPath  = "$TftpRoot\tftpd64.ini"
 
 $tftpdSvc = Get-Service -Name 'tftpd64' -ErrorAction SilentlyContinue
 if ($tftpdSvc) {
-    Write-Host '  Service already registered — restarting.' -ForegroundColor Green
+    Write-Host '  Service already registered - restarting.' -ForegroundColor Green
     Restart-Service -Name 'tftpd64' -ErrorAction SilentlyContinue
 } else {
     if (-not (Test-Path $nssmBin)) {
@@ -413,7 +413,7 @@ if ($tftpdSvc -and $tftpdSvc.Status -eq 'Running') {
     Write-Host "  WARN: tftpd64 service not running (state: $($tftpdSvc.Status)). Start manually: Start-Service tftpd64" -ForegroundColor Yellow
 }
 
-# ─── Step 10: Expose winpemedia$ share for USB drive creation ─────────────────
+# --- Step 10: Expose winpemedia$ share for USB drive creation -----------------
 # 01e-make-usb.ps1 needs the WinPE workspace BCD (not the tftpd64 BCD, which is
 # PXE-only) to create a USB-bootable drive.  Expose C:\WinPE_amd64\media as
 # winpemedia$ so ENG-2 can pull the correct BCD at USB-write time.
@@ -427,7 +427,7 @@ Grant-SmbShareAccess -Name 'winpemedia$' -AccountName 'Everyone' `
                      -AccessRight Read -Force | Out-Null
 Write-Host "  winpemedia$ -> $WorkDir\media (Everyone:Read)" -ForegroundColor Green
 
-# ─── Done ──────────────────────────────────────────────────────────────────────
+# --- Done ----------------------------------------------------------------------
 Write-Host ''
 Write-Host '=== WinPE Build Complete ===' -ForegroundColor Green
 Write-Host ''
@@ -444,6 +444,6 @@ Write-Host '  3. Verify Ubiquiti DHCP options:'
 Write-Host '       Option 66 (TFTP server) = 192.168.5.141'
 Write-Host '       Option 67 (boot file)   = boot\bootmgfw.efi  (or check UniFi Network Boot)'
 Write-Host ''
-Write-Host '  4. PXE-boot a test machine — it should reach the Juniper deploy menu.'
+Write-Host '  4. PXE-boot a test machine - it should reach the Juniper deploy menu.'
 
 Stop-Transcript | Out-Null

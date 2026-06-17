@@ -715,45 +715,4 @@ $fwLines    = Get-Content $fwOut -ErrorAction SilentlyContinue
 $pxeGuid    = $null
 $pxeRemoved = 0
 foreach ($fwLine in $fwLines) {
-    if ($fwLine -match '^\s+identifier\s+(\{[0-9a-fA-F\-]+\})') {
-        $pxeGuid = $Matches[1]
-    }
-    if ($pxeGuid -and
-        $pxeGuid -notin @('{bootmgr}','{fwbootmgr}') -and
-        $fwLine  -match 'description\s+.*(PXE|EFI Network|IPv4|IPv6|Network Boot)') {
-        $pdel = Start-Process bcdedit -ArgumentList "/delete `"$pxeGuid`"" `
-            -Wait -PassThru -NoNewWindow `
-            -RedirectStandardOutput "$env:TEMP\bcd_del_o.txt" `
-            -RedirectStandardError  "$env:TEMP\bcd_del_e.txt"
-        if ($pdel.ExitCode -eq 0) {
-            Write-Host "  Removed PXE entry: $pxeGuid" -ForegroundColor DarkGray
-            $pxeRemoved++
-        } else {
-            Write-Host "  PXE entry deprioritized (firmware-protected): $pxeGuid" -ForegroundColor DarkGray
-        }
-        $pxeGuid = $null
-    }
-    if ($fwLine -match '^\s*$') { $pxeGuid = $null }
-}
-if ($pxeRemoved -gt 0) {
-    Write-Host "  PXE: $pxeRemoved boot entr$(if ($pxeRemoved -eq 1){'y'}else{'ies'}) removed." -ForegroundColor Green
-} else {
-    Write-Host '  PXE: no deletable entries found (will be lower priority than Windows).' -ForegroundColor DarkGray
-}
-
-# --- Write final WinPE log entry before disconnecting share -----------------
-
-Write-DeployLog "WinPE phase complete - rebooting into Windows"
-
-# --- Cleanup and reboot -----------------------------------------------------
-
-try { net use $DeployShare /delete *>$null } catch {}
-
-Write-Host ''
-Write-Host '  ============================================' -ForegroundColor Green
-Write-Host "   Done: $($os.Label) -> $computerName" -ForegroundColor Green
-Write-Host '   Rebooting in 15 seconds...               ' -ForegroundColor Green
-Write-Host '  ============================================' -ForegroundColor Green
-Write-Host ''
-Start-Sleep 15
-wpeutil reboot
+    i

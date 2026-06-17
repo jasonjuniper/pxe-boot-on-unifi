@@ -11,7 +11,7 @@
 #
 # DO NOT RUN THIS SCRIPT.
 #
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Original description (for reference):
 # Configures the MDT deployment share and generates the LiteTouch WinPE boot image.
 # Run on pc-deploy as Administrator AFTER 01-setup-wds.ps1 has completed.
