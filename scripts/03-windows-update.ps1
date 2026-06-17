@@ -17,6 +17,42 @@ $ErrorActionPreference = 'Stop'
 Initialize-ImagingLogging -PhaseName 'windows-update'
 Write-PhaseHeader -Description 'Windows Update'
 
+# ---- Register Microsoft Update + enable driver/optional updates -------------
+# Default Windows Update only delivers critical/security updates.
+# Registering the Microsoft Update (MU) service adds drivers, optional updates,
+# and the full hardware catalog so they appear in the WUA search results.
+$muServiceId  = '7971f918-a847-4430-9279-4a52d1efe18d'
+$muRegistered = $false
+Write-Log 'Registering Microsoft Update service (adds driver + optional updates)...'
+try {
+    $muMgr = New-Object -ComObject Microsoft.Update.ServiceManager
+    $muMgr.ClientApplicationID = 'Juniper Imaging'
+    $muMgr.AddService2($muServiceId, 7, '') | Out-Null
+    $muRegistered = $true
+    Write-Log '  Microsoft Update registered'
+} catch {
+    Write-Log "  WARN: Microsoft Update not registered ($($_.Exception.HResult)) - Windows Update only" -Level WARN
+}
+
+# Enable driver searching and recommended updates via registry
+foreach ($reg in @(
+    [pscustomobject]@{
+        P = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching'
+        N = 'SearchOrderConfig'; V = 1
+    },
+    [pscustomobject]@{
+        P = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update'
+        N = 'IncludeRecommendedUpdates'; V = 1
+    }
+)) {
+    try {
+        if (-not (Test-Path $reg.P)) { New-Item -Path $reg.P -Force | Out-Null }
+        Set-ItemProperty -Path $reg.P -Name $reg.N -Value $reg.V -Type DWord -ErrorAction Stop
+    } catch {
+        Write-Log "  WARN: Could not set registry $($reg.N): $_" -Level WARN
+    }
+}
+
 # ---- Search for pending updates via COM API ---------------------------------
 # Uses the built-in Windows Update Agent COM object - no PowerShellGet or module
 # installation required, works natively in SYSTEM context on any Windows version.
@@ -25,7 +61,11 @@ Write-Log 'Searching for pending updates (WUA COM API)...'
 try {
     $session  = New-Object -ComObject Microsoft.Update.Session
     $searcher = $session.CreateUpdateSearcher()
-    # IsInstalled=0: not yet installed
+    if ($muRegistered) {
+        $searcher.ServerSelection = 2   # ssOthers: use the registered Microsoft Update service
+        $searcher.ServiceID       = $muServiceId
+    }
+    # IsInstalled=0: all pending updates (software + drivers + optional when MU is registered)
     $result   = $searcher.Search("IsInstalled=0")
 } catch {
     Write-Log "Failed to create Windows Update session: $_" -Level ERROR

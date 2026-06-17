@@ -45,10 +45,10 @@ $AppxToRemove = @(
     'Microsoft.ZuneVideo',         # Movies & TV
 
     # Windows 11 specific
-    'MicrosoftTeams',              # Teams (personal) — preinstalled on Win11
-    'Microsoft.Teams',             # Teams (personal) — alternate package name
-    'Microsoft.MicrosoftTeams',    # Teams — another variant
-    'Microsoft.Cortana',           # Cortana — can be removed on Win11
+    'MicrosoftTeams',              # Teams (personal) - preinstalled on Win11
+    'Microsoft.Teams',             # Teams (personal) - alternate package name
+    'Microsoft.MicrosoftTeams',    # Teams - another variant
+    'Microsoft.Cortana',           # Cortana - can be removed on Win11
     'Clipchamp.Clipchamp',         # Clipchamp video editor
     'Microsoft.Windows.DevHome',   # Dev Home (Win11 23H2+)
     'Microsoft.WindowsCommunicationsApps', # Mail and Calendar

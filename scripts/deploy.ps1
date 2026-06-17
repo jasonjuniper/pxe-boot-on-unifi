@@ -290,6 +290,28 @@ $primaryNic = ($allNics | Where-Object { $_['type'] -eq 'ethernet' } | Select-Ob
 if (-not $primaryNic) { $primaryNic = ($allNics | Select-Object -First 1) }
 $primaryMac = if ($primaryNic) { $primaryNic['mac'] } else { '' }
 
+# --- UEFI OEM license detection -----------------------------------------------
+# OA3xOriginalProductKeyDescription returns e.g. "Windows 11 Home" or "Windows 11 Pro".
+# Used to auto-suggest the correct edition for OS selection.
+# Fails silently if WinPE does not expose SoftwareLicensingService or the machine
+# has no embedded MSDM key (digital license, volume, or VM).
+$oemKeyDesc   = ''
+$oemOsDefault = ''
+try {
+    $slsObj = Get-WmiObject -Namespace root\cimv2 -Class SoftwareLicensingService -ErrorAction Stop
+    if ($slsObj.OA3xOriginalProductKey) {
+        $rawDesc    = $slsObj.OA3xOriginalProductKeyDescription
+        $oemKeyDesc = if ($rawDesc) { $rawDesc } else { '(key present, description unavailable)' }
+        $oemOsDefault = switch -Wildcard ($oemKeyDesc) {
+            '*11*Home*'         { '1' }
+            '*11*Pro*'          { '2' }
+            '*11*Professional*' { '2' }
+            '*10*'              { '3' }
+            default             { '' }
+        }
+    }
+} catch {}
+
 # --- Detect Hardware --------------------------------------------------------
 
 Write-Host '  -- Hardware Detected ----------------------------------' -ForegroundColor DarkCyan
@@ -297,6 +319,12 @@ Write-Host "    Manufacturer : $hwMfr"
 Write-Host "    Model        : $hwModel"
 Write-Host "    Serial       : $(if ($serialClean) { $hwSerial } else { '(no usable serial)' })"
 Write-Host "    NICs         : $($allNics.Count) physical ($(@($allNics | Where-Object { $_['type'] -eq 'ethernet' }).Count) wired)"
+if ($oemKeyDesc) {
+    $oemHint = if ($oemOsDefault) { "  -> auto-select [$oemOsDefault] $($OsOptions[$oemOsDefault].Label)" } else { '' }
+    Write-Host "    UEFI License : $oemKeyDesc$oemHint" -ForegroundColor Green
+} else {
+    Write-Host '    UEFI License : (no OEM key - digital license or volume)' -ForegroundColor DarkGray
+}
 
 Write-Host ''
 
@@ -349,6 +377,9 @@ if ($prior) {
     Write-Host ''
     Write-Host "  Default OS:   [$($prior.os_key)] $($OsOptions[$prior.os_key].Label)" -ForegroundColor Cyan
     Write-Host "  Default Name: $($prior.hostname)" -ForegroundColor Cyan
+    if ($oemOsDefault -and $oemOsDefault -ne $prior.os_key) {
+        Write-Host "  NOTE: UEFI key suggests $($OsOptions[$oemOsDefault].Label) - press a key to override" -ForegroundColor Yellow
+    }
     Write-Host ''
     Write-Host '  Press any key to change, or wait 30 s to accept defaults.' -ForegroundColor DarkGray
     Write-Host ''
@@ -377,12 +408,39 @@ if ($prior) {
 # --- OS Selection (manual) --------------------------------------------------
 
 if (-not $useDefaults) {
-    Write-Host '  Select OS to deploy:' -ForegroundColor Cyan
-    foreach ($k in ($OsOptions.Keys | Sort-Object)) {
-        Write-Host "    [$k] $($OsOptions[$k].Label)"
+    # If UEFI key suggests an edition, offer 30-second auto-select countdown
+    if ($oemOsDefault -and -not $osKey) {
+        Write-Host "  UEFI key suggests: [$oemOsDefault] $($OsOptions[$oemOsDefault].Label)" -ForegroundColor Cyan
+        Write-Host '  Press any key within 30 s to choose a different edition.' -ForegroundColor DarkGray
+        Write-Host ''
+        $swUefi    = [System.Diagnostics.Stopwatch]::StartNew()
+        $uefiTimed = $true
+        while ($swUefi.Elapsed.TotalSeconds -lt 30) {
+            if ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null; $uefiTimed = $false; break }
+            $secsUefi = [int](30 - $swUefi.Elapsed.TotalSeconds)
+            Write-Host "`r  Auto-selecting in $secsUefi s...  " -NoNewline
+            Start-Sleep -Milliseconds 200
+        }
+        Write-Host ''; $swUefi.Stop()
+        if ($uefiTimed) {
+            $osKey = $oemOsDefault
+            Write-Host "  Auto-selected: $($OsOptions[$osKey].Label)" -ForegroundColor Green
+            Write-Host ''
+        } else {
+            Write-Host '  Manual selection.' -ForegroundColor Yellow; Write-Host ''
+        }
     }
-    Write-Host ''
-    while ($osKey -notin $OsOptions.Keys) { $osKey = Read-Host '  Choice' }
+
+    # Manual selection if no UEFI suggestion or operator overrode it
+    if ($osKey -notin $OsOptions.Keys) {
+        Write-Host '  Select OS to deploy:' -ForegroundColor Cyan
+        foreach ($k in ($OsOptions.Keys | Sort-Object)) {
+            $uefiHint = if ($k -eq $oemOsDefault) { '  <- UEFI key' } else { '' }
+            Write-Host "    [$k] $($OsOptions[$k].Label)$uefiHint"
+        }
+        Write-Host ''
+        while ($osKey -notin $OsOptions.Keys) { $osKey = Read-Host '  Choice' }
+    }
 }
 
 $os = $OsOptions[$osKey]
