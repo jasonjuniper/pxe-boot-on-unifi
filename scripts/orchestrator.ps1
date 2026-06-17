@@ -121,10 +121,39 @@ if ($Bootstrap) {
 
     Write-Log "Scheduled task '$TaskName' registered (AtStartup, SYSTEM)"
 
+    # Enable WinRM so IT can reach the machine remotely during and after imaging.
+    # -SkipNetworkProfileCheck allows it even when the NIC profile is Public.
+    try {
+        Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction Stop | Out-Null
+        # Trust the imaging subnet so IT workstations can connect without extra config
+        Set-Item WSMan:\localhost\Client\TrustedHosts -Value '192.168.0.*,192.168.1.*,192.168.2.*,192.168.3.*,192.168.4.*,192.168.5.*,192.168.6.*,192.168.7.*,192.168.8.*,192.168.9.*,192.168.10.*' `
+            -Force -ErrorAction SilentlyContinue
+        Write-Log "WinRM enabled (PSRemoting active)" -MasterOnly
+    } catch {
+        Write-Log "WinRM enable failed (non-fatal): $_" -Level WARN -MasterOnly
+    }
+
     # Write initial phase state if not already present
     if (-not (Test-Path $PhaseFile)) {
         Save-PhaseState -Phase 'windows-update' -Round 0
         Write-Log "Phase state initialized: windows-update" -MasterOnly
+    }
+
+    # Change JuniperAdmin password immediately so CHANGEME is not live during imaging.
+    # The bootstrap API returns the same password that 04-install-packages.ps1 will set,
+    # so this just moves that step to the very first boot (before the login screen is usable).
+    try {
+        $invApi   = 'http://192.168.5.141:8080'
+        $resp     = Invoke-RestMethod "$invApi/api/management/bootstrap" -TimeoutSec 10 -ErrorAction Stop
+        $bPass    = $resp.password
+        if ($bPass) {
+            $secPass = ConvertTo-SecureString $bPass -AsPlainText -Force
+            Set-LocalUser -Name 'JuniperAdmin' -Password $secPass -ErrorAction Stop
+            $secPass = $null; $bPass = $null; $resp = $null
+            Write-Log "JuniperAdmin password updated from bootstrap API" -MasterOnly
+        }
+    } catch {
+        Write-Log "Could not update JuniperAdmin password at bootstrap: $_ (CHANGEME still active)" -Level WARN -MasterOnly
     }
 
     Write-Log "Bootstrap complete - proceeding to first phase"
@@ -155,7 +184,6 @@ Write-Log "Starting phase '$phase' (round $round)"
 
 $exitCode = Invoke-Phase -PhaseName $phase
 
-Write-Log "Phase '$phase' exited: $exitCode" -MasterOnly
 Write-Log "Phase '$phase' exited: $exitCode"
 
 if ($exitCode -eq 3010) {

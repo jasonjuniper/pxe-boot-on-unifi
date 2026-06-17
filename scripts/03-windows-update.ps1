@@ -1,15 +1,15 @@
 # 03-windows-update.ps1
-# Installs all pending Windows updates.
+# Installs all pending Windows updates using the Windows Update Agent COM API.
+# Works in SYSTEM context on fresh Windows 10/11 - no module installation required.
+#
 # Part of the Juniper automated imaging pipeline - runs via orchestrator.ps1.
 #
 # Exit codes (read by orchestrator.ps1):
 #   0    - no more pending updates; phase complete
 #   3010 - updates were installed; reboot required to continue
 #   1    - fatal error (orchestrator will log and advance anyway)
-#
-# NOTE: Do NOT add -AutoReboot to Install-WindowsUpdate here.
-# The orchestrator reads the exit code and handles the reboot itself,
-# so it can log the event and update phase.json before rebooting.
+
+param([switch]$DryRun)
 
 $ErrorActionPreference = 'Stop'
 
@@ -17,80 +17,142 @@ $ErrorActionPreference = 'Stop'
 Initialize-ImagingLogging -PhaseName 'windows-update'
 Write-PhaseHeader -Description 'Windows Update'
 
-# ---- Ensure PSWindowsUpdate is available ------------------------------------
-if (-not (Get-Module -ListAvailable PSWindowsUpdate)) {
-    Write-Log "Installing PSWindowsUpdate module..."
-    try {
-        # Fresh Windows installs need TLS 1.2 and NuGet bootstrapped first.
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-        # Import PowerShellGet explicitly to resolve the loader issue on fresh Windows 11
-        # where the built-in v1 module sometimes fails to auto-load.
-        Import-Module PowerShellGet -Force -ErrorAction SilentlyContinue
-        Install-Module PSWindowsUpdate -Force -Scope AllUsers -AllowClobber -ErrorAction Stop
-        Write-Log "PSWindowsUpdate installed"
-    } catch {
-        Write-Log "Failed to install PSWindowsUpdate: $_" -Level ERROR
-        Write-PhaseSummary -ExitCode 1 -Notes "PSWindowsUpdate install failed"
-        exit 1
-    }
-}
-Import-Module PSWindowsUpdate -Force
+# ---- Search for pending updates via COM API ---------------------------------
+# Uses the built-in Windows Update Agent COM object - no PowerShellGet or module
+# installation required, works natively in SYSTEM context on any Windows version.
+Write-Log 'Searching for pending updates (WUA COM API)...'
 
-# ---- Check for pending updates ----------------------------------------------
-Write-Log "Checking for pending updates..."
-
-$updates = $null
 try {
-    $updates = Get-WUList -MicrosoftUpdate -AcceptAll 2>$null
+    $session  = New-Object -ComObject Microsoft.Update.Session
+    $searcher = $session.CreateUpdateSearcher()
+    # IsInstalled=0: not yet installed
+    $result   = $searcher.Search("IsInstalled=0")
 } catch {
-    Write-Log "Get-WUList error: $_" -Level WARN
+    Write-Log "Failed to create Windows Update session: $_" -Level ERROR
+    Write-PhaseSummary -ExitCode 1 -Notes 'WUA COM init failed'
+    exit 1
 }
 
-if (-not $updates -or $updates.Count -eq 0) {
-    Write-Log "No pending updates - system is current"
-    Write-PhaseSummary -ExitCode 0 -Notes "0 updates pending"
+$updates = $result.Updates
+$count   = $updates.Count
+
+if ($count -eq 0) {
+    Write-Log 'No pending updates - system is current'
+    Write-PhaseSummary -ExitCode 0 -Notes '0 updates pending'
     exit 0
 }
 
-Write-Log "Found $($updates.Count) pending update(s):"
-foreach ($u in $updates) {
-    Write-Log "  $($u.KB)  $($u.Title)" -PhaseOnly
+Write-Log "Found $count pending update(s):"
+for ($i = 0; $i -lt $count; $i++) {
+    $u = $updates.Item($i)
+    Write-Log "  [$($i+1)/$count] $($u.Title)" -PhaseOnly
 }
 
-# ---- Install updates (no auto-reboot - orchestrator handles the reboot) -----
-Write-Log "Installing $($updates.Count) update(s)..."
+if ($DryRun) {
+    Write-Log "(Dry run - skipping download and install)"
+    Write-PhaseSummary -ExitCode 0 -Notes "$count updates found (dry run)"
+    exit 0
+}
+
+# ---- Accept EULAs -----------------------------------------------------------
+for ($i = 0; $i -lt $count; $i++) {
+    $u = $updates.Item($i)
+    if (-not $u.EulaAccepted) {
+        try { $u.AcceptEula() } catch {}
+    }
+}
+
+# ---- Download ---------------------------------------------------------------
+Write-Log "Downloading $count update(s)..."
 try {
-    Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot -Confirm:$false
+    $dl = $session.CreateUpdateDownloader()
+    $dl.Updates = $updates
+    $dlResult = $dl.Download()
+    Write-Log "Download result code: $($dlResult.ResultCode)" -PhaseOnly
 } catch {
-    Write-Log "Install-WindowsUpdate error: $_" -Level WARN
+    Write-Log "Download error: $_" -Level WARN
+    # Non-fatal - attempt install anyway (some updates may already be cached)
 }
 
-# Check if a reboot is pending after the install
-$rebootPending = $false
+# ---- Install ----------------------------------------------------------------
+Write-Log "Installing $count update(s) (orchestrator handles reboot)..."
+$installResult = $null
 try {
-    $rebootPending = (Get-WURebootStatus -Silent).RebootRequired
+    $inst = $session.CreateUpdateInstaller()
+    $inst.Updates = $updates
+    $inst.AllowSourcePrompts = $false
+    $installResult = $inst.Install()
 } catch {
-    # Fallback: check registry
-    $rebootPending = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or
-                     (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations')
+    Write-Log "Install error: $_" -Level ERROR
+    Write-PhaseSummary -ExitCode 1 -Notes "Install exception: $_"
+    exit 1
 }
 
-if ($rebootPending) {
-    Write-Log "$($updates.Count) update(s) installed - reboot required"
-    Write-PhaseSummary -ExitCode 3010 -Notes "$($updates.Count) updates installed" -Reboot
+# ResultCode: 0=NotStarted 1=InProgress 2=Succeeded 3=SucceededWithErrors 4=Failed 5=Aborted
+# HResult meanings: 0x00000000=OK, 0x80240022=No Updates, 0x8024000C=UpdateNotInstalled,
+#                   0x80070005=Access Denied, 0x8024402C=Network, 0x80240017=Uninstallable
+$rc = $installResult.ResultCode
+$rcNames = @{0='NotStarted';1='InProgress';2='Succeeded';3='SucceededWithErrors';4='Failed';5='Aborted'}
+Write-Log "Install result: $($rcNames[$rc]) (code=$rc) | RebootRequired=$($installResult.RebootRequired)"
+
+# Log per-update results so failures can be diagnosed without reading Event Viewer
+$succeeded = 0; $failed = 0
+try {
+    for ($i = 0; $i -lt $count; $i++) {
+        $ur = $installResult.GetUpdateResult($i)
+        $un = $updates.Item($i).Title
+        if ($ur.ResultCode -eq 2) {
+            $succeeded++
+        } else {
+            $failed++
+            $hresultHex = '0x{0:X8}' -f ([int64]$ur.HResult -band 0xFFFFFFFF)
+            $urName = if ($rcNames.ContainsKey([int]$ur.ResultCode)) { $rcNames[[int]$ur.ResultCode] } else { 'Unknown' }
+            Write-Log "  FAIL [$($i+1)/$count] $un" -Level WARN
+            Write-Log "       code=$($ur.ResultCode) ($urName) HResult=$hresultHex" -Level WARN
+        }
+    }
+    if ($failed -gt 0) {
+        Write-Log "Summary: $succeeded succeeded, $failed failed out of $count" -Level WARN
+    }
+} catch {
+    Write-Log "Could not enumerate per-update results: $_ (overall result above is still valid)" -Level WARN
+    $succeeded = 0; $failed = 0
+}
+
+if ($installResult.RebootRequired) {
+    Write-Log "$count update(s) processed ($succeeded OK, $failed failed) - reboot required"
+    Write-PhaseSummary -ExitCode 3010 -Notes "$succeeded installed, $failed failed, reboot required" -Reboot
     exit 3010
-} else {
-    # Updates installed but no reboot required - check again to be safe
-    $remaining = $null
-    try { $remaining = Get-WUList -MicrosoftUpdate -AcceptAll 2>$null } catch {}
-    if ($remaining -and $remaining.Count -gt 0) {
-        Write-Log "$($updates.Count) installed, $($remaining.Count) still pending - signaling reboot to re-run"
-        Write-PhaseSummary -ExitCode 3010 -Notes "$($updates.Count) installed, $($remaining.Count) remaining" -Reboot
-        exit 3010
-    }
-    Write-Log "$($updates.Count) update(s) installed, no reboot required"
-    Write-PhaseSummary -ExitCode 0 -Notes "$($updates.Count) updates installed"
-    exit 0
 }
+
+if ($rc -eq 5) {
+    # Aborted - truly fatal, no point rebooting
+    Write-Log "Update install aborted (code=5, $succeeded/$count succeeded)" -Level ERROR
+    Write-PhaseSummary -ExitCode 1 -Notes "Install aborted (code=5)"
+    exit 1
+}
+
+if ($rc -eq 4) {
+    # Some updates failed - Windows Update often needs multiple passes.
+    # Reboot and retry rather than giving up; the search on next round
+    # will skip already-installed updates and retry the rest.
+    Write-Log "Some updates failed ($succeeded/$count succeeded) - rebooting to retry" -Level WARN
+    Write-PhaseSummary -ExitCode 3010 -Notes "$succeeded/$count OK, $failed failed, retrying after reboot" -Reboot
+    exit 3010
+}
+
+# Installed but no reboot flag - check for chained prereqs
+$remaining = 0
+try {
+    $remaining = $searcher.Search("IsInstalled=0").Updates.Count
+} catch {}
+
+if ($remaining -gt 0) {
+    Write-Log "$count installed, $remaining more pending - signaling reboot to re-run"
+    Write-PhaseSummary -ExitCode 3010 -Notes "$count installed, $remaining remaining" -Reboot
+    exit 3010
+}
+
+Write-Log "$count update(s) installed successfully"
+Write-PhaseSummary -ExitCode 0 -Notes "$count updates installed"
+exit 0

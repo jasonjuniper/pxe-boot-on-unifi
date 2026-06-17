@@ -10,7 +10,7 @@
 
   KEY SETTINGS:
     - ProductKey      : Windows 11 Pro volume/MAK key (or blank for KMS)
-    - TimeZone        : Pacific Standard Time (set below in specialize pass)
+    - TimeZone        : Eastern Standard Time (set below in specialize pass)
     - AdminPassword   : NEVER paste here. 04-install-packages.ps1 sets a real
                         password via 1Password at runtime.
 
@@ -121,7 +121,7 @@
       <ComputerName>*</ComputerName>
       <RegisteredOrganization>Juniper Design</RegisteredOrganization>
       <RegisteredOwner>Juniper Design</RegisteredOwner>
-      <TimeZone>Pacific Standard Time</TimeZone>
+      <TimeZone>Eastern Standard Time</TimeZone>
     </component>
 
     <component name="Microsoft-Windows-TerminalServices-LocalSessionManager"

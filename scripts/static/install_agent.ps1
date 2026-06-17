@@ -1,4 +1,4 @@
-# install_agent.ps1 - Juniper Design Inventory Agent
+﻿# install_agent.ps1 - Juniper Design Inventory Agent
 # Served dynamically by the inventory server; ##INVENTORY_API## is replaced at serve time.
 #
 # One-liner install / update:
@@ -17,6 +17,23 @@
 $ErrorActionPreference = 'SilentlyContinue'
 $InvApi   = '##INVENTORY_API##'
 $AgentVer = '1.0.0'
+
+# ---- Install Juniper CA certificates ----------------------------------------
+# The inventory UI is served over HTTPS (Caddy tls internal). Install the
+# root + intermediate CAs so Chrome and PowerShell HTTPS calls trust it.
+# Uses HTTP to download the certs (so no trust is needed before this step).
+try {
+    $rootCrt = "$env:TEMP\juniper-ca-root.crt"
+    $intCrt  = "$env:TEMP\juniper-ca-int.crt"
+    Invoke-WebRequest "$InvApi/static/juniper-inventory-ca.crt"              -OutFile $rootCrt -UseBasicParsing -TimeoutSec 10
+    Invoke-WebRequest "$InvApi/static/juniper-inventory-ca-intermediate.crt" -OutFile $intCrt  -UseBasicParsing -TimeoutSec 10
+    Import-Certificate -FilePath $rootCrt -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
+    Import-Certificate -FilePath $intCrt  -CertStoreLocation 'Cert:\LocalMachine\CA'   | Out-Null
+    Remove-Item $rootCrt, $intCrt -Force -ErrorAction SilentlyContinue
+    Write-Host "  Juniper CA certificates installed" -ForegroundColor Green
+} catch {
+    Write-Host "  WARN: Could not install Juniper CA certs: $_" -ForegroundColor Yellow
+}
 
 # ---- Helpers ----------------------------------------------------------------
 

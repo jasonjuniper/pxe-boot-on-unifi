@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Imaging Monitor - Juniper IT</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Consolas','Menlo',monospace;background:#0d1117;color:#c9d1d9;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{background:#161b22;border-bottom:1px solid #30363d;padding:10px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+header h1{font-size:14px;font-weight:600;color:#58a6ff}
+.badge{font-size:11px;background:#484f58;color:#fff;padding:2px 8px;border-radius:10px;transition:background .3s}
+.badge.live{background:#238636}
+.user{margin-left:auto;font-size:12px;color:#8b949e}
+.user a{color:#8b949e;text-decoration:none}
+.user a:hover{color:#58a6ff}
+.layout{display:flex;flex:1;overflow:hidden}
+.sidebar{width:240px;background:#0d1117;border-right:1px solid #21262d;display:flex;flex-direction:column;flex-shrink:0}
+.sidebar-hdr{padding:8px 12px;border-bottom:1px solid #21262d;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center}
+.sidebar-hdr .refresh{margin-left:auto;cursor:pointer;color:#58a6ff;font-size:14px;user-select:none}
+.machine-list{flex:1;overflow-y:auto}
+.machine-item{padding:8px 12px;cursor:pointer;border-left:3px solid transparent;transition:background .1s}
+.machine-item:hover{background:#161b22}
+.machine-item.sel{background:#161b22;border-left-color:#58a6ff}
+.m-name{font-size:13px;font-weight:500;color:#e6edf3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-meta{font-size:11px;color:#8b949e;margin-top:2px;display:flex;align-items:center;gap:4px}
+.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.dot-a{background:#3fb950;animation:pulse 1.5s infinite}
+.dot-r{background:#d29922}
+.dot-o{background:#484f58}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.m-last{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;font-size:10px;color:#8b949e;margin-top:1px}
+.empty{padding:24px 12px;text-align:center;color:#484f58;font-size:12px}
+.log-panel{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.no-sel{flex:1;display:flex;align-items:center;justify-content:center;color:#484f58;font-size:13px;flex-direction:column;gap:10px}
+.no-sel svg{opacity:.25}
+#log-view{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.toolbar{padding:6px 12px;background:#161b22;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0}
+.t-name{font-weight:600;color:#e6edf3}
+.t-right{margin-left:auto;display:flex;align-items:center;gap:6px;color:#8b949e}
+.btn{background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:3px 9px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit}
+.btn:hover{background:#30363d}
+.btn.on{background:#1f6feb;border-color:#388bfd;color:#fff}
+.ci{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
+.ci-ok{background:#3fb950}
+.ci-wait{background:#d29922}
+.ci-err{background:#f85149}
+.prog-strip{background:#0d1117;border-bottom:1px solid #21262d;padding:5px 12px;display:flex;align-items:center;gap:6px;flex-shrink:0;overflow:hidden}
+.prog-phase{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#8b949e;background:#21262d;padding:2px 6px;border-radius:3px;white-space:nowrap;flex-shrink:0}
+.prog-steps{display:flex;align-items:center;flex:1;overflow:hidden;gap:0}
+.ps{display:flex;align-items:center;flex-shrink:0}
+.ps-label{font-size:10px;padding:2px 6px;border-radius:3px;color:#484f58;background:transparent;transition:all .25s;white-space:nowrap}
+.ps.done .ps-label{color:#3fb950}
+.ps.cur .ps-label{color:#58a6ff;background:#0d1e38;outline:1px solid #1f6feb}
+.ps.active .ps-label{color:#58a6ff;background:#0d1e38;outline:1px solid #1f6feb;animation:stepblink 1s infinite}
+@keyframes stepblink{0%,100%{outline-color:#1f6feb}50%{outline-color:#388bfd}}
+.ps.fail .ps-label{color:#f85149;background:#2d1517;outline:1px solid #6e1a1a}
+.ps-arrow{color:#21262d;font-size:9px;padding:0 1px;flex-shrink:0;user-select:none}
+.ps.done .ps-arrow{color:#3fb950}
+.prog-pct{font-size:10px;color:#8b949e;white-space:nowrap;flex-shrink:0;min-width:30px;text-align:right}
+.log-out{flex:1;overflow-y:auto;padding:4px 0;font-size:12px;line-height:1.6}
+.ll{padding:0 10px}
+.ll:hover{background:#161b22}
+.li{color:#c9d1d9}
+.lw{color:#d29922}
+.le{color:#f85149}
+.lph{color:#58a6ff;font-weight:600;background:#0d1e38;padding:2px 10px;border-left:3px solid #58a6ff;margin:3px 0}
+.lok{color:#3fb950;font-weight:600;background:#0d2416;padding:2px 10px;border-left:3px solid #3fb950;margin:3px 0}
+.lfail{color:#f85149;font-weight:600;background:#2d1517;padding:2px 10px;border-left:3px solid #f85149;margin:3px 0}
+.lrbt{color:#a371f7;font-weight:600;background:#1b1329;padding:2px 10px;border-left:3px solid #a371f7;margin:3px 0}
+.lsep{color:#21262d}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#21262d;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#30363d}
+</style>
+</head>
+<body>
+<header>
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="#58a6ff"><rect x="1" y="2" width="14" height="10" rx="1.5" stroke="#58a6ff" stroke-width="1.5" fill="none"/><path d="M5 14h6M8 12v2" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round"/></svg>
+  <h1>Imaging Monitor</h1>
+  <span class="badge" id="badge">0 active</span>
+  <span class="user">__USER__ &nbsp;&middot;&nbsp; <a href="/">Inventory</a></span>
+</header>
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-hdr">Machines <span class="refresh" title="Refresh" onclick="loadSessions()">&#8635;</span></div>
+    <div class="machine-list" id="machine-list"><div class="empty">No sessions found</div></div>
+  </div>
+  <div class="log-panel">
+    <div class="no-sel" id="no-sel">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+      Select a machine to view its live log
+    </div>
+    <div id="log-view" style="display:none">
+      <div class="toolbar">
+        <span class="t-name" id="t-name">-</span>
+        <span class="t-right">
+          <span class="ci ci-wait" id="ci"></span>
+          <span id="ci-label">connecting</span>
+          <button class="btn on" id="scroll-btn" onclick="toggleScroll()">Auto-scroll</button>
+          <button class="btn" onclick="clearLog()">Clear</button>
+        </span>
+      </div>
+      <div class="prog-strip" id="prog-strip">
+        <span class="prog-phase" id="prog-phase">WinPE</span>
+        <div class="prog-steps" id="prog-steps"></div>
+        <span class="prog-pct" id="prog-pct">0%</span>
+      </div>
+      <div class="log-out" id="log-out" onscroll="onScroll()"></div>
+    </div>
+  </div>
+</div>
+<script>
+var cur=null,es=null,autoScroll=true;
+var machineStep={};
+
+var STEPS=[
+  {label:'Start',    ph:'WinPE',        re:/Juniper Imaging Start/},
+  {label:'Partition',ph:'WinPE',        re:/Step: Partitioning disk/},
+  {label:'Apply WIM',ph:'WinPE',        re:/Step: Applying .+ \(DISM/},
+  {label:'WIM OK',   ph:'WinPE',        re:/Step: WIM applied/},
+  {label:'Drivers',  ph:'WinPE',        re:/Step: Injecting drivers/},
+  {label:'Unattend', ph:'WinPE',        re:/Step: Writing unattend/},
+  {label:'Stage',    ph:'WinPE',        re:/Step: Staging post-install/},
+  {label:'Inventory',ph:'WinPE',        re:/Step: Registering in inventory/},
+  {label:'Boot',     ph:'WinPE',        re:/Step: Configuring UEFI boot/},
+  {label:'Reboot',   ph:'WinPE',        re:/WinPE phase complete/},
+  {label:'Updates',  ph:'Post-install', re:/PHASE START: Windows Update/},
+  {label:'Packages', ph:'Post-install', re:/PHASE START: Install Packages/},
+  {label:'Cleanup',  ph:'Post-install', re:/PHASE START: Remove Bloatware/},
+  {label:'Done',     ph:'Post-install', re:/All imaging phases complete/}
+];
+
+function getState(name){
+  if(!machineStep[name]) machineStep[name]={idx:-1,failed:false};
+  return machineStep[name];
+}
+
+function scanLine(name,line){
+  var st=getState(name);
+  if(/PHASE END:.*FAILED/.test(line)){st.failed=true;renderProgress();return;}
+  for(var i=st.idx+1;i<STEPS.length;i++){
+    if(STEPS[i].re.test(line)){
+      st.idx=i;
+      st.failed=false;
+      renderProgress();
+      break;
+    }
+  }
+}
+
+function renderProgress(){
+  if(!cur) return;
+  var st=getState(cur);
+  var idx=st.idx;
+  var failed=st.failed;
+  var pct=idx<0?0:Math.round((idx+1)/STEPS.length*100);
+  document.getElementById('prog-pct').textContent=pct+'%';
+  var ph=idx>=0?STEPS[idx].ph:'WinPE';
+  document.getElementById('prog-phase').textContent=ph;
+  var html='';
+  for(var i=0;i<STEPS.length;i++){
+    var cls;
+    if(i<idx) cls='done';
+    else if(i===idx) cls=(failed?'fail':(idx===STEPS.length-1?'cur':'active'));
+    else cls='';
+    var arrow=(i<STEPS.length-1)?'<span class="ps-arrow">&#x203A;</span>':'';
+    html+='<span class="ps '+cls+'"><span class="ps-label">'+STEPS[i].label+'</span>'+arrow+'</span>';
+  }
+  document.getElementById('prog-steps').innerHTML=html;
+}
+
+async function loadSessions(){
+  try{
+    var r=await fetch('/api/imaging/sessions');
+    var s=await r.json();
+    renderSessions(s);
+  }catch(e){}
+}
+
+function renderSessions(sessions){
+  var n=sessions.filter(function(s){return s.active;}).length;
+  var b=document.getElementById('badge');
+  b.textContent=n+' active';
+  b.className='badge'+(n>0?' live':'');
+  var ml=document.getElementById('machine-list');
+  if(!sessions.length){ml.innerHTML='<div class="empty">No sessions found</div>';return;}
+  ml.innerHTML=sessions.map(function(s){
+    var dc=s.active?'dot-a':(s.recent?'dot-r':'dot-o');
+    var age=s.active?'active now':fmtAge(s.age_s);
+    var ll=(s.last_line||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var issel=s.computer_name===cur?' sel':'';
+    return '<div class="machine-item'+issel+'" onclick="sel(\''+s.computer_name+'\')">'+
+      '<div class="m-name">'+s.computer_name+'</div>'+
+      '<div class="m-meta"><span class="dot '+dc+'"></span><span>'+age+'</span></div>'+
+      '<div class="m-last">'+trunc(ll,52)+'</div></div>';
+  }).join('');
+}
+
+function fmtAge(s){
+  if(s<60)return s+'s ago';
+  if(s<3600)return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+
+function trunc(s,n){return s.length>n?s.slice(0,n)+'...':s;}
+
+function sel(name){
+  if(cur===name)return;
+  cur=name;
+  machineStep[name]={idx:-1,failed:false};
+  document.getElementById('no-sel').style.display='none';
+  var lv=document.getElementById('log-view');
+  lv.style.display='flex';lv.style.flexDirection='column';
+  lv.style.overflow='hidden';lv.style.flex='1';
+  document.getElementById('t-name').textContent=name;
+  document.getElementById('log-out').innerHTML='';
+  renderProgress();
+  autoScroll=true;
+  var b=document.getElementById('scroll-btn');
+  b.textContent='Auto-scroll';b.className='btn on';
+  setConn('wait','connecting');
+  loadSessions();
+  connect(name);
+}
+
+function connect(name){
+  if(es){es.close();es=null;}
+  var src=new EventSource('/api/imaging/log/'+encodeURIComponent(name)+'/stream');
+  es=src;
+  src.addEventListener('ready',function(){setConn('ok','live');});
+  src.onmessage=function(e){scanLine(name,e.data);appendLine(e.data);};
+  src.onerror=function(){setConn('err','reconnecting');};
+}
+
+function setConn(s,l){
+  document.getElementById('ci').className='ci ci-'+s;
+  document.getElementById('ci-label').textContent=l;
+}
+
+function appendLine(raw){
+  var out=document.getElementById('log-out');
+  var d=document.createElement('div');
+  d.className='ll '+classify(raw);
+  d.textContent=raw;
+  out.appendChild(d);
+  if(autoScroll)out.scrollTop=out.scrollHeight;
+}
+
+function classify(l){
+  if(/={10,}/.test(l))return 'lsep';
+  if(/PHASE START:/.test(l))return 'lph';
+  if(/PHASE END:.*COMPLETE/.test(l))return 'lok';
+  if(/PHASE END:.*FAILED/.test(l))return 'lfail';
+  if(/PHASE END:.*REBOOTING/.test(l))return 'lrbt';
+  if(/\[ERROR\]/.test(l))return 'le';
+  if(/\[WARN/.test(l))return 'lw';
+  return 'li';
+}
+
+function clearLog(){document.getElementById('log-out').innerHTML='';}
+
+function toggleScroll(){
+  autoScroll=!autoScroll;
+  var b=document.getElementById('scroll-btn');
+  b.textContent=autoScroll?'Auto-scroll':'Paused';
+  b.className=autoScroll?'btn on':'btn';
+  if(autoScroll){var o=document.getElementById('log-out');o.scrollTop=o.scrollHeight;}
+}
+
+function onScroll(){
+  var o=document.getElementById('log-out');
+  var atBot=o.scrollTop+o.clientHeight>=o.scrollHeight-30;
+  if(!atBot&&autoScroll){
+    autoScroll=false;
+    document.getElementById('scroll-btn').textContent='Paused';
+    document.getElementById('scroll-btn').className='btn';
+  }
+}
+
+loadSessions();
+setInterval(loadSessions,10000);
+</script>
+</body>
+</html>

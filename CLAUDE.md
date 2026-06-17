@@ -133,8 +133,12 @@ FastAPI + PostgreSQL 16 running natively on pc-deploy as `JuniperInventory` Wind
 - HTTP: `http://192.168.5.141:8080/` (also `http://inventory.juniperdesign.local:8080/`)
 - Secrets: `op://Private/inventory-server/` - db-password, pg-superpassword
 - DPAPI cache on ENG-2: `C:\Users\ENG2\.juniper-inv-secrets.xml`
-- Service env vars (UNIFI_HOST, UNIFI_API_KEY, DATABASE_URL, etc.) stored in registry:
-  `HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Environment`
+- Service env vars (UNIFI_HOST, UNIFI_API_KEY, DATABASE_URL, etc.) - NSSM stores these in
+  TWO registry locations; always use the Parameters subkey (the live one NSSM actually reads):
+  - **Live (use this):** `HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Parameters\AppEnvironmentExtra`
+    (REG_MULTI_SZ string array - one entry per env var)
+  - **Stale mirror (ignore):** `HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Environment`
+    (REG_SZ with null separators - may have an old DATABASE_URL password)
 
 ### Inventory agent
 

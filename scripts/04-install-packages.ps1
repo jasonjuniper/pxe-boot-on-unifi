@@ -73,7 +73,7 @@ $WingetPackages = @(
     'Ollama.Ollama',
 
     # Claude Desktop
-    'Anthropic.Claude',
+    'Anthropic.Claude'
 )
 
 # ---------------------------------------------------------------------------
@@ -220,14 +220,15 @@ if (-not $DryRun) {
 Write-Log 'Installing npm global packages...'
 $NpmGlobalPackages = @(
     '@anthropic-ai/claude-code',
-    '@wonderwhy-er/desktop-commander',
+    '@wonderwhy-er/desktop-commander'
 )
 if ($runningAsSystem) {
     Write-Log "Skipping $($NpmGlobalPackages.Count) npm global packages - SYSTEM context" -Level WARN
 } elseif (-not $DryRun) {
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    $npm = (Get-Command npm -ErrorAction SilentlyContinue)?.Source
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    $npm = if ($npmCmd) { $npmCmd.Source } else { $null }
     if (-not $npm) { $npm = 'C:\Program Files\nodejs\npm.cmd' }
     if (Test-Path $npm) {
         foreach ($pkg in $NpmGlobalPackages) {
@@ -292,17 +293,42 @@ if (-not $DryRun) {
     }
 }
 
-# --- Inventory agent ----------------------------------------------------------
-# Re-registers with a full post-install hardware snapshot (all packages installed).
-# The agent uses serial number to upsert the existing inventory record.
-Write-Log 'Re-registering with Juniper inventory system (post-install snapshot)...'
+# --- Inventory agent + MSI install -------------------------------------------
+# 1. Install the MSI (installs CA certs, registers scheduled task for ongoing
+#    hardware monitoring, and appears in Add/Remove Programs).
+#    The MSI also runs the inventory agent immediately via its scheduled task.
+# 2. Fall back to the install_agent.ps1 one-liner if MSI install fails, so
+#    the machine is at least registered in the inventory DB even without the
+#    persistent scheduled task.
+$invBase = 'http://192.168.5.141:8080'
+Write-Log 'Installing Juniper Inventory Agent MSI...'
 if (-not $DryRun) {
+    $msiOk = $false
     try {
-        Invoke-Expression (Invoke-RestMethod 'http://192.168.5.141:8080/static/install_agent.ps1' -TimeoutSec 15)
-        Write-Log 'Inventory agent: registration complete'
+        $msiTemp = "$env:TEMP\JuniperInventoryAgent.msi"
+        Invoke-WebRequest "$invBase/static/JuniperInventoryAgent.msi" `
+            -OutFile $msiTemp -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+        $p = Start-Process msiexec -ArgumentList "/i `"$msiTemp`" /qn" -Wait -PassThru -ErrorAction Stop
+        Remove-Item $msiTemp -Force -ErrorAction SilentlyContinue
+        if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
+            Write-Log "Inventory Agent MSI installed (exit=$($p.ExitCode))"
+            $msiOk = $true
+        } else {
+            Write-Log "WARN: MSI install exit $($p.ExitCode) - falling back to one-liner" -Level WARN
+        }
     } catch {
-        Write-Log "WARN: Inventory registration failed: $_" -Level WARN
-        Write-Log 'Retry manually: irm http://192.168.5.141:8080/static/install_agent.ps1 | iex' -Level WARN -PhaseOnly
+        Write-Log "WARN: MSI install failed: $_ - falling back to one-liner" -Level WARN
+    }
+
+    if (-not $msiOk) {
+        Write-Log 'Re-registering via install_agent.ps1 (MSI fallback)...'
+        try {
+            Invoke-Expression (Invoke-RestMethod "$invBase/static/install_agent.ps1" -TimeoutSec 15)
+            Write-Log 'Inventory agent: registration complete (one-liner mode)'
+        } catch {
+            Write-Log "WARN: Inventory registration failed: $_" -Level WARN
+            Write-Log "Retry manually: irm $invBase/static/install_agent.ps1 | iex" -Level WARN -PhaseOnly
+        }
     }
 }
 

@@ -443,6 +443,7 @@ Write-Host '  !! Disk 0 will be COMPLETELY WIPED !!' -ForegroundColor Red
 
 # --- Partition Disk 0 (GPT / UEFI) -----------------------------------------
 
+Write-DeployLog 'Step: Partitioning disk 0 (GPT/UEFI)'
 Write-Host ''
 Write-Host '  Partitioning disk 0 (GPT/UEFI)...' -ForegroundColor Cyan
 $dpTxt = @'
@@ -467,9 +468,11 @@ if ($p.ExitCode -ne 0) {
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Partitioned: S: (EFI), C: (Windows).' -ForegroundColor Green
+Write-DeployLog 'Step: Partition complete'
 
 # --- Apply WIM --------------------------------------------------------------
 
+Write-DeployLog "Step: Applying $($os.Label) (DISM - 10-20 min)"
 Write-Host ''
 Write-Host "  Applying $($os.Label) (index $($os.WimIndex))..." -ForegroundColor Cyan
 Write-Host '  This takes 10-20 minutes depending on disk speed.'
@@ -480,15 +483,18 @@ if ($p.ExitCode -ne 0) {
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Image applied.' -ForegroundColor Green
+Write-DeployLog 'Step: WIM applied'
 
 # --- Inject Drivers (offline) -----------------------------------------------
 
+Write-DeployLog "Step: Injecting drivers for $hwModel"
 Write-Host ''
 Write-Host '  Injecting hardware drivers...' -ForegroundColor Cyan
 Invoke-DriverInjection -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
 
 # --- Inject unattend.xml with computer name ---------------------------------
 
+Write-DeployLog 'Step: Writing unattend.xml'
 Write-Host ''
 Write-Host '  Writing unattend.xml...' -ForegroundColor Cyan
 $unattendSrc = Join-Path $DeployShare $os.Unattend
@@ -507,6 +513,7 @@ if (-not (Test-Path $unattendSrc)) {
 # creates the JuniperImaging scheduled task, and kicks off the phase pipeline.
 # The task runs on every startup until all phases complete - no login needed.
 
+Write-DeployLog 'Step: Staging post-install scripts'
 Write-Host ''
 Write-Host '  Staging post-install automation...' -ForegroundColor Cyan
 
@@ -547,6 +554,7 @@ Write-DeployLog "Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
 # $JUNIPER_HOSTNAME_OVERRIDE passes the target computer name since WinPE
 # reports 'MINWINPC' for $env:COMPUTERNAME.
 
+Write-DeployLog 'Step: Registering in inventory'
 Write-Host ''
 Write-Host '  Registering in inventory...' -ForegroundColor DarkGray
 $invDeviceId = if ($prior) { $prior.device_id } else { $null }
@@ -571,6 +579,7 @@ try {
 
 # --- Boot sector ------------------------------------------------------------
 
+Write-DeployLog 'Step: Configuring UEFI boot'
 Write-Host ''
 Write-Host '  Configuring UEFI boot...' -ForegroundColor Cyan
 $p = Start-Process bcdboot -ArgumentList 'C:\Windows /s S: /f UEFI' -Wait -PassThru -NoNewWindow
