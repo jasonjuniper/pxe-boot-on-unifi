@@ -378,7 +378,7 @@ if ($serialClean) {
             -TimeoutSec 5 -ErrorAction Stop
         # Find exact serial match (search returns partial matches too)
         $match = @($results | Where-Object { $_.serial_number -ieq $hwSerial }) | Select-Object -First 1
-        if (-not $match) { $match = @($results) | Select-Object -First 1 }
+        # Do NOT fall back to first partial match - a fuzzy serial could pick the wrong machine.
         if ($match) {
             # Map inventory OS string to local os_key ('1'=Win11Home, '2'=Win11Pro, '3'=Win10Pro)
             $osKeyFromInv = switch -Wildcard ($match.os) {
@@ -684,8 +684,19 @@ try {
     # Update OS in inventory using the selected edition (ingest/endpoint is always available,
     # unlike the PATCH route which requires auth). This ensures the next re-image defaults correctly.
     # Must use bios_serial/chassis_serial (not serial_number) - that is what find_or_create_device reads.
-    $osCaption = "Microsoft $($os.Label)"
-    $osPatch   = @{ bios_serial = $hwSerial; chassis_serial = $hwSerial; hostname = $computerName; os_caption = $osCaption } | ConvertTo-Json -Compress
+    # Include MACs so find_or_create_device uses MAC identity rather than just serial+hostname,
+    # which avoids creating ghost records when serial is not yet in the DB.
+    $osCaption     = "Microsoft $($os.Label)"
+    $ethernetMacs  = @($allNics | Where-Object { $_['type'] -eq 'ethernet' } | ForEach-Object { $_['mac'] })
+    $wirelessMacs  = @($allNics | Where-Object { $_['type'] -eq 'wifi'     } | ForEach-Object { $_['mac'] })
+    $osPatch   = @{
+        bios_serial    = $hwSerial
+        chassis_serial = $hwSerial
+        hostname       = $computerName
+        os_caption     = $osCaption
+        ethernet_macs  = $ethernetMacs
+        wireless_macs  = $wirelessMacs
+    } | ConvertTo-Json -Compress
     Invoke-RestMethod "$InvApi/ingest/endpoint" -Method Post -Body $osPatch `
         -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
 } catch {
