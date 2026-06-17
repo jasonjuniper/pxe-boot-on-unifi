@@ -26,6 +26,25 @@ $ScriptsDir = "$SetupRoot\scripts"
 $PhaseFile  = "$SetupRoot\phase.json"
 $TaskName   = 'JuniperImaging'
 
+# Self-update: pull fresh scripts from the deploy share at the start of every run.
+# This lets us hotfix phase scripts (and this orchestrator) without re-imaging.
+# Silently skipped if the share is unreachable.
+$_shareScripts = '\\192.168.5.141\deploy$\scripts'
+if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
+    try {
+        foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
+                         '07-remove-bloatware.ps1','08-set-file-associations.ps1')) {
+            $s = Join-Path $_shareScripts $f
+            if (Test-Path $s) { Copy-Item $s (Join-Path $ScriptsDir $f) -Force -ErrorAction SilentlyContinue }
+        }
+        $lgSrc = Join-Path $_shareScripts 'Logging.ps1'
+        if (Test-Path $lgSrc) { Copy-Item $lgSrc "$SetupRoot\Logging.ps1" -Force -ErrorAction SilentlyContinue }
+        # Update this orchestrator for the NEXT run (safe - already parsed into memory)
+        $orchSrc = Join-Path $_shareScripts 'orchestrator.ps1'
+        if (Test-Path $orchSrc) { Copy-Item $orchSrc "$SetupRoot\orchestrator.ps1" -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
 # Phase order: key matches phase.json "phase", value is script filename in $ScriptsDir
 $Phases = [ordered]@{
     'windows-update'    = '03-windows-update.ps1'

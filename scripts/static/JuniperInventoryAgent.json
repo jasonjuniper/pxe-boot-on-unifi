@@ -1,7 +1,7 @@
 {
-  "msi_version": "1.0.51833",
-  "sha256": "4e9c08158fe23c512b1b741c1197d7df93dc1670aa0e99bfbe0faf24e6bdbb17",
+  "msi_version": "1.0.51834",
+  "sha256": "0b8941820b8a8aa5a10aaf7ceeb581306928e2a1d0dad281dfdcc0c34e64cd64",
   "size": 417792,
   "agent_version": "0.5.10",
-  "built_at": "2026-06-17T12:17:51.2055447-04:00"
+  "built_at": "2026-06-17T12:31:36.9279448-04:00"
 }
