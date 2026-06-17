@@ -681,13 +681,12 @@ try {
         $lookup = Invoke-RestMethod "$InvApi/api/devices?q=$hwSerial" -TimeoutSec 5 -ErrorAction SilentlyContinue
         $invDeviceId = if ($lookup.Count -gt 0) { $lookup[0].device_id } else { $null }
     }
-    # PATCH: record the chosen OS and imaging note
-    if ($invDeviceId) {
-        $today     = (Get-Date -Format 'yyyy-MM-dd')
-        $patchBody = "{`"os`":`"$($os.Label)`",`"os_version`":`"`",`"notes`":`"Imaged $today - Juniper IT`"}"
-        Invoke-RestMethod "$InvApi/api/device/$invDeviceId" -Method PATCH -Body $patchBody `
-            -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
-    }
+    # Update OS in inventory using the selected edition (ingest/endpoint is always available,
+    # unlike the PATCH route which requires auth). This ensures the next re-image defaults correctly.
+    $osCaption = "Microsoft $($os.Label)"
+    $osPatch   = @{ serial_number = $hwSerial; hostname = $computerName; os_caption = $osCaption } | ConvertTo-Json -Compress
+    Invoke-RestMethod "$InvApi/ingest/endpoint" -Method Post -Body $osPatch `
+        -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
 } catch {
     Write-Host '  Inventory registration skipped (server unreachable - will register post-install).' -ForegroundColor DarkGray
 }
