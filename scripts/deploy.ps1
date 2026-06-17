@@ -381,11 +381,13 @@ if ($serialClean) {
         if (-not $match) { $match = @($results) | Select-Object -First 1 }
         if ($match) {
             # Map inventory OS string to local os_key ('1'=Win11Home, '2'=Win11Pro, '3'=Win10Pro)
+            # Use '' for unrecognized strings so UEFI detection (or manual selection) decides.
+            # Do NOT default to Pro - it causes wrong edition on Home-licensed machines.
             $osKeyFromInv = switch -Wildcard ($match.os) {
                 '*11*Home*'  { '1' }
                 '*11*Pro*'   { '2' }
                 '*10*'       { '3' }
-                default      { '2' }   # default to Win11 Pro
+                default      { '' }    # unknown - let UEFI or operator decide
             }
             $prior = [PSCustomObject]@{
                 device_id = $match.id
@@ -410,31 +412,45 @@ if ($prior) {
     # UEFI license key overrides inventory OS for edition selection.
     # Inventory records the last imaged edition, which may have been wrong.
     # The UEFI key reflects what the machine is actually licensed for.
-    $defaultOsKey = if ($oemOsDefault) { $oemOsDefault } else { $prior.os_key }
+    # If neither UEFI nor inventory gives a clear edition, $defaultOsKey is ''
+    # and the countdown is skipped - operator must select manually.
+    $defaultOsKey = if ($oemOsDefault) { $oemOsDefault } elseif ($prior.os_key) { $prior.os_key } else { '' }
 
     Write-Host '  -- Inventory match found --------------------------------' -ForegroundColor Green
     Write-Host "    Name:      $($prior.hostname)" -ForegroundColor Green
     Write-Host "    Last OS:   $($prior.os)" -ForegroundColor DarkGray
     if ($prior.last_seen) { Write-Host "    Last seen: $($prior.last_seen)" -ForegroundColor DarkGray }
     Write-Host ''
-    Write-Host "  Default OS:   [$defaultOsKey] $($OsOptions[$defaultOsKey].Label)" -ForegroundColor Cyan
+    if ($defaultOsKey) {
+        Write-Host "  Default OS:   [$defaultOsKey] $($OsOptions[$defaultOsKey].Label)" -ForegroundColor Cyan
+    } else {
+        Write-Host '  Default OS:   (unknown - UEFI detection failed and inventory OS unrecognized)' -ForegroundColor Yellow
+    }
     Write-Host "  Default Name: $($prior.hostname)" -ForegroundColor Cyan
     if ($oemOsDefault -and $oemOsDefault -ne $prior.os_key) {
-        Write-Host "  (UEFI license: $($OsOptions[$oemOsDefault].Label) - overrides inventory: $($OsOptions[$prior.os_key].Label))" -ForegroundColor Yellow
+        Write-Host "  (UEFI license: $($OsOptions[$oemOsDefault].Label) - overrides inventory: $($prior.os))" -ForegroundColor Yellow
     }
     Write-Host ''
-    Write-Host '  Press any key to change, or wait 30 s to accept defaults.' -ForegroundColor DarkGray
+    if ($defaultOsKey) {
+        Write-Host '  Press any key to change, or wait 30 s to accept defaults.' -ForegroundColor DarkGray
+    } else {
+        Write-Host '  OS edition unclear - manual selection required.' -ForegroundColor Yellow
+    }
     Write-Host ''
 
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $timedOut = $true
-    while ($sw.Elapsed.TotalSeconds -lt 30) {
-        if ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null; $timedOut = $false; break }
-        $secsLeft = [int](30 - $sw.Elapsed.TotalSeconds)
-        Write-Host "`r  Auto-accepting in $secsLeft s...  " -NoNewline
-        Start-Sleep -Milliseconds 200
+    $timedOut = $false
+    if ($defaultOsKey) {
+        # Known edition - offer 30 s countdown
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $timedOut = $true
+        while ($sw.Elapsed.TotalSeconds -lt 30) {
+            if ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null; $timedOut = $false; break }
+            $secsLeft = [int](30 - $sw.Elapsed.TotalSeconds)
+            Write-Host "`r  Auto-accepting in $secsLeft s...  " -NoNewline
+            Start-Sleep -Milliseconds 200
+        }
+        Write-Host ''; $sw.Stop()
     }
-    Write-Host ''; $sw.Stop()
 
     if ($timedOut) {
         $osKey        = $defaultOsKey
@@ -512,13 +528,15 @@ $Script:WpeTargetName = $computerName
 
 # Send first remote log entry immediately so the machine appears on pc-deploy
 try {
-    $ts0   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $ts0      = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $uefiLog  = if ($oemKeyDesc) { "UEFI: $oemKeyDesc" } else { 'UEFI: no OEM key detected (WMI+MSDM both failed)' }
     $body0 = [ordered]@{
         computer_name = $computerName
         lines = @(
             "$ts0  [INFO ]  [winpe                 ]  === Juniper Imaging Start ===",
             "$ts0  [INFO ]  [winpe                 ]  Machine: $computerName | OS: $($OsOptions[$osKey].Label)",
-            "$ts0  [INFO ]  [winpe                 ]  Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
+            "$ts0  [INFO ]  [winpe                 ]  Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial",
+            "$ts0  [INFO ]  [winpe                 ]  $uefiLog"
         )
     } | ConvertTo-Json -Compress
     Invoke-RestMethod "$InvApi/ingest/imaging-log" -Method POST -Body $body0 `
