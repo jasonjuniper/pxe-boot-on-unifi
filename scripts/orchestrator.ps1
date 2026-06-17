@@ -139,7 +139,7 @@ if ($Bootstrap) {
         Write-Log "Phase state initialized: windows-update" -MasterOnly
     }
 
-    # Change JuniperAdmin password immediately so CHANGEME is not live during imaging.
+    # Change junadmin password immediately so CHANGEME is not live during imaging.
     # The bootstrap API returns the same password that 04-install-packages.ps1 will set,
     # so this just moves that step to the very first boot (before the login screen is usable).
     try {
@@ -148,12 +148,12 @@ if ($Bootstrap) {
         $bPass    = $resp.password
         if ($bPass) {
             $secPass = ConvertTo-SecureString $bPass -AsPlainText -Force
-            Set-LocalUser -Name 'JuniperAdmin' -Password $secPass -ErrorAction Stop
+            Set-LocalUser -Name 'junadmin' -Password $secPass -ErrorAction Stop
             $secPass = $null; $bPass = $null; $resp = $null
-            Write-Log "JuniperAdmin password updated from bootstrap API" -MasterOnly
+            Write-Log "junadmin password updated from bootstrap API" -MasterOnly
         }
     } catch {
-        Write-Log "Could not update JuniperAdmin password at bootstrap: $_ (CHANGEME still active)" -Level WARN -MasterOnly
+        Write-Log "Could not update junadmin password at bootstrap: $_ (CHANGEME still active)" -Level WARN -MasterOnly
     }
 
     Write-Log "Bootstrap complete - proceeding to first phase"

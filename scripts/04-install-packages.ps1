@@ -15,7 +15,7 @@
 # TODO: Replace winget with Chocolatey or direct MSI downloads for SYSTEM support.
 #
 # CREDENTIAL NOTE:
-# JuniperAdmin password is set via the inventory server's /api/management/bootstrap
+# junadmin password is set via the inventory server's /api/management/bootstrap
 # endpoint. No 1Password CLI or OP_SERVICE_ACCOUNT_TOKEN required.
 #
 # USAGE: .\04-install-packages.ps1
@@ -250,11 +250,11 @@ if ($runningAsSystem) {
     }
 }
 
-# --- Set JuniperAdmin password via inventory bootstrap API --------------------
+# --- Set junadmin password via inventory bootstrap API --------------------
 # Uses the inventory server's /api/management/bootstrap endpoint which reads
 # from C:\inventory\junadmin.key on pc-deploy. Works under SYSTEM context
 # (no op CLI or OP_SERVICE_ACCOUNT_TOKEN needed - just an HTTP call on the LAN).
-Write-Log 'Setting JuniperAdmin password from inventory bootstrap API...'
+Write-Log 'Setting junadmin password from inventory bootstrap API...'
 if (-not $DryRun) {
     try {
         $bootstrapUrl = 'http://inventory.juniperdesign.local:8080/api/management/bootstrap'
@@ -263,12 +263,12 @@ if (-not $DryRun) {
         if (-not $junadminPass) { throw 'Bootstrap API returned empty password' }
 
         $secPass = ConvertTo-SecureString $junadminPass -AsPlainText -Force
-        Set-LocalUser -Name 'JuniperAdmin' -Password $secPass
+        Set-LocalUser -Name 'junadmin' -Password $secPass
         $junadminPass = $null
         $resp = $null
-        Write-Log 'JuniperAdmin password updated successfully'
+        Write-Log 'junadmin password updated successfully'
     } catch {
-        Write-Log "Could not set JuniperAdmin password via bootstrap API: $_" -Level ERROR
+        Write-Log "Could not set junadmin password via bootstrap API: $_" -Level ERROR
         Write-Log 'Machine will remain with CHANGEME password - log in manually and re-run' -Level ERROR
     }
 }

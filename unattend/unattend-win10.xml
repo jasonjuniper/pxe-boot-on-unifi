@@ -184,7 +184,7 @@
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
-            <Name>JuniperAdmin</Name>
+            <Name>junadmin</Name>
             <DisplayName>Juniper Admin</DisplayName>
             <Group>Administrators</Group>
             <Password>
