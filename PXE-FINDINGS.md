@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-18  
 **Author:** Claude (Juniper AI)  
-**Status:** iPXE + wimboot + HTTP delivery — NIC drivers injected, WiFi PXE scaffolded
+**Status:** iPXE + wimboot + HTTP delivery — NIC drivers injected, Secure Boot shim chain deployed
 
 ---
 
@@ -208,21 +208,40 @@ If TFTP still fails, run pktmon during the boot attempt to capture traffic for a
 Target PC NIC → DHCP Discover
 UniFi EFG → DHCP Offer: option 66=192.168.5.141, option 67=ipxe.efi
 Target PC → TFTP: GET ipxe.efi (from pc-deploy)
-iPXE runs embedded script:
-  → TFTP: GET wimboot          (74 KB — fast)
-  → TFTP: GET BCD              (8 KB — fast)
-  → TFTP: GET boot.sdi         (small — fast)
-  → HTTP:  GET sources/boot.wim (508 MB — full gigabit)
+iPXE loads autoexec.ipxe from TFTP:
+  → TFTP: GET wimboot           (74 KB — fast)
+  → TFTP: GET BCD               (8 KB — fast)
+  → TFTP: GET boot.sdi          (small — fast)
+  → HTTP:  GET sources/boot.wim (513 MB — full gigabit)
 wimboot → Windows Boot Manager → WinPE
 WinPE loads Juniper PC Deployment System
 ```
+
+**Secure Boot path** (DHCP option 67 = `shimx64.efi`):
+
+```
+UEFI Secure Boot firmware (trusts MS UEFI CA)
+  → shimx64.efi   (MS-signed, dual-signed: UEFI CA 2011 + UEFI CA 2023)
+    → ipxe.efi    (test-signed by iPXE CA; shim trusts embedded cert) ⚠️ EXPIRES 2026-07-18
+      → autoexec.ipxe (loaded from TFTP root)
+        → wimboot (MS-signed) → WinPE (MS-signed)
+```
+
+> ⚠️ **Certificate expiry:** `ipxe.efi` is signed by `CN=iPXE Test Signing (d7e89f46b, x86_64)`,
+> which expires **2026-07-18** (~30 days from deployment). The shim chain will break on that date.
+> Plan: rebuild with a self-signed CA before expiry — or enroll the cert as MOK per-machine to
+> extend independently of the binary.
 
 **Key files on pc-deploy:**
 
 | Path | Description |
 |---|---|
-| `C:\tftpd64\ipxe.efi` | Custom iPXE (HTTP-enabled embedded script) |
+| `C:\tftpd64\shimx64.efi` | iPXE's MS-signed Secure Boot shim — DHCP option 67 for SB path |
+| `C:\tftpd64\ipxe.efi` | iPXE x86_64-efi-sb (test-signed; shim-verified) |
+| `C:\tftpd64\ipxe-http-embedded.efi` | Backup: original custom iPXE with embedded HTTP script |
 | `C:\tftpd64\ipxe-wifi.efi` | WiFi variant (all-HTTP, no TFTP) |
+| `C:\tftpd64\autoexec.ipxe` | iPXE boot script (loaded by ipxe.efi via TFTP) |
+| `C:\tftpd64\ipxe-testsign.crt` | iPXE test signing CA cert (for manual MOK enrollment) |
 | `C:\tftpd64\wimboot` | MS-signed ramdisk loader |
 | `C:\tftpd64\EFI\Microsoft\Boot\BCD` | WinPE boot configuration |
 | `C:\tftpd64\Boot\boot.sdi` | WinPE ramdisk descriptor |
@@ -278,29 +297,44 @@ Option to implement in UniFi Network UI:
 3. For co-existence with wired PXE, create a **separate UniFi Network** for the PXE WiFi SSID
    so wired clients still get `ipxe.efi` (no URL prefix) and WiFi clients get the full URL.
 
-### Secure Boot requirement
+### Secure Boot — IMPLEMENTED (2026-06-18)
 
-For WiFi PXE with Secure Boot **on**, the boot chain must be fully signed:
+The full Secure Boot shim chain is deployed. Both wired and WiFi PXE use it.
+
+**How it works:**
 
 ```
-shimx64.efi (MS-signed, from Ubuntu/Fedora shim package)
-  → ipxe.efi (signed by iPXE CA, trusted by shim MOK)
-    → wimboot (MS-signed)
-      → WinPE (MS-signed)
+UEFI firmware (trusts Microsoft UEFI CA in Secure Boot db)
+  ↓ verifies
+shimx64.efi  — iPXE's own shim; dual-signed by MS UEFI CA 2011 + MS UEFI CA 2023
+  ↓ verifies (using embedded iPXE test CA cert)
+ipxe.efi     — iPXE x86_64-efi-sb; signed by iPXE test CA (trusted by shim)
+  ↓ loads via TFTP
+autoexec.ipxe
+  ↓
+wimboot (MS-signed) → WinPE (MS-signed)
 ```
 
-Current `ipxe-wifi.efi` is an unsigned custom build — it will be rejected by Secure Boot.
-To enable Secure Boot + WiFi PXE:
+No per-machine MOK enrollment is required — iPXE's shim embeds the iPXE signing cert.
+The shim itself is accepted by any UEFI firmware with Secure Boot db containing the
+standard Microsoft UEFI CA (effectively all production machines).
 
-1. Download a signed shim: `shimx64.efi` from [Ubuntu shim package](https://packages.ubuntu.com/noble/shim-signed) or Fedora's shim-x64
-2. Download a signed iPXE: [ipxe.efi from ipxe.org](https://boot.ipxe.org/ipxe.efi) (signed by iPXE CA; accepted by the Ubuntu/Fedora shim via embedded MOK)
-3. Place both in `C:\tftpd64\`
-4. UniFi DHCP option 67 → `http://192.168.5.141/shimx64.efi`
-5. shim verifies and chains to ipxe.efi; ipxe.efi runs the HTTP boot script
+**To activate Secure Boot boot path** — change UniFi DHCP option 67:
+- Non-SB / wired: `ipxe.efi`
+- Wired with SB: `shimx64.efi`
+- WiFi with SB: `http://192.168.5.141/shimx64.efi` (full URL for UEFI HTTP Boot)
 
-> **Note:** The current wired PXE also uses an unsigned ipxe.efi — it works only because
-> Secure Boot is currently disabled on test machines. Enabling Secure Boot on any machine
-> will require the signed shim chain for both wired and WiFi PXE.
+> ⚠️ **Certificate expiry:** The iPXE test signing cert embedded in the shim expires
+> **2026-07-18**. After that date, the shim will reject `ipxe.efi`. Plan before expiry:
+> either rebuild with an official iPXE production cert, or compile a custom iPXE signed
+> with a Juniper-owned CA and enroll that CA in MOK.
+
+**Emergency fallback:** If the shim chain breaks, revert:
+```
+UniFi DHCP option 67 = ipxe-http-embedded.efi
+```
+This is the original unsigned custom iPXE with the HTTP boot script embedded — works
+without Secure Boot.
 
 ---
 

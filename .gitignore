@@ -1,5 +1,10 @@
-# Compiled iPXE binaries
+# Compiled iPXE binaries (large — fetch from boot.ipxe.org at deploy time)
 *.efi
+
+# Signing certs (sensitive)
+*.crt
+*.pem
+*.key
 
 # Windows build artifacts
 *.tmp
