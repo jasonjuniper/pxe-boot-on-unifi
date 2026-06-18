@@ -221,27 +221,32 @@ WinPE loads Juniper PC Deployment System
 
 ```
 UEFI Secure Boot firmware (trusts MS UEFI CA)
-  → shimx64.efi   (MS-signed, dual-signed: UEFI CA 2011 + UEFI CA 2023)
-    → ipxe.efi    (test-signed by iPXE CA; shim trusts embedded cert) ⚠️ EXPIRES 2026-07-18
-      → autoexec.ipxe (loaded from TFTP root)
-        → wimboot (MS-signed) → WinPE (MS-signed)
+  → shimx64.efi    (Ubuntu shim, dual-signed: UEFI CA 2011 + UEFI CA 2023, OU=MOPR)
+    → grubx64.efi  (iPXE SB binary, dual-signed: iPXE test cert + Juniper Design RSA cert)
+      │  verified by shim against MOK (enroll juniper-pxe-ca.cer once per machine)
+      ↓
+    autoexec.ipxe (loaded from TFTP root)
+      → wimboot (MS-signed) → WinPE (MS-signed)
 ```
 
-> ⚠️ **Certificate expiry:** `ipxe.efi` is signed by `CN=iPXE Test Signing (d7e89f46b, x86_64)`,
-> which expires **2026-07-18** (~30 days from deployment). The shim chain will break on that date.
-> Plan: rebuild with a self-signed CA before expiry — or enroll the cert as MOK per-machine to
-> extend independently of the binary.
+**Why Ubuntu's shim, not iPXE's:** The iPXE shim uses `Microsoft Windows UEFI Driver Publisher`
+(no OU), which was revoked system-wide during the BootHole remediation. Ubuntu's shim uses the
+replacement cert (`OU=MOPR`) — accepted by all modern firmware.
+
+**Why grubx64.efi, not ipxe.efi:** Ubuntu's shim chains to `grubx64.efi` by default.
 
 **Key files on pc-deploy:**
 
 | Path | Description |
 |---|---|
-| `C:\tftpd64\shimx64.efi` | iPXE's MS-signed Secure Boot shim — DHCP option 67 for SB path |
-| `C:\tftpd64\ipxe.efi` | iPXE x86_64-efi-sb (test-signed; shim-verified) |
+| `C:\tftpd64\shimx64.efi` | Ubuntu shim (MS/OU=MOPR signed) — DHCP option 67 for SB path |
+| `C:\tftpd64\grubx64.efi` | iPXE SB binary, signed by Juniper CA (RSA 2048) |
+| `C:\tftpd64\mmx64.efi` | MokManager — shim launches this if MOK not yet enrolled |
+| `C:\tftpd64\juniper-pxe-ca.cer` | Juniper signing CA cert (DER) — enroll once per machine |
+| `C:\tftpd64\ipxe.efi` | Non-SB fallback (same iPXE binary, no shim) |
 | `C:\tftpd64\ipxe-http-embedded.efi` | Backup: original custom iPXE with embedded HTTP script |
 | `C:\tftpd64\ipxe-wifi.efi` | WiFi variant (all-HTTP, no TFTP) |
-| `C:\tftpd64\autoexec.ipxe` | iPXE boot script (loaded by ipxe.efi via TFTP) |
-| `C:\tftpd64\ipxe-testsign.crt` | iPXE test signing CA cert (for manual MOK enrollment) |
+| `C:\tftpd64\autoexec.ipxe` | iPXE boot script (loaded by grubx64.efi via TFTP) |
 | `C:\tftpd64\wimboot` | MS-signed ramdisk loader |
 | `C:\tftpd64\EFI\Microsoft\Boot\BCD` | WinPE boot configuration |
 | `C:\tftpd64\Boot\boot.sdi` | WinPE ramdisk descriptor |
@@ -297,44 +302,48 @@ Option to implement in UniFi Network UI:
 3. For co-existence with wired PXE, create a **separate UniFi Network** for the PXE WiFi SSID
    so wired clients still get `ipxe.efi` (no URL prefix) and WiFi clients get the full URL.
 
-### Secure Boot — IMPLEMENTED (2026-06-18)
+### Secure Boot — DEPLOYED (2026-06-18)
 
-The full Secure Boot shim chain is deployed. Both wired and WiFi PXE use it.
+Full shim chain deployed. Ubuntu's shim (MS-signed, OU=MOPR cert) is accepted by all
+modern UEFI firmware. `grubx64.efi` is the iPXE binary dual-signed with the Juniper
+Design RSA CA cert.
 
-**How it works:**
+**One-time per-machine: enroll the Juniper CA in MOK**
 
-```
-UEFI firmware (trusts Microsoft UEFI CA in Secure Boot db)
-  ↓ verifies
-shimx64.efi  — iPXE's own shim; dual-signed by MS UEFI CA 2011 + MS UEFI CA 2023
-  ↓ verifies (using embedded iPXE test CA cert)
-ipxe.efi     — iPXE x86_64-efi-sb; signed by iPXE test CA (trusted by shim)
-  ↓ loads via TFTP
-autoexec.ipxe
-  ↓
-wimboot (MS-signed) → WinPE (MS-signed)
-```
+The shim verifies `grubx64.efi` against the MOK database. Machines need the Juniper CA
+cert enrolled once. Two options:
 
-No per-machine MOK enrollment is required — iPXE's shim embeds the iPXE signing cert.
-The shim itself is accepted by any UEFI firmware with Secure Boot db containing the
-standard Microsoft UEFI CA (effectively all production machines).
+**Option A — BIOS import (no USB boot required, cleanest)**
+1. Boot into BIOS/UEFI setup (F1 on Lenovo ThinkCentre at power-on)
+2. Security → Secure Boot → Key Management → "Enroll Certificate into DB"
+3. Navigate to a FAT32 USB containing `juniper-pxe-ca.cer` (copy from `C:\tftpd64\`)
+4. Select the cert → save and exit
+5. Machine will now boot the full shim chain without any prompts
+
+**Option B — mokutil via Ubuntu live USB**
+1. Boot the machine from an Ubuntu live USB
+2. `sudo mokutil --import /path/to/juniper-pxe-ca.cer`
+3. Set a one-time MOK password when prompted
+4. Reboot → MokManager appears → confirm enrollment → done
+
+**Option C — extend cert-compliance-push.ps1 (automated, requires reboot confirmation)**
+Add a `Set-FirmwareEnvironmentVariable` step to pre-stage `MokNew` during the regular
+cert push. Machine shows MokManager prompt on next reboot — one button press to confirm.
+
+> **Note:** `juniper-pxe-ca.cer` is the same `CN=Juniper Design` cert already being
+> pushed to the Windows Root store by cert-compliance-push.ps1. Same key, same cert —
+> just needs UEFI MOK enrollment in addition to the Windows trust anchor.
 
 **To activate Secure Boot boot path** — change UniFi DHCP option 67:
 - Non-SB / wired: `ipxe.efi`
-- Wired with SB: `shimx64.efi`
-- WiFi with SB: `http://192.168.5.141/shimx64.efi` (full URL for UEFI HTTP Boot)
+- Wired with SB on: `shimx64.efi`
+- WiFi with SB on: `http://192.168.5.141/shimx64.efi`
 
-> ⚠️ **Certificate expiry:** The iPXE test signing cert embedded in the shim expires
-> **2026-07-18**. After that date, the shim will reject `ipxe.efi`. Plan before expiry:
-> either rebuild with an official iPXE production cert, or compile a custom iPXE signed
-> with a Juniper-owned CA and enroll that CA in MOK.
-
-**Emergency fallback:** If the shim chain breaks, revert:
+**Emergency fallback:**
 ```
 UniFi DHCP option 67 = ipxe-http-embedded.efi
 ```
-This is the original unsigned custom iPXE with the HTTP boot script embedded — works
-without Secure Boot.
+Original unsigned iPXE with embedded HTTP script — works without Secure Boot.
 
 ---
 
