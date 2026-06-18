@@ -138,32 +138,48 @@ tftpd64 service was restarted. Current state:
 
 ---
 
-## Remaining Fix: Update 01c-build-winpe.ps1
+## Build Script Fix: 01c-build-winpe.ps1 ✅ FIXED (2026-06-18)
 
-The build script still writes the wrong INI format. On any re-run it will overwrite the
-corrected config. The step that writes `tftpd64.ini` must be replaced with:
+Step 8 of `C:\imaging-build\01c-build-winpe.ps1` (and `C:\pc-imaging-setup\scripts\01c-build-winpe.ps1`)
+previously wrote a custom INI format that tftpd64 does not recognize. It was patched on 2026-06-18
+to write the correct tftpd32 native format to both `tftpd64.ini` and `tftpd32.ini`.
+
+**Old Step 8** (wrong — tftpd64 doesn't recognize these sections/keys):
 
 ```powershell
-# Write tftpd64 config in tftpd32 native format (the format tftpd64 actually reads)
-$tftpdIni = @"
+$ini = @"
+[TFTP]
+TFTPServer=192.168.5.141
+TFTP_Port=69
+TFTPBaseDirectory=$TftpRoot
+...
+[PXE]
+PXE_Port=4011
+ProxyDHCP=1
+[DHCP]
+DHCPType=PROXY
+"@
+$ini | Set-Content "$TftpRoot\tftpd64.ini" -Encoding ASCII
+```
+
+**New Step 8** (correct tftpd32 native format — applied 2026-06-18):
+
+```powershell
+$ini = @"
 [DHCP]
 Lease_NumLeases=0
 Boot File=EFI\Boot\bootx64.efi
-DHCP LocalIP=
-DHCP Ping=1
-PersistantLeases=1
+...
 [TFTPD32]
-BaseDirectory=C:\tftpd64
+BaseDirectory=$TftpRoot
 TftpPort=69
 PXECompatibility=1
 SecurityLevel=0
-LocalIP=
-Services=15
-TftpLogFile=C:\tftpd64\tftpd64.log
 ...
 "@
-$tftpdIni | Set-Content "C:\tftpd64\tftpd64.ini" -Encoding ASCII
-$tftpdIni | Set-Content "C:\tftpd64\tftpd32.ini" -Encoding ASCII
+$ini | Set-Content "$TftpRoot\tftpd64.ini" -Encoding ASCII
+$ini | Set-Content "$TftpRoot\tftpd32.ini" -Encoding ASCII
+Write-Host "  tftpd config written (tftpd64.ini + tftpd32.ini)." -ForegroundColor Green
 ```
 
 ---
