@@ -1,0 +1,8 @@
+#!ipxe
+echo Juniper WinPE -- loading via iPXE + wimboot...
+set base tftp://192.168.5.141
+kernel ${base}/wimboot
+initrd ${base}/EFI/Microsoft/Boot/BCD   BCD
+initrd ${base}/Boot/boot.sdi            boot.sdi
+initrd ${base}/sources/boot.wim         boot.wim
+boot

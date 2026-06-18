@@ -1,5 +1,6 @@
-__pycache__/
-*.pyc
-*.pyo
-.DS_Store
-Thumbs.db
+# Compiled iPXE binaries
+*.efi
+
+# Windows build artifacts
+*.tmp
+*.log

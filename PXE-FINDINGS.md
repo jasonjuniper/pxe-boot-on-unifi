@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-18  
 **Author:** Claude (Juniper AI)  
-**Status:** Fix applied to pc-deploy — ready for live boot test
+**Status:** iPXE + wimboot + HTTP delivery — NIC drivers injected, WiFi PXE scaffolded
 
 ---
 
@@ -197,6 +197,110 @@ Power on and watch the screen. Expected sequence:
 5. WinPE boot menu appears
 
 If TFTP still fails, run pktmon during the boot attempt to capture traffic for analysis.
+
+---
+
+## Current Working Architecture (as of 2026-06-18)
+
+### Wired PXE Boot (fully working)
+
+```
+Target PC NIC → DHCP Discover
+UniFi EFG → DHCP Offer: option 66=192.168.5.141, option 67=ipxe.efi
+Target PC → TFTP: GET ipxe.efi (from pc-deploy)
+iPXE runs embedded script:
+  → TFTP: GET wimboot          (74 KB — fast)
+  → TFTP: GET BCD              (8 KB — fast)
+  → TFTP: GET boot.sdi         (small — fast)
+  → HTTP:  GET sources/boot.wim (508 MB — full gigabit)
+wimboot → Windows Boot Manager → WinPE
+WinPE loads Juniper PC Deployment System
+```
+
+**Key files on pc-deploy:**
+
+| Path | Description |
+|---|---|
+| `C:\tftpd64\ipxe.efi` | Custom iPXE (HTTP-enabled embedded script) |
+| `C:\tftpd64\ipxe-wifi.efi` | WiFi variant (all-HTTP, no TFTP) |
+| `C:\tftpd64\wimboot` | MS-signed ramdisk loader |
+| `C:\tftpd64\EFI\Microsoft\Boot\BCD` | WinPE boot configuration |
+| `C:\tftpd64\Boot\boot.sdi` | WinPE ramdisk descriptor |
+| `C:\tftpd64\sources\boot.wim` | WinPE image (NIC drivers injected) |
+
+**Caddy (port 80) file server** serves `C:\tftpd64\` at `http://192.168.5.141/`. Boot.wim
+(508 MB) transfers in seconds over local gigabit vs. several minutes via TFTP/512-byte blocks.
+
+**NIC drivers in boot.wim** (as of 2026-06-18, final size 513 MB):
+- Intel I219-V (e1dn.inf) — onboard Lenovo ThinkCentre NIC — injected via scheduled task
+- ASIX AX88179/AX88772 — Lenovo dock USB-ethernet
+- Realtek USB NIC (rtump, rtucx, rtux64) — USB-ethernet fallback
+- RNDIS / generic USB-net (netrndis, rndiscmp, usbnet)
+
+---
+
+## WiFi PXE Boot (scaffolded)
+
+WiFi PXE uses **UEFI HTTP Boot** — the standard for PXE over wireless. The machine's WiFi NIC
+associates with the network, gets DHCP, and downloads the boot file via HTTP instead of TFTP.
+
+### Architecture
+
+```
+Target PC WiFi → associates with SSID → DHCP
+UniFi DHCP (WiFi policy) → option 67 = http://192.168.5.141/ipxe-wifi.efi
+UEFI HTTP Boot → fetches ipxe-wifi.efi directly via HTTP
+iPXE (all-HTTP embedded script):
+  → HTTP: GET wimboot
+  → HTTP: GET BCD
+  → HTTP: GET boot.sdi
+  → HTTP: GET sources/boot.wim
+wimboot → Windows Boot Manager → WinPE
+```
+
+### What's already in place
+
+- `C:\tftpd64\ipxe-wifi.efi` — all-HTTP iPXE binary deployed to pc-deploy
+- Caddy file server on port 80 serves all files at `http://192.168.5.141/`
+- `http://192.168.5.141/wimboot` returns 200 ✓ (verified)
+
+### UniFi DHCP configuration required (manual step)
+
+WiFi clients need a DHCP option 67 that is a **full HTTP URL**, not just a filename.
+Standard TFTP clients get `ipxe.efi` (filename only). HTTP Boot clients get the full URL.
+
+Option to implement in UniFi Network UI:
+
+1. Navigate to **Settings → Networks → Default** (or the WLAN network)
+2. Under DHCP options, set:
+   - **Option 60** = `HTTPClient` (signals HTTP Boot capability)
+   - **Option 67** = `http://192.168.5.141/ipxe-wifi.efi`
+3. For co-existence with wired PXE, create a **separate UniFi Network** for the PXE WiFi SSID
+   so wired clients still get `ipxe.efi` (no URL prefix) and WiFi clients get the full URL.
+
+### Secure Boot requirement
+
+For WiFi PXE with Secure Boot **on**, the boot chain must be fully signed:
+
+```
+shimx64.efi (MS-signed, from Ubuntu/Fedora shim package)
+  → ipxe.efi (signed by iPXE CA, trusted by shim MOK)
+    → wimboot (MS-signed)
+      → WinPE (MS-signed)
+```
+
+Current `ipxe-wifi.efi` is an unsigned custom build — it will be rejected by Secure Boot.
+To enable Secure Boot + WiFi PXE:
+
+1. Download a signed shim: `shimx64.efi` from [Ubuntu shim package](https://packages.ubuntu.com/noble/shim-signed) or Fedora's shim-x64
+2. Download a signed iPXE: [ipxe.efi from ipxe.org](https://boot.ipxe.org/ipxe.efi) (signed by iPXE CA; accepted by the Ubuntu/Fedora shim via embedded MOK)
+3. Place both in `C:\tftpd64\`
+4. UniFi DHCP option 67 → `http://192.168.5.141/shimx64.efi`
+5. shim verifies and chains to ipxe.efi; ipxe.efi runs the HTTP boot script
+
+> **Note:** The current wired PXE also uses an unsigned ipxe.efi — it works only because
+> Secure Boot is currently disabled on test machines. Enabling Secure Boot on any machine
+> will require the signed shim chain for both wired and WiFi PXE.
 
 ---
 
