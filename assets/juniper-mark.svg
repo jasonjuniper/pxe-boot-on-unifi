@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Juniper application mark
+  ==
+  Standalone glyph for Windows app icons, favicons, app tiles, or any
+  square brand mark. Use when the wordmark (juniper-logo.svg) is too
+  narrow to read at small sizes.
+
+  Source: Poppins-Bold "J" glyph extracted as SVG path geometry. The
+  SVG is font-independent at render time. Regenerate via
+  scripts/build_mark.py if the source font changes.
+
+  Colors:
+    Background: juniper-navy     (#1a1a2e)
+    Glyph:      juniper-offwhite (#e8e7e3)
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 256 256"
+     width="256" height="256">
+  <rect width="256" height="256" rx="36" fill="#1a1a2e"/>
+  <path fill="#e8e7e3" transform="translate(69.46 200.67) scale(0.2239 -0.2239)" d="M323 224V702H494V224Q494 115 428.5 54.0Q363 -7 261.0 -7.0Q159 -7 94.0 53.5Q29 114 29 224H199Q200 184 217.0 165.0Q234 146 261.0 146.0Q288 146 305.5 165.0Q323 184 323 224Z"/>
+</svg>
