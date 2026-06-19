@@ -1,0 +1,50 @@
+{
+  "_comment": "Generic UEFI EFI variable boot order manipulation. Works on any UEFI system (Lenovo, Dell, HP, etc.) as long as the process has SeSystemEnvironmentPrivilege. Used as fallback when vendor-specific tools aren't available.",
+  "profile": "generic-uefi",
+  "efi_global_namespace": "{8be4df61-93ca-11d2-aa0d-00e098032b8c}",
+  "required_privilege": "SeSystemEnvironmentPrivilege",
+  "variables": {
+    "BootOrder": {
+      "name": "BootOrder",
+      "type": "uint16[] (little-endian array)",
+      "description": "Ordered list of BootXXXX entry numbers. Index 0 = first boot device."
+    },
+    "BootCurrent": {
+      "name": "BootCurrent",
+      "type": "uint16",
+      "description": "Boot entry number that was used for the current boot."
+    },
+    "BootNext": {
+      "name": "BootNext",
+      "type": "uint16",
+      "description": "One-time boot override — UEFI uses this entry for the NEXT boot only, then deletes it. Write a Boot entry number here for one-shot boot."
+    },
+    "BootXXXX": {
+      "description": "Individual boot entries (Boot0000, Boot0001, etc.). Each contains: Attributes(uint32) + FilePath(EFI_DEVICE_PATH) + Description(UTF-16). Read Description field to identify PXE, Windows Boot Manager, etc."
+    }
+  },
+  "uefi_attributes": {
+    "NV_BS_RT": "0x7 (NonVolatile | BootService | RuntimeService) — standard for boot variables"
+  },
+  "algorithm": {
+    "change_boot_order": [
+      "1. Read BootOrder variable (uint16 array)",
+      "2. Enumerate Boot0000..Boot9999 to find entries matching the target (e.g., PXE = description contains 'PXE' or 'Network')",
+      "3. Move target entry number(s) to front of BootOrder array",
+      "4. Write new BootOrder back with SetFirmwareEnvironmentVariableEx",
+      "Note: changes take effect on next boot"
+    ],
+    "one_shot_boot": [
+      "1. Enumerate Boot entries to find the target",
+      "2. Write that entry's number to BootNext variable",
+      "3. UEFI boots that entry once and then removes BootNext automatically"
+    ]
+  },
+  "caveats": [
+    "Requires SeSystemEnvironmentPrivilege — must run elevated with UAC or as SYSTEM.",
+    "Entry description strings vary by firmware vendor and NIC model — use pattern matching.",
+    "Some firmware vendors (e.g., HP) use non-standard EFI variable layouts.",
+    "Writing BootOrder directly bypasses vendor BIOS logic — may behave unexpectedly on some hardware."
+  ],
+  "implementation_note": "See Set-BiosBootTarget.ps1 for the PowerShell implementation using Invoke-UefiBootOrder.ps1"
+}

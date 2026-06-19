@@ -1,0 +1,50 @@
+{
+  "_comment": "Dell BIOS profile. Probed on Dell XPS 15 9570 (PC-DEPLOY, 192.168.5.141) 2026-06-19. CCTK not installed, DCIM_BIOSService not present. DellBIOSProvider (PSGallery) is recommended.",
+  "profile": "dell",
+  "probed_on": "Dell XPS 15 9570, BIOS 1.27.0",
+  "methods_in_priority_order": [
+    {
+      "method": "DellBIOSProvider",
+      "install_command": "Install-Module -Name DellBIOSProvider -Force -SkipPublisherCheck",
+      "psdrive": "DellSmbios:",
+      "available_on": "All modern Dell systems with BIOS/UEFI",
+      "read_boot_order": "Get-Item 'DellSmbios:\\BootSequence\\BootList'",
+      "set_boot_order": "Set-Item 'DellSmbios:\\BootSequence\\BootList' -Value 'NetworkBoot,HardDisk.List,Optical,Floppy,eSATADevice,HardDisk,UsbStorageDevice'",
+      "targets": {
+        "PXE": "NetworkBoot,HardDisk.List,Optical,Floppy,eSATADevice,HardDisk,UsbStorageDevice",
+        "HDD": "HardDisk.List,HardDisk,NetworkBoot,Optical,Floppy,eSATADevice,UsbStorageDevice",
+        "USB": "UsbStorageDevice,HardDisk.List,HardDisk,NetworkBoot,Optical,Floppy,eSATADevice"
+      },
+      "notes": "Values for Set-Item are comma-separated boot device type strings. The exact strings depend on Dell model and firmware."
+    },
+    {
+      "method": "CCTK",
+      "binary": "cctk.exe",
+      "typical_paths": [
+        "C:\\Program Files\\Dell\\Command Configure\\X86_64\\cctk.exe",
+        "C:\\Program Files (x86)\\Dell\\Command Configure\\cctk.exe"
+      ],
+      "install_winget": "winget install Dell.CommandConfigure",
+      "read_boot_order": "cctk.exe --BootOrder",
+      "set_boot_order_pxe": "cctk.exe --BootOrder=NIC,HDD",
+      "set_boot_order_hdd": "cctk.exe --BootOrder=HDD,NIC",
+      "one_time_boot": "cctk.exe --SetBootOnce=NIC",
+      "notes": "Exact device names (NIC, HDD, etc.) depend on model. Run 'cctk.exe --BootOrder' first to see available device names."
+    },
+    {
+      "method": "generic-uefi",
+      "description": "Universal UEFI EFI variable manipulation — see generic-uefi.json",
+      "notes": "Works on any UEFI system but requires SeSystemEnvironmentPrivilege."
+    }
+  ],
+  "wmi_status": {
+    "root_dcim_sysman": "accessible (namespace exists)",
+    "DCIM_BIOSService": "NOT PRESENT on XPS 15 9570 — may be present on enterprise (Latitude/OptiPlex) models",
+    "notes": "root\\dcim\\sysman accessible but no boot-related WMI classes found on XPS consumer hardware."
+  },
+  "powershell_probe": {
+    "check_dell_bios_provider": "Get-Module -Name DellBIOSProvider -ListAvailable",
+    "check_cctk": "Get-ChildItem 'C:\\Program Files\\Dell' -Filter cctk.exe -Recurse -ErrorAction SilentlyContinue | Select -First 1 -ExpandProperty FullName",
+    "check_dcim_service": "Get-WmiObject -Namespace root\\dcim\\sysman -Class DCIM_BIOSService -ErrorAction SilentlyContinue"
+  }
+}

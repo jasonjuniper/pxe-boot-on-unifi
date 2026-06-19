@@ -1,0 +1,13 @@
+{
+  "_comment": "Lenovo IdeaPad/Yoga BIOS profile. WMI availability NOT confirmed on 82YN Yoga 7 — falls back to generic UEFI variable manipulation. Update this file once WMI is probed on DESKTOP-2HHV897 (192.168.1.8).",
+  "profile": "lenovo-ideapad",
+  "wmi_namespace": "root\\WMI",
+  "wmi_confirmed": false,
+  "fallback": "generic-uefi",
+  "notes": [
+    "IdeaPad/Yoga line does NOT always expose root\\WMI Lenovo BIOS classes — this is primarily a ThinkPad feature.",
+    "If WMI probe fails (Lenovo_BIOSSetting not found), fall through to generic-uefi profile.",
+    "TODO: probe DESKTOP-2HHV897 (192.168.1.8, LENOVO 82YN, LHCN30WW BIOS) to confirm WMI availability."
+  ],
+  "powershell_probe": "Get-WmiObject -Namespace root\\WMI -Class Lenovo_BIOSSetting -ErrorAction SilentlyContinue"
+}

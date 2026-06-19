@@ -1,0 +1,85 @@
+{
+  "_comment": "Maps hw_manufacturer + model patterns to a BIOS profile. Matched in order — first match wins. model_pattern is a PowerShell -like glob.",
+  "mappings": [
+    {
+      "vendor_pattern": "LENOVO",
+      "model_pattern": "20Y3*",
+      "friendly_name": "Lenovo ThinkPad T14s Gen 2",
+      "profile": "lenovo-thinkpad",
+      "bios_method": "wmi",
+      "notes": "root\\WMI Lenovo_BIOSSetting confirmed on this line. BIOS prefix N40ET."
+    },
+    {
+      "vendor_pattern": "LENOVO",
+      "model_pattern": "21DC*",
+      "friendly_name": "Lenovo ThinkPad P14s Gen 3",
+      "profile": "lenovo-thinkpad",
+      "bios_method": "wmi",
+      "notes": "BIOS prefix N3JET."
+    },
+    {
+      "vendor_pattern": "LENOVO",
+      "model_pattern": "21FE*",
+      "friendly_name": "Lenovo ThinkPad P14s Gen 4",
+      "profile": "lenovo-thinkpad",
+      "bios_method": "wmi",
+      "notes": "BIOS prefix N3VET."
+    },
+    {
+      "vendor_pattern": "LENOVO",
+      "model_pattern": "21G2*",
+      "friendly_name": "Lenovo ThinkPad P14s Gen 5",
+      "profile": "lenovo-thinkpad",
+      "bios_method": "wmi",
+      "notes": "Live-probed 2026-06-19 on IMAGE-ME. BIOS R2DET41W. Full settings catalog in lenovo-thinkpad.json."
+    },
+    {
+      "vendor_pattern": "LENOVO",
+      "model_pattern": "82YN",
+      "friendly_name": "Lenovo Yoga 7 2-in-1 Gen 7",
+      "profile": "lenovo-ideapad",
+      "bios_method": "wmi-or-generic",
+      "notes": "IdeaPad line. WMI availability unconfirmed — falls back to generic UEFI variable manipulation. BIOS prefix LHCN."
+    },
+    {
+      "vendor_pattern": "LENOVO",
+      "model_pattern": "*",
+      "friendly_name": "Lenovo ThinkPad (generic)",
+      "profile": "lenovo-thinkpad",
+      "bios_method": "wmi",
+      "notes": "Default for any unmatched Lenovo — most Lenovo commercial hardware uses root\\WMI."
+    },
+    {
+      "vendor_pattern": "Dell Inc.",
+      "model_pattern": "OptiPlex*",
+      "friendly_name": "Dell OptiPlex",
+      "profile": "dell",
+      "bios_method": "dell-bios-provider-or-generic",
+      "notes": "Enterprise Dell. DellBIOSProvider module recommended (Install-Module DellBIOSProvider). Falls back to generic UEFI. CCTK not installed by default."
+    },
+    {
+      "vendor_pattern": "Dell Inc.",
+      "model_pattern": "XPS*",
+      "friendly_name": "Dell XPS",
+      "profile": "dell",
+      "bios_method": "dell-bios-provider-or-generic",
+      "notes": "Consumer Dell. No CCTK. root\\dcim\\sysman accessible but DCIM_BIOSService absent on XPS 15 9570. Use DellBIOSProvider or generic UEFI."
+    },
+    {
+      "vendor_pattern": "Dell Inc.",
+      "model_pattern": "*",
+      "friendly_name": "Dell (generic)",
+      "profile": "dell",
+      "bios_method": "dell-bios-provider-or-generic",
+      "notes": "Default for any unmatched Dell."
+    },
+    {
+      "vendor_pattern": "HP",
+      "model_pattern": "*",
+      "friendly_name": "HP",
+      "profile": "hp",
+      "bios_method": "hpcmsl-or-generic",
+      "notes": "HP Client Management Script Library (HPCMSL) recommended. Falls back to generic UEFI. BCU (BiosConfigUtility64.exe) also works if installed."
+    }
+  ]
+}

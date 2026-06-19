@@ -1,0 +1,105 @@
+{
+  "_comment": "Lenovo ThinkPad BIOS profile — WMI via root\\WMI namespace. Live-verified on ThinkPad P14s Gen 5 (IMAGE-ME, 192.168.11.24) 2026-06-19.",
+  "profile": "lenovo-thinkpad",
+  "wmi_namespace": "root\\WMI",
+  "wmi_read_class": "Lenovo_BIOSSetting",
+  "wmi_write_class": "Lenovo_SetBiosSetting",
+  "wmi_save_class": "Lenovo_SaveBiosSettings",
+  "setting_format": "SettingName,Value",
+  "boot_order": {
+    "setting_name": "BootOrder",
+    "separator": ":",
+    "known_components": {
+      "NVMe0": "First NVMe SSD",
+      "NVMe1": "Second NVMe SSD",
+      "HDD0": "SATA HDD (older models)",
+      "USBHDD": "USB hard drive / flash drive",
+      "USBCD": "USB optical drive",
+      "USBFDD": "USB floppy drive",
+      "PXEBOOT": "Wired PXE (Ethernet)",
+      "WIFIBOOT": "Wireless PXE / UEFI HTTP Boot",
+      "LENOVOCLOUD": "Lenovo Cloud boot service"
+    },
+    "targets": {
+      "PXE": {
+        "description": "Put wired PXE first — for PXE imaging",
+        "operation": "move_to_front",
+        "component": "PXEBOOT"
+      },
+      "WIFI": {
+        "description": "Put WiFi/HTTP boot first",
+        "operation": "move_to_front",
+        "component": "WIFIBOOT"
+      },
+      "HDD": {
+        "description": "Put NVMe/HDD first — normal post-imaging operation",
+        "operation": "move_to_front",
+        "component": "NVMe0",
+        "fallback_component": "HDD0"
+      },
+      "USB": {
+        "description": "Put USB HDD/flash first",
+        "operation": "move_to_front",
+        "component": "USBHDD"
+      },
+      "OneBoot-PXE": {
+        "description": "One-time PXE boot via EFI BootNext variable",
+        "operation": "one_shot_uefi",
+        "description_match_pattern": "*PXE*"
+      },
+      "OneBoot-HDD": {
+        "description": "One-time HDD boot via EFI BootNext variable",
+        "operation": "one_shot_uefi",
+        "description_match_pattern": "*NVMe*Windows*"
+      }
+    }
+  },
+  "other_useful_settings": {
+    "NetworkBoot": {
+      "setting_name": "NetworkBoot",
+      "values": ["PXEBOOT", "WIFIBOOT", "Disable"],
+      "description": "Network boot device type"
+    },
+    "UefiPxeBootPriority": {
+      "setting_name": "UefiPxeBootPriority",
+      "values": ["IPv4First", "IPv6First"],
+      "description": "PXE IP protocol preference"
+    },
+    "SecureBoot": {
+      "setting_name": "SecureBoot",
+      "values": ["Enable", "Disable"],
+      "description": "UEFI Secure Boot state"
+    },
+    "BootMode": {
+      "setting_name": "BootMode",
+      "values": ["Quick", "Diagnostics", "Auto"],
+      "description": "POST speed / diagnostics level. Diagnostics = slow thorough POST."
+    },
+    "BIOSPasswordAtUnattendedBoot": {
+      "setting_name": "BIOSPasswordAtUnattendedBoot",
+      "values": ["Enable", "Disable"],
+      "description": "Require BIOS password at unattended (PXE/USB) boot. IMPORTANT: if a supervisor password is set, SaveBiosSettings requires it."
+    }
+  },
+  "powershell_patterns": {
+    "read_setting": "$val = (Get-WmiObject -Namespace root\\WMI -Class Lenovo_BIOSSetting | Where-Object { $_.CurrentSetting -match '^SettingName,' }).CurrentSetting",
+    "write_setting": "(Get-WmiObject -Namespace root\\WMI -Class Lenovo_SetBiosSetting).SetBiosSetting('SettingName,NewValue')",
+    "save_settings_no_password": "(Get-WmiObject -Namespace root\\WMI -Class Lenovo_SaveBiosSettings).SaveBiosSettings('')",
+    "save_settings_with_password": "(Get-WmiObject -Namespace root\\WMI -Class Lenovo_SaveBiosSettings).SaveBiosSettings('SupervisorPassword')",
+    "read_all_boot_settings": "Get-WmiObject -Namespace root\\WMI -Class Lenovo_BIOSSetting | Where-Object { $_.CurrentSetting -match 'Boot|PXE|Network' } | Select-Object CurrentSetting"
+  },
+  "live_snapshot_21G2002DUS": {
+    "_comment": "Snapshot from ThinkPad P14s Gen 5 (IMAGE-ME) on 2026-06-19",
+    "BootOrder": "NVMe0:NVMe1:USBHDD:USBCD:USBFDD:PXEBOOT:LENOVOCLOUD",
+    "NetworkBoot": "PXEBOOT",
+    "UefiPxeBootPriority": "IPv4First",
+    "SecureBoot": "Enable",
+    "BootMode": "Diagnostics",
+    "BIOSPasswordAtUnattendedBoot": "Enable",
+    "BootOrderLock": "Disable",
+    "WiFiNetworkBoot": "Enable",
+    "VirtualizationTechnology": "Disable",
+    "KernelDMAProtection": "Disable",
+    "Allow3rdPartyUEFICA": "Disable"
+  }
+}

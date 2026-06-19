@@ -1,0 +1,42 @@
+{
+  "_comment": "HP BIOS profile. TODO: probe DESKTOP-DQ8RGE6 (192.168.1.217, HP Pavilion All-in-One, BIOS F.43) to verify.",
+  "profile": "hp",
+  "probed_on": "NOT YET PROBED — based on HP documentation",
+  "methods_in_priority_order": [
+    {
+      "method": "HPCMSL",
+      "description": "HP Client Management Script Library — PowerShell module",
+      "install_command": "Install-Module -Name HPCMSL -Force -SkipPublisherCheck -AcceptLicense",
+      "read_boot_order": "Get-HPBIOSSetting 'Boot Order'",
+      "set_boot_order": "Set-HPBIOSSetting 'Boot Order' 'value'",
+      "read_setting": "Get-HPBIOSSettingValue -Name 'SettingName'",
+      "notes": "HPCMSL is the recommended HP scripting tool. Setting names and values vary by model. Run Get-HPBIOSSettingsList to enumerate."
+    },
+    {
+      "method": "BCU",
+      "binary": "BiosConfigUtility64.exe",
+      "download_url": "https://ftp.hp.com/pub/caps-softpaq/cmit/HP_BCU.html",
+      "read_all": "BiosConfigUtility64.exe /GetConfig:current_config.cfg",
+      "set_from_file": "BiosConfigUtility64.exe /SetConfig:modified_config.cfg",
+      "notes": "BCU reads/writes BIOS settings via a .cfg text file. Boot order is typically in 'UEFI Boot Order' section."
+    },
+    {
+      "method": "hp-wmi",
+      "namespace": "root\\HP\\InstrumentedBIOS",
+      "read_class": "HP_BIOSSetting",
+      "write_class": "HP_BIOSSettingInterface",
+      "probe": "Get-WmiObject -Namespace root\\HP\\InstrumentedBIOS -Class HP_BIOSSetting -ErrorAction SilentlyContinue",
+      "notes": "WMI approach for HP. Availability varies by model. Class HP_BIOSSetting has Name and Value properties."
+    },
+    {
+      "method": "generic-uefi",
+      "description": "Universal UEFI EFI variable manipulation — see generic-uefi.json",
+      "notes": "Works on any UEFI system but requires SeSystemEnvironmentPrivilege."
+    }
+  ],
+  "powershell_probe": {
+    "check_hpcmsl": "Get-Module -Name HPCMSL -ListAvailable",
+    "check_hp_wmi": "Get-WmiObject -Namespace root\\HP\\InstrumentedBIOS -Class HP_BIOSSetting -ErrorAction SilentlyContinue | Select -First 1",
+    "check_bcu": "Get-ChildItem 'C:\\Program Files (x86)\\HP\\BIOS Configuration Utility' -Filter BiosConfigUtility64.exe -ErrorAction SilentlyContinue"
+  }
+}
