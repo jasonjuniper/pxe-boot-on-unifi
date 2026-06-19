@@ -1,0 +1,450 @@
+[
+  {
+    "name": null,
+    "version": null,
+    "category": "Storage",
+    "subdir": "storage",
+    "filename": "fwnva70.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/fwnva70.exe",
+    "sha256": "C030171D1BB5E65B8F9B9BCD0234BA0D805F2635F6E96A5951B78064347F9A90",
+    "size_bytes": 105941544,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Networking LAN Ethernet",
+    "subdir": "network",
+    "filename": "nzbrw03w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbrw03w.exe",
+    "sha256": "45B259F8BA60573ACB36072AD7461E048B4DBEFFA41B1F2B97D44B15CD605838",
+    "size_bytes": 1365816,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Camera and Card Reader",
+    "subdir": "other",
+    "filename": "n45cr01w_v2.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/n45cr01w_v2.exe",
+    "sha256": "8D15B5AC1B3CCC6EBCD034954A92A7F32FA6068CE43E671B8A7086241FCBFF4A",
+    "size_bytes": 1362608,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzbjt04w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbjt04w.exe",
+    "sha256": "591B7E27B151EEAB3B9F9F6F29FAFC0759F93C1175E6F9BFD719250069B154D3",
+    "size_bytes": 1130176,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Display and Video Graphics",
+    "subdir": "video",
+    "filename": "5grkq8ppsgwt4_x86_v2.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/5grkq8ppsgwt4_x86_v2.exe",
+    "sha256": "100A88A038ADA38590E9D2AE8FFF4AD2719789707C39EEB5B0E0893069CF8445",
+    "size_bytes": 1451776,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Power Management",
+    "subdir": "power",
+    "filename": "r2dbr01w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2dbr01w.exe",
+    "sha256": "BAEDCBA8486F3886BF9807BAE07340D9E992B74BB0040DF4EFAA4D41EC663DC8",
+    "size_bytes": 1053008,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzaic03w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzaic03w.exe",
+    "sha256": "1573393032397DEED254E372FC6B2719EC86CF3CEF9FABBD89E6165B707C5E69",
+    "size_bytes": 1017448,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Camera and Card Reader",
+    "subdir": "other",
+    "filename": "nzav104w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzav104w.exe",
+    "sha256": "EC70AC2D10E04596F3B3917AF51458B920CC327CA059BA405E7926C1F9189892",
+    "size_bytes": 1155800,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzbli03w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbli03w.exe",
+    "sha256": "F08557652090C0E51BB365A60BDC949E9790AE168FEB77310FDCF16D1F187AE6",
+    "size_bytes": 1247536,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzbhd08w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbhd08w.exe",
+    "sha256": "31B345245C061423C08765B7B472DDF3E1BD78AD5A0EF4BD12FC0789472B64A0",
+    "size_bytes": 63962416,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Camera and Card Reader",
+    "subdir": "other",
+    "filename": "r2dc411w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2dc411w.exe",
+    "sha256": "D65C08661DFF35A92EC7CF67310C81C90A462769A7994A405EDBF9F160F88CF0",
+    "size_bytes": 95604512,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "r2drg02w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2drg02w.exe",
+    "sha256": "D142CE4216BF58254A9DC2BB7E1303ED30AC97604AAA39B69C69B47A2F630D38",
+    "size_bytes": 10167456,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "r2drg03w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2drg03w.exe",
+    "sha256": "4B550936F91FEADA09454A6C56C5ACA3A937184147537EEB6182BF3445212728",
+    "size_bytes": 11399344,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Display and Video Graphics",
+    "subdir": "video",
+    "filename": "r2dm104w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2dm104w.exe",
+    "sha256": "855B3E79A6EC2847E40214E7968141790F4581B5DEA610A57640D1198ED726B0",
+    "size_bytes": 1128640,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Fingerprint reader",
+    "subdir": "other",
+    "filename": "nzagi09w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzagi09w.exe",
+    "sha256": "0FCBA6D6A763282E31D05D93CBCFABEC54FB3FCCE6902E6AA9BE7B93323495FE",
+    "size_bytes": 2390048,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Camera and Card Reader",
+    "subdir": "other",
+    "filename": "r2slf18w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2slf18w.exe",
+    "sha256": "41DA8A6301EA8CFBF45AAA078344463DA116EC2C91B049613F090C986F9D9F9D",
+    "size_bytes": 25005608,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Storage",
+    "subdir": "storage",
+    "filename": "fwsdwx77.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/fwsdwx77.exe",
+    "sha256": "D3B2EB958E3B52305AC624074BF0C13830A082A6BAEA108E51B2326366F6B3A2",
+    "size_bytes": 25832792,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Camera and Card Reader",
+    "subdir": "other",
+    "filename": "n41me31w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/n41me31w.exe",
+    "sha256": "06AB5D5B6DD4BB8C0795FB9184D2B592D40689868DCCCAF9A0DD34781BDC4088",
+    "size_bytes": 1219832,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Power Management",
+    "subdir": "power",
+    "filename": "n1fupa7w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/n1fupa7w.exe",
+    "sha256": "864A6508AAFB046FC1F60382E6EFA8589DF66A0A5C93954A8A5B33F37F0C26CA",
+    "size_bytes": 6320160,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Display and Video Graphics",
+    "subdir": "video",
+    "filename": "n3yfz29w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/n3yfz29w.exe",
+    "sha256": "C7F7BC411D44D419529DD8B905555D3A9546A5FDB4A08B3EF9435E84DFE62146",
+    "size_bytes": 10592512,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Bluetooth and Modem",
+    "subdir": "other",
+    "filename": "nzaww12w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzaww12w.exe",
+    "sha256": "332618D4ACA62EAAF0BF925480FDEE89B10000339F2B2C4CD6AD56CD2F8060B0",
+    "size_bytes": 5120528,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Display and Video Graphics",
+    "subdir": "video",
+    "filename": "nzbde10w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbde10w.exe",
+    "sha256": "E0E1F98A74CFA6637BEF07C474D835FAF8CCEBB37E7EEA539805BA72EE049595",
+    "size_bytes": 583158560,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Power Management",
+    "subdir": "power",
+    "filename": "n4bku11w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/n4bku11w.exe",
+    "sha256": "3404C35A123611D44EB87408C076BA1CF4C1982811138197A44B177561A85A46",
+    "size_bytes": 1488544,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Audio",
+    "subdir": "audio",
+    "filename": "n45a123w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/n45a123w.exe",
+    "sha256": "C746F6867787240E038F3A60C909C1ACBACD5BDC55533892FDEE7129CB3156CC",
+    "size_bytes": 70204944,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "BIOS UEFI",
+    "subdir": "bios",
+    "filename": "r2duj16w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/r2duj16w.exe",
+    "sha256": "B5361F17B7332A93C9A9CDF021BDA7825FE7DEFD94B90342C43DEB58AA2AF84C",
+    "size_bytes": 17690872,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": true
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzara09w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzara09w.exe",
+    "sha256": "F00316DABF21C8776F69453CCCEAACD37252D7E58E42067EE25992BED21B44B2",
+    "size_bytes": 57520336,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Mouse Pen and Keyboard",
+    "subdir": "input",
+    "filename": "nzag207w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzag207w.exe",
+    "sha256": "0A7113D93A99E09375269F74A2B99303AA4A7E73113DA201AF086E5E70DE475F",
+    "size_bytes": 1757408,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzaef05w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzaef05w.exe",
+    "sha256": "356B78E7D4346042089DFF23DA60F2A844D9B3D4BFD50664604ACBD4C5779740",
+    "size_bytes": 1015352,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Networking Wireless LAN",
+    "subdir": "network",
+    "filename": "nzbwl11w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbwl11w.exe",
+    "sha256": "022ACA8219442024B1FD5FFDC85E0D39E5F858E5BBEC90D08515704C3626D694",
+    "size_bytes": 15925856,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Display and Video Graphics",
+    "subdir": "video",
+    "filename": "nzada12w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzada12w.exe",
+    "sha256": "6AB63C844A5ACB990592A51BE134FD2BE71EB61E1AEFC32BFEB3AA7C76590270",
+    "size_bytes": 1098949640,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+    "subdir": "other",
+    "filename": "nzbnp09w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzbnp09w.exe",
+    "sha256": "335C7167CD7FFD1F6B423A5FAA901345D52754AAF4225DC78B6D2EFBC9A086AC",
+    "size_bytes": 21095704,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  },
+  {
+    "name": null,
+    "version": null,
+    "category": "Fingerprint reader",
+    "subdir": "other",
+    "filename": "nzagg14w.exe",
+    "url": "https://download.lenovo.com/pccbbs/mobiles/nzagg14w.exe",
+    "sha256": "3A116599AA61C7C9DDDE5B32BD4C8CD174A048B0165ACB4707E0C969FF8822CC",
+    "size_bytes": 2650560,
+    "install_cmd": [
+      []
+    ],
+    "is_bios": false
+  }
+]
