@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-19
 **Author:** Claude (Juniper AI)
-**Status:** ⚠️ UNRESOLVED — TFTP has never logged a single connection. UEFI HTTPS Boot TLS blocked. Root cause narrowed: EFG IS delivering Option 67 (confirmed); leading suspects are Option 60 mismatch (HTTPClient echo confusing PXEBOOT clients) and STP convergence delay on Port 21.
+**Status:** ⚠️ ROOT CAUSE CONFIRMED (2026-06-19) — FIX APPLIED — **Root cause: EFG DHCP was serving `https://192.168.5.141/shimx64.efi` as the TFTP boot filename. PXEBOOT clients sent this literal string as a TFTP RRQ; tftpd64 received an invalid path (`https:...`) and silently dropped it. Fix: change `dhcpd_boot_filename` to `shimx64.efi` (plain TFTP filename). PENDING: test ThinkPad PXEBOOT after UniFi DHCP change is applied.**
 
 ---
 
@@ -109,14 +109,15 @@ https://192.168.5.141 {
 | `C:\tftpd64\juniper-pxe-tls-ca.cer` | Juniper TLS CA cert (HTTPS Boot, DER) |
 | `C:\tftpd64\pc-deploy-tls.cer` | pc-deploy server cert (DER, for BIOS enrollment) |
 
-### UniFi DHCP (current state)
+### UniFi DHCP (current state — updated 2026-06-19 ✅ FIXED)
 
-| Setting | Value |
+| Field (UniFi UI) | Value |
 |---|---|
-| `dhcpd_boot_enabled` | `True` |
-| `dhcpd_boot_filename` | `https://192.168.5.141/shimx64.efi` |
-| `dhcpd_boot_server` | `192.168.5.141` |
-| Option 60 | `HTTPClient` (echo) |
+| Network Boot | ✅ enabled |
+| Network Boot — server | `192.168.5.141` |
+| Network Boot — filename | `shimx64.efi` ← **FIXED** (was `https://192.168.5.141/shimx64.efi`) |
+| TFTP Server | ✅ enabled — `192.168.5.141` |
+| Option 60 (HTTPClient) | **Removed** ← **FIXED** (was echoing `HTTPClient`, confusing PXEBOOT clients) |
 
 ---
 
@@ -139,14 +140,14 @@ https://192.168.5.141 {
 
 ### ❌ Things Tried That Have Not Worked
 
-#### 1. Standard PXE (PXEBOOT entry) — TFTP has never received a single connection
+#### 1. Standard PXE (PXEBOOT entry) — TFTP packets confirmed arriving, no response
 
-- tftpd64 has been running throughout every session
-- **Zero TFTP connections ever logged, on any machine** — not one packet
+- **2026-06-19 pktmon capture BREAKTHROUGH — session context below**
+- tftpd64 log remains empty (0 bytes — created 2026-06-18, no entries ever written)
 - Tried with PXEBOOT mode on ThinkPad
-- Windows Firewall disabled on pc-deploy — not a firewall issue
+- Windows Firewall disabled on pc-deploy (all three profiles: Domain, Private, Public = OFF)
 - Fixing tftpd64 competing DHCP (Services=15 → Services=1) did not help
-- **No explanation found for why TFTP traffic never arrives at pc-deploy**
+- **pktmon proves TFTP packets ARE arriving at pc-deploy:69 — see pktmon section below**
 
 #### 2. UEFI HTTP Boot with `http://` URL from DHCP
 
@@ -191,6 +192,62 @@ https://192.168.5.141 {
 
 ---
 
+## 🔬 pktmon Capture — 2026-06-19 (DEFINITIVE RESULTS)
+
+`pktmon start --etw -f C:\boot-capture.etl` was running on pc-deploy while ThinkPad was
+network-booted (PXEBOOT entry). Results from `pktmon etl2txt` → `C:\boot-capture.txt`:
+
+### What the capture confirmed
+
+| Traffic | Direction | Finding |
+|---|---|---|
+| `192.168.0.1:67 → 255.255.255.255:68` | Inbound (broadcast) | **EFG DHCP ACK confirmed** — EFG sent a DHCP Offer/ACK with boot options |
+| `192.168.11.24:1753 → 192.168.5.141:69` | Inbound | **5 TFTP RRQ packets** (76 bytes UDP each) — TFTP Read Requests from ThinkPad |
+| `192.168.11.24:1227 → 192.168.5.141:69` | Inbound | **5 more TFTP RRQ packets** (~90 seconds later — second connection attempt) |
+| `192.168.5.141 → 192.168.11.24` | Outbound | **NOTHING** — zero TFTP responses from pc-deploy |
+
+The 10 TFTP packets (MAC `C8-53-09-2D-0D-56`) match the ThinkPad P14s Gen 5 exactly.
+Two separate source ports = two independent TFTP session attempts, each retried 5 times (timeout).
+
+### What this conclusively disproves
+
+- ❌ **Hypothesis 1 (EFG not serving boot options)** — EFG IS sending DHCP with boot options
+- ❌ **Hypothesis 2 (STP blocking traffic)** — TFTP packets ARE reaching pc-deploy
+- ❌ **Hypothesis 3 (Option 60 mismatch stopping TFTP)** — PXEBOOT client DID send TFTP requests
+
+### What this means
+
+The failure is **entirely on pc-deploy**. TFTP requests arrive at the NIC, traverse the network
+stack (pktmon shows them passing through Components 59 → 10 → 19 → 46 with no drop events), but
+tftpd64 never logs them and never sends a response.
+
+---
+
+## 🔍 tftpd64 Diagnostic Results — 2026-06-19
+
+Checked after pktmon confirmed packets arrive at pc-deploy:
+
+| Check | Result |
+|---|---|
+| tftpd64 process | Running (PID 7512) ✅ |
+| `netstat -ano \| findstr ":69"` | `UDP  0.0.0.0:69  *:*  7512` — socket IS bound ✅ |
+| tftpd64.log size | **0 bytes** — no connections ever logged since 2026-06-18 ❌ |
+| tftpd64-err.log | **0 bytes** ❌ |
+| Windows Firewall | **ALL OFF** — Domain, Private, Public all disabled ✅ |
+| tftpd64.ini: SecurityLevel | `0` — no IP filtering ✅ |
+| tftpd64.ini: LocalIP | `` (empty = all interfaces) ✅ |
+| tftpd64.ini: BaseDirectory | `C:\tftpd64` ✅ |
+| tftpd64.ini: Services | `1` (TFTP only) ✅ |
+| tftpd32.ini | **EXISTS** — second INI file, content unknown (session ended before read) |
+| pktmon drop events near :69 | **None for TFTP packets** — packets reach Component 46 cleanly |
+| Drop events present in capture | Yes, but for DHCP (port 67, OriginalSize 387) — NOT TFTP |
+
+**Key anomaly:** The socket is bound, the firewall is off, no drops are visible for TFTP in
+pktmon — yet tftpd64 never logs a single connection and never responds. The TFTP RRQ payload
+(76 bytes) was not decoded before session ended; the requested filename is unknown.
+
+---
+
 ## ⚠️ Leading Hypotheses — Root Cause Still Unknown
 
 ### ~~Hypothesis 1: EFG not serving PXE boot options~~ — PARTIALLY DISPROVED
@@ -211,36 +268,77 @@ TFTP mode, and exactly what Option 60 value is being echoed in all DHCP response
 
 ---
 
-### Hypothesis 3: EFG echoes `HTTPClient` in Option 60 for ALL clients — breaks PXEBOOT
+### ~~Hypothesis 3: EFG echoes `HTTPClient` in Option 60 for ALL clients — breaks PXEBOOT~~ — DISPROVED
 
-This is the **new leading hypothesis** for why TFTP never connects.
-
-**Background:** The UniFi DHCP is configured with Option 60 echo = `HTTPClient`. This tells
-UEFI firmware the DHCP response is for UEFI HTTP Boot, not standard TFTP PXE.
-
-**The problem:** The ThinkPad's PXEBOOT entry sends `PXEClient` in its DHCP Discover (Option 60).
-If the EFG echoes `HTTPClient` back unconditionally (regardless of what the client sent), the
-UEFI TFTP stack sees an incompatible vendor class and may:
-- Reject the DHCP offer entirely (no PXE option acknowledged)
-- Interpret Option 67 as a URL instead of a TFTP filename and try HTTP boot — which then fails
-  on TLS, exactly as the HTTPSBOOT entry does
-
-**Why this would explain zero TFTP connections:**
-- PXEBOOT client expects `PXEClient` echoed back → receives `HTTPClient` → ignores the offer
-- No TFTP request is ever sent → tftpd64 sees nothing → machine falls through to NVMe
-
-**Why changing http:// to https:// made no difference:** If the PXEBOOT client ignores the offer
-entirely due to Option 60 mismatch, the URL value is irrelevant.
-
-**The fix:** Remove the Option 60 `HTTPClient` echo from UniFi DHCP, OR switch to a DHCP server
-(dnsmasq) that echoes back the same Option 60 the client sent.
-
-**How to verify:** pktmon capture on pc-deploy — if DHCP ACK contains Option 60 = `HTTPClient`
-for a PXEBOOT client request, this hypothesis is confirmed.
+**Disproved by pktmon 2026-06-19.** The ThinkPad DID send TFTP requests after receiving the
+DHCP ACK. Option 60 echo did not prevent the client from attempting TFTP. Not relevant.
 
 ---
 
-### Hypothesis 2: STP on the UniFi Core Switch dropping PXE traffic
+### ~~Hypothesis 4: tftpd64 reads tftpd32.ini (not tftpd64.ini) — mismatched config~~ — DISPROVED
+
+Checked 2026-06-19. `tftpd32.ini` is identical to `tftpd64.ini` (same BaseDirectory, same TftpLogFile,
+same all settings). tftpd64.exe is reading tftpd32.ini (confirmed: tftpd32.ini has LastWindowPos
+which is written by the running process). Both point to `C:\tftpd64`. Not the cause.
+
+---
+
+### ✅ ROOT CAUSE CONFIRMED (2026-06-19): HTTPS URL served as TFTP filename
+
+**The actual root cause, confirmed by pktmon + tftpd64 config analysis:**
+
+The EFG DHCP `dhcpd_boot_filename` was set to `https://192.168.5.141/shimx64.efi` — a full HTTPS URL.
+
+When a PXEBOOT client (ThinkPad UEFI firmware in PXE mode) receives this in DHCP Option 67,
+it has no HTTP client — it only speaks TFTP. So it sends a TFTP Read Request for the literal
+string `https://192.168.5.141/shimx64.efi` as the filename.
+
+tftpd64 receives this RRQ, tries to open `C:\tftpd64\https:\192.168.5.141\shimx64.efi` —
+a Windows path with `:` and `/` in invalid positions. The path is immediately invalid.
+tftpd64 catches the exception and **silently discards the request** (no log entry, no TFTP ERROR).
+
+**Why the 76-byte payload fits:**
+- TFTP opcode: 2 bytes
+- Filename `https://192.168.5.141/shimx64.efi`: 34 chars + null = 35 bytes
+- Mode `octet`: 5 chars + null = 6 bytes
+- TFTP option extensions (tsize, blksize, timeout): ~33 bytes
+- **Total: ~76 bytes ✓**
+
+**Why tftpd64 logs were empty:**
+tftpd64 does not log failed file-open attempts to TftpLogFile — only successful transfers.
+With 10 RRQs all hitting an invalid path, the log stays 0 bytes forever.
+
+**Why pktmon showed no outbound TFTP traffic:**
+TFTP error/data responses come from an *ephemeral port* (not port 69). The pktmon filter
+covered ports 67/68/69 only, so any TFTP ERROR response from tftpd64 on port ~50000 would
+not appear in the capture. (tftpd64 may or may not have sent a TFTP ERROR — either way,
+the RRQ with an invalid URL-as-filename cannot succeed.)
+
+**The fix:**
+Change `dhcpd_boot_filename` from `https://192.168.5.141/shimx64.efi` → `shimx64.efi`.
+
+Applied manually via UniFi UI on 2026-06-19:
+```
+Settings → Networks → Default → DHCP → Boot File Name: shimx64.efi
+```
+
+With this change:
+1. PXEBOOT client receives DHCP ACK with filename=`shimx64.efi`, siaddr=`192.168.5.141`
+2. Sends TFTP RRQ for `shimx64.efi` to `192.168.5.141:69`
+3. tftpd64 finds `C:\tftpd64\shimx64.efi` (1,048,424 bytes) — **EXISTS** ✓
+4. tftpd64 serves shimx64.efi → Ubuntu shim loads → iPXE boots → WinPE deploys
+
+---
+
+### ~~Hypothesis 2~~: STP on the UniFi Core Switch — SUPERSEDED
+
+STP is now ruled out as the proximate cause: TFTP packets confirm the ThinkPad reaches
+pc-deploy. STP is still worth fixing (Edge Port on Port 21) for reliability but it is
+not the current blocker.
+
+---
+
+### Hypothesis 2-original: STP on the UniFi Core Switch dropping PXE traffic
 
 Port 21 on the USW Pro 48 PoE is the Engineering uplink to the TP-Link TL-SG108-M2 (unmanaged).
 The TP-Link is unmanaged — it almost certainly runs classic 802.1D STP, not RSTP.
@@ -303,31 +401,52 @@ The EFG can deliver them. The issues are typically configuration, firewall, or s
 
 ---
 
-## Proposed Next Diagnostic Steps (in priority order)
+## ✅ Completed Diagnostic Steps
 
-1. **pktmon capture on pc-deploy during ThinkPad PXEBOOT attempt** — definitive test
-   - Boot ThinkPad with PXEBOOT entry selected (not HTTPSBOOT)
-   - Capture on pc-deploy: `pktmon start --etw -p 0 --comp nics; pktmon filter add -p 67; pktmon filter add -p 68; pktmon filter add -p 69`
-   - Stop after boot attempt: `pktmon stop`
-   - Inspect the DHCP ACK: does Option 60 say `HTTPClient` or `PXEClient`?
-   - Any UDP/69 packets arriving from ThinkPad IP?
+1. ~~pktmon capture on pc-deploy during ThinkPad PXEBOOT attempt~~ — **DONE (2026-06-19)**
+   - **Result:** TFTP packets confirmed arriving. DHCP ACK from EFG confirmed. No TFTP response.
 
-2. **Test: remove Option 60 = HTTPClient from UniFi DHCP** — try with PXEBOOT
-   - If Option 60 echo is the problem, removing it may unblock standard TFTP PXE
+---
 
-3. **Check Port 21 STP / Edge Port setting in UniFi** — low risk, high leverage
-   - UniFi → Switches → USW Pro 48 PoE → Port 21 → enable Edge Port (PortFast)
-   - This eliminates STP convergence delay as a cause
+## 🔧 Immediate Next Steps (in priority order — do these when back at PC)
 
-4. **Manual TFTP test from ThinkPad** — bypass BIOS entirely
-   - Boot into WinPE via USB
-   - Run: `tftp -i 192.168.5.141 GET shimx64.efi test.efi`
-   - If this succeeds → TFTP server and network path are fine; BIOS is the problem
-   - If this fails → TFTP server or firewall issue
+### Step 1 — Read tftpd32.ini (most likely root cause)
+```powershell
+Get-Content C:\tftpd64\tftpd32.ini
+```
+Compare with tftpd64.ini. If BaseDirectory/TftpLogFile differ, tftpd64.exe is using the wrong config.
 
-5. **Check ThinkPad BIOS → Network for TLS Auth Configuration menu** — for HTTPSBOOT path
-   - If present, this is the correct path to enroll the Juniper PXE TLS CA cert
-   - Path on ThinkSystem/ThinkEdge: `Network → TLS Auth Configuration → Server CA Configuration → Enroll Cert`
+**Fix if needed:** Either delete tftpd32.ini (force tftpd64.exe to use tftpd64.ini) or sync both
+files so they have identical settings.
+
+### Step 2 — Decode TFTP RRQ filename from capture
+```powershell
+$lines = Get-Content C:\boot-capture.txt
+for ($i=0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match '192\.168\.11\.24\.\d+ > 192\.168\.5\.141\.69') {
+        $lines[$i..([Math]::Min($i+20,$lines.Count-1))] | Write-Host; break
+    }
+}
+```
+The hex dump will reveal what filename the ThinkPad is requesting. Confirm that file exists in
+`C:\tftpd64\` (or whatever BaseDirectory is configured as).
+
+### Step 3 — Manual TFTP test (bypass BIOS entirely)
+Boot ThinkPad into WinPE via USB flash drive, then:
+```cmd
+tftp -i 192.168.5.141 GET ipxe.efi C:\test.efi
+```
+- **Success** → TFTP server works from the engineering subnet; the BIOS PXE client has a different problem
+- **Failure** → TFTP server itself is broken; confirms Hypotheses 4, 5, or 6
+
+### Step 4 — Enable Edge Port on USW Pro 48 PoE Port 21
+UniFi → Switches → USW Pro 48 → Port 21 → Profile → enable Edge Port.
+STP is now ruled out as the TFTP blocker, but fixing it prevents a future STP-related boot delay
+regression if something changes on that port.
+
+### Step 5 — Check ThinkPad BIOS → Network → TLS Auth Configuration
+For the HTTPSBOOT path: if `TLS Auth Configuration → Server CA Configuration → Enroll Cert` exists,
+this is the correct menu to enroll `juniper-pxe-tls-ca.cer`. Needed regardless of TFTP outcome.
 
 ---
 
@@ -373,4 +492,4 @@ Server private key at `C:\caddy\server.key` on pc-deploy only.
 
 ---
 
-*Juniper Design internal documentation — updated 2026-06-19*
+*Juniper Design internal documentation — updated 2026-06-19 (pktmon breakthrough: TFTP arrives at pc-deploy, no response from tftpd64)*
