@@ -1,15 +1,151 @@
 # PXE Boot on UniFi — Research Findings & Implementation Log
 
-**Date:** 2026-06-19
+**Date:** 2026-06-22 (session 2), original 2026-06-19
 **Author:** Claude (Juniper AI)
-**Status:** 🔍 DIAGNOSING — shim bypassed, CA2023 enrollment on ThinkPad TBD
+**Status:** 🔴 BLOCKED — iPXE shim is CA 2011 only; CA 2011 removed from IMAGE-ME's Secure Boot db
 
-Boot chain (current): UEFI firmware → `EFI/Boot/bootx64.efi` (bootmgfw_EX.efi, PCA2023) → BCD → boot.wim
+**Immediate fix:** Disable Secure Boot on IMAGE-ME in BIOS (F1 → Security → Secure Boot → Disabled). No DHCP changes needed. Long-term fix: wait for a CA 2023-signed iPXE shim (iPXE team working on it, rhboot/shim-review#319).
 
-**Current blocker:** The ThinkPad P14s Gen 5 shows "Secure Boot Violation" for BOTH PCA2011 and
-PCA2023-signed boot files. Both-fail means the problem is upstream — either Windows UEFI CA 2023
-is not enrolled in this ThinkPad's UEFI db, or shim was rejecting the second-stage. Shim has been
-removed from the chain (option 67 → `EFI/Boot/bootx64.efi`). Next test will confirm which it is.
+---
+
+## ⚠️ CURRENT BLOCKER: MS UEFI CA 2011 is expiring / removed from ThinkPad db
+
+**Microsoft Corporation UEFI CA 2011** — the certificate used to sign ALL third-party UEFI boot
+applications including every Linux shim and the iPXE shim — **expires June 26, 2026** (this week).
+
+Lenovo pushed ThinkPad firmware updates proactively removing CA 2011 from the Secure Boot db and
+replacing it with CA 2023. IMAGE-ME (ThinkPad P14s Gen 5) has received this firmware update.
+
+### What's signed by what
+
+| Component | Signing | IMAGE-ME result |
+|---|---|---|
+| `ipxe-shim.efi` (iPXE v2.0.0) | MS UEFI CA 2011 **only** (1 cert in PE table) | ❌ Rejected — CA 2011 not trusted |
+| `wimboot` (v2.9.0) | CA 2011 + **CA 2023** (dual-signed, 2 certs in PE table) | ✅ Would pass Secure Boot |
+| `EFI/Boot/bootx64.efi` (bootmgfw_EX.efi) | Windows PCA 2011 (separate chain from UEFI CA) | ✅ Passes (Windows chain still trusted) |
+| CA 2023-signed iPXE shim | **Does not exist yet** — iPXE team tracking in rhboot/shim-review#319 | — |
+
+**Key finding:** wimboot IS dual-signed and would pass IMAGE-ME's Secure Boot. But wimboot requires
+iPXE to inject BCD/boot.sdi/boot.wim into memory — it cannot function as a standalone PXE boot file.
+So the chain still needs a working iPXE shim, which requires CA 2023 signing.
+
+### How we confirmed dual-signing
+
+PE certificate table analysis (not Get-AuthenticodeSignature, which only reads the primary cert):
+
+```powershell
+# on pc-deploy via WinRM:
+# shimx64.efi: CertTableSize=9728  (one cert)  → CA 2011 only
+# wimboot:     CertTableSize=19232 (two certs, 9728+9504) → CA 2011 + CA 2023
+```
+
+### Why no CA 2023 iPXE shim exists yet
+
+iPXE v2.0.0 (March 6, 2026) shim was submitted to Microsoft for signing before the October 2025
+dual-signing cutover, so it only got CA 2011. The iPXE team is working on a re-submission via the
+shim-review process (rhboot/shim-review#319). No release date. The next iPXE release will include
+a CA 2023-signed (or dual-signed) shim.
+
+Source: github.com/ipxe/ipxe/discussions/1638 — iPXE collaborator NiKiZe confirmed this directly
+in March 2026.
+
+---
+
+## ✅ DHCP OPTIONS — already applied, no changes needed
+
+| Field | Current value | Notes |
+|---|---|---|
+| Boot server (Option 66) | `192.168.5.141` | Correct |
+| Boot filename (Option 67) | `ipxeboot/x86_64-sb/ipxe-shim.efi` | Applied by Jason 2026-06-22 |
+| Network Boot | Enabled | Correct |
+
+---
+
+## Recommended Interim Solution: Disable Secure Boot for Imaging
+
+Until a CA 2023-signed iPXE shim is released:
+
+1. On IMAGE-ME: **Enter BIOS (F1 at Lenovo logo) → Security → Secure Boot → Disabled → Save & Exit**
+2. No DHCP changes needed — `ipxeboot/x86_64-sb/ipxe-shim.efi` works with Secure Boot off
+3. PXE boot IMAGE-ME: shim → iPXE → HTTP → wimboot → WinPE → deploy.ps1
+
+With Secure Boot disabled, UEFI skips signature validation entirely. The existing chain runs as designed.
+After imaging, Secure Boot can be re-enabled in BIOS; Windows boots fine either way.
+
+**For the long-term WiFi PXE + Secure Boot goal:** the stack is ready. wimboot is already CA 2023
+dual-signed. bootmgfw_EX.efi is Windows-chain signed. When iPXE releases a CA 2023 shim, drop it
+into `C:\tftpd64\ipxeboot\x86_64-sb\ipxe-shim.efi` and re-enable Secure Boot — done.
+
+---
+
+## Architecture History (this session, 2026-06-22)
+
+### What happened with the bootmgfw_EX.efi approach
+
+A test with `ipxe-http-embedded.efi` (DHCP option 67) confirmed that the unsigned iPXE got a
+**Secure Boot Violation** — expected, since that binary isn't signed by any key in the ThinkPad's db.
+
+The bootmgfw_EX.efi approach (set earlier in the session) was superseded because:
+- `boot.wim` (513 MB) cannot be delivered via TFTP without WDS — UEFI TFTP has a ~4 GB limit but
+  the Windows Boot Manager tries to load it at boot time and fails with **0xc0000225** ("Required
+  device is inaccessible") — confirmed by WinReflection article author who hit the exact same issue.
+- The correct solution for non-WDS servers is: **iPXE + wimboot** (wimboot loads boot.wim via HTTP).
+
+### Why we're using iPXE v2.0.0 (released March 6, 2026)
+
+iPXE v2.0.0 added official Secure Boot support via a dedicated Microsoft-signed shim:
+- `ipxe-shim.efi` — signed by **Microsoft Corporation UEFI CA 2011** (in every PC's UEFI db)
+- The shim internally verifies and loads `ipxe.efi` (signed by iPXE's own CA)
+- No MOK enrollment required — the shim chain is fully trusted out of the box
+- wimboot is already signed by Microsoft — passes Secure Boot validation
+- `autoexec.ipxe` controls boot behavior (TFTP-fetched by iPXE, same directory as shim)
+
+This is the correct long-term path. It also supports WiFi PXE (802.11 clients) once configured,
+because wimboot + UEFI HTTP avoids the TFTP size limitation entirely.
+
+### Files deployed to pc-deploy (2026-06-22)
+
+| Path on pc-deploy | Description | Status |
+|---|---|---|
+| `C:\tftpd64\ipxeboot\x86_64-sb\ipxe-shim.efi` | MS UEFI CA 2011-signed shim, 1,038,920 bytes | ✅ deployed |
+| `C:\tftpd64\ipxeboot\x86_64-sb\ipxe.efi` | iPXE binary (signed by iPXE CA), 397,160 bytes | ✅ deployed |
+| `C:\tftpd64\ipxeboot\x86_64-sb\shimx64.efi` | Same as ipxe-shim.efi (original name in archive) | ✅ deployed |
+| `C:\tftpd64\ipxeboot\x86_64-sb\autoexec.ipxe` | iPXE boot script (copy of root autoexec.ipxe) | ✅ deployed |
+| `C:\tftpd64\wimboot` | MS-signed wimboot loader, 76,064 bytes | ✅ pre-existing |
+| `C:\tftpd64\sources\boot.wim` | WinPE (~513 MB) | ✅ pre-existing |
+| `C:\tftpd64\EFI\Microsoft\Boot\BCD` | UEFI BCD | ✅ pre-existing |
+| `C:\tftpd64\Boot\boot.sdi` | Boot SDI | ✅ pre-existing |
+
+### HTTP endpoints verified (Caddy serves C:\tftpd64\)
+
+- `http://192.168.5.141/ipxeboot/x86_64-sb/ipxe-shim.efi` → 200, 1,038,920 bytes ✅
+- `http://192.168.5.141/ipxeboot/x86_64-sb/autoexec.ipxe` → 200 ✅
+- `http://192.168.5.141/wimboot` → 200, 76,064 bytes ✅
+
+### autoexec.ipxe content
+
+```
+#!ipxe
+echo Juniper WinPE -- Secure Boot chain (shimx64 -> ipxe -> wimboot)
+set http http://192.168.5.141
+kernel ${http}/wimboot
+initrd ${http}/EFI/Microsoft/Boot/BCD   BCD
+initrd ${http}/Boot/boot.sdi            boot.sdi
+initrd ${http}/sources/boot.wim         boot.wim
+boot
+```
+
+---
+
+## Previous state (2026-06-22, morning session)
+
+- CA2023 IS enrolled in IMAGE-ME's UEFI db ✅ (previous "not enrolled" diagnosis was a false negative)
+- bootmgfw_EX.efi IS properly CA2023-signed ✅
+- PXECompatibility=0 is set on pc-deploy ✅
+- BCD correctly configured ✅
+- The "nope" failure from 2026-06-19 was almost certainly PXECompatibility=1 (TFTP log shows zero activity after the fix was applied at 3:18 PM that day)
+
+**Remaining uncertainty (pre-iPXE pivot):** Our `bootx64.efi` is a preview/insider build (version 10.0.26100.1085, file date 4/1/2024, signing cert NotAfter 10/19/2024). A production version (3,055,456 bytes, updated 6/19/2026 by Windows Update) exists at `C:\Windows\Boot\EFI_EX\bootmgfw_EX.efi` on IMAGE-ME. If the preview file's Authenticode hash is in the DBX, Secure Boot will still fail. This issue is moot — we've pivoted to iPXE v2.0.0 which doesn't use bootmgfw_EX.efi.
 
 ---
 
@@ -373,4 +509,51 @@ Root cause: tftpd64 silently discarding RRQ with URL-format filename.
 
 ---
 
-*Juniper Design internal documentation — last updated 2026-06-19*
+---
+
+## Expected Boot Sequence (Secure Boot DISABLED — current interim path)
+
+1. IMAGE-ME PXE boots → DHCP gives option 66=`192.168.5.141`, option 67=`ipxeboot/x86_64-sb/ipxe-shim.efi`
+2. UEFI TFTP downloads `ipxe-shim.efi` (1 MB) — no Secure Boot signature check
+3. Shim verifies `ipxe.efi` via its own embedded iPXE vendor cert → loads `ipxe.efi` via TFTP
+4. iPXE fetches `autoexec.ipxe` via TFTP from same directory
+5. iPXE executes the script: downloads `wimboot`, `BCD`, `boot.sdi`, `boot.wim` via HTTP from `http://192.168.5.141/`
+6. wimboot (CA 2023 dual-signed) loads WinPE from boot.wim in memory
+7. WinPE boots → `deploy.ps1` → Juniper imaging prompt
+
+## Expected Boot Sequence (Secure Boot ENABLED — requires CA 2023 iPXE shim, not yet released)
+
+1. IMAGE-ME PXE boots → DHCP gives option 66=`192.168.5.141`, option 67=`ipxeboot/x86_64-sb/ipxe-shim.efi`
+2. UEFI TFTP downloads `ipxe-shim.efi` (1 MB)
+3. **UEFI Secure Boot validates shim against CA 2023** → PASSES once shim is CA 2023-signed
+4. Shim verifies `ipxe.efi` via embedded vendor cert → loads via TFTP
+5. iPXE fetches `autoexec.ipxe` via TFTP
+6. iPXE downloads wimboot, BCD, boot.sdi, boot.wim via HTTP
+7. **UEFI Secure Boot validates wimboot against CA 2023** → PASSES (wimboot already dual-signed)
+8. wimboot loads WinPE → deploy.ps1 → Juniper imaging prompt
+
+When the CA 2023 shim arrives: replace `C:\tftpd64\ipxeboot\x86_64-sb\ipxe-shim.efi` and re-enable
+Secure Boot on target machines. No other changes needed.
+
+---
+
+## Signing Evidence (collected 2026-06-22)
+
+```
+shimx64.efi  (1,038,920 bytes, LastWrite 2026-03-06)
+  PE CertTable: 9,728 bytes = ONE signature
+  Cert 1: CN=Microsoft Windows UEFI Driver Publisher, issuer CN=Microsoft Corporation UEFI CA 2011
+  → CA 2011 ONLY — fails on IMAGE-ME (CA 2011 removed from Lenovo ThinkPad firmware db)
+
+wimboot  (76,064 bytes, LastWrite 2026-06-18)
+  PE CertTable: 19,232 bytes = TWO signatures
+  Cert 1 (9,728 bytes): CA 2011 primary
+  Cert 2 (9,504 bytes): CA 2023 secondary  ← confirmed by "UEFI CA 2023" string in binary
+  → DUAL-SIGNED — passes Secure Boot on IMAGE-ME ✅
+
+bootx64.efi (bootmgfw_EX.efi, 3,055,456 bytes)
+  Signer: CN=Microsoft Windows, issuer CN=Microsoft Windows Production PCA 2011
+  → Windows cert chain (separate from UEFI CA chain) — IMAGE-ME trusts it ✅
+```
+
+*Juniper Design internal documentation — last updated 2026-06-22 session 2*
