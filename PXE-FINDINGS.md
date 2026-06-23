@@ -51,6 +51,134 @@ in March 2026.
 
 ---
 
+## 🔬 Enterprise Research: Secure Boot PXE in June 2026 (post-CA2011 expiry)
+
+*Research conducted 2026-06-23. Sources: Lenovo Press LP2353, TechDirectArchive 4-part series
+(Parts 2/3/4), miloch.dev, systemcenterdudes.com, 2Pint Software, winreflection.com.*
+
+### The Two Cert Chains — Critical Distinction
+
+There are **two completely separate Microsoft Secure Boot certificate hierarchies**. Confusing them
+is the most common mistake in post-CA2011 PXE troubleshooting:
+
+| Chain | Signing authority | Validates | IMAGE-ME status (after Lenovo FW update) |
+|---|---|---|---|
+| **Microsoft Corporation UEFI CA 2011** | Signs third-party UEFI boot apps | iPXE shim, Linux shims, unsigned drivers | ❌ REMOVED from db |
+| **Microsoft Corporation UEFI CA 2023** | Replacement for UEFI CA 2011 | Same, next generation | ✅ ADDED to db |
+| **Microsoft Windows Production PCA 2011** | Signs Windows OS boot components | bootmgfw.efi, winload.efi, boot.wim internals | ✅ STILL TRUSTED |
+
+**The Lenovo firmware update ONLY removed UEFI CA 2011.** The Windows Production PCA 2011 (which
+signs `bootmgfw_EX.efi`, `winload.efi`, and everything inside `boot.wim`) is **unaffected**.
+
+This means: our existing `boot.wim` WinPE components (`winload.efi`, etc.) do **not** need to be
+replaced. They use the Windows Production PCA 2011 chain, which IMAGE-ME still trusts.
+
+**The ONLY thing broken is the iPXE shim** — it is signed by UEFI CA 2011 (third-party UEFI CA),
+which is now removed from IMAGE-ME's db.
+
+### How Enterprises Are Solving This Right Now
+
+#### Path A: WDS + Windows Server 2022 (`boot_EX` directory)
+
+Microsoft ships CA 2023-signed WDS PXE loaders in a special directory on Windows Server 2022 only:
+```
+C:\Windows\System32\RemInst\boot_EX\x64\
+  wdsmgfw_EX.efi    ← CA 2023-signed WDS PXE loader
+  bootmgfw_EX.efi   ← CA 2023-signed Windows Boot Manager
+```
+
+**Fix for WDS environments:**
+```cmd
+copy "C:\Windows\System32\RemInst\boot_EX\x64\wdsmgfw_EX.efi" "F:\RemoteInstall\Boot\x64\wdsmgfw.efi" /Y
+copy "C:\Windows\System32\RemInst\boot_EX\x64\bootmgfw_EX.efi" "F:\RemoteInstall\Boot\x64\bootmgfw.efi" /Y
+net stop WDSServer && net start WDSServer
+```
+
+**Caveats:**
+- `boot_EX` directory only exists on **Windows Server 2022** (fully patched). Does NOT exist on
+  Windows 11. Therefore **this approach is not available for pc-deploy**.
+- MDT environments: when MDT rebuilds LiteTouchPE, it regenerates WinPE from the ADK baseline which
+  still contains CA 2011 components. **MDT overwrites any manual patches** — the fix is not persistent.
+- As of May 2026, the ADK servicing updates (10.1.28000.1) still contain outdated WinPE binaries.
+  True fix requires Microsoft to ship a corrected ADK. (TechDirectArchive Part 4, May 15, 2026)
+
+**What DOES work persistently:** Build a custom WinPE outside MDT/WDS (Lenovo Press LP2353 approach).
+In that model, MDT never touches the WIM. For us this doesn't matter — we already build custom WinPE
+using ADK tools directly, without MDT.
+
+#### Path B: ConfigMgr (SCCM) 2509 PXE Responder
+
+Starting with SCCM ConfigMgr 2509, Microsoft added a checkbox:
+**"Use Windows Boot Loader signed with Windows UEFI CA 2023"**
+
+This is the **cleanest enterprise solution** for CA 2023 Secure Boot PXE. Requirements:
+- ConfigMgr 2509 or later
+- ConfigMgr PXE Responder (NOT WDS — ConfigMgr has its own PXE service)
+- Latest ADK + WinPE Add-on
+
+This is a Windows Server + SCCM-licensed solution. Not applicable to our Windows 11 setup.
+
+#### Path C: iPXE + wimboot (Our Approach) — Waiting for CA 2023 Shim
+
+Our stack (tftpd64 → iPXE shim → iPXE → wimboot → boot.wim via HTTP) is architecturally correct
+and actually **superior** to WDS for our use case:
+
+| Feature | WDS approach | iPXE + wimboot approach |
+|---|---|---|
+| boot.wim delivery | TFTP (requires WDS ramdisk extensions) | HTTP (no WDS needed) |
+| Works on Windows 11 server | ❌ WDS is Windows Server-only | ✅ Works on Windows 11 |
+| MDT regeneration problem | ❌ MDT overwrites patches | ✅ No MDT used |
+| Secure Boot (right now) | ⚠️ Complex, requires boot_EX + custom WinPE | 🔄 Waiting for CA 2023 shim |
+| WiFi PXE support | ❌ TFTP too slow/large for 802.11 | ✅ HTTP scales fine |
+
+**The one missing piece:** a CA 2023-signed iPXE shim (UEFI CA 2023). Issue tracked:
+- rhboot/shim-review#319 — iPXE shim submission
+- github.com/ipxe/ipxe/discussions/1638 — iPXE collaborator NiKiZe confirmed CA 2023 shim in progress
+
+Once that shim is released: drop it into `C:\tftpd64\ipxeboot\x86_64-sb\ipxe-shim.efi`, re-enable
+Secure Boot on target machines. No other changes required.
+
+### Why the 0xc0000225 Error Happens Without WDS
+
+When using `bootmgfw.efi` directly (without iPXE/wimboot) as the TFTP boot file, Windows Boot Manager
+tries to download `boot.wim` via TFTP using WDS-specific TFTP ramdisk extensions. Standard TFTP
+servers (tftpd64, SolarWinds, etc.) do NOT implement these WDS extensions. Result: 0xc0000225.
+
+This is confirmed independently by winreflection.com (Aug 2024) — same error, same conclusion.
+iPXE + wimboot bypasses this entirely by delivering boot.wim via HTTP.
+
+### Why Our boot.wim Does NOT Need CA 2023 Updates
+
+A common misconception (from MDT/WDS articles) is that `winload.efi` inside boot.wim needs to be
+updated to CA 2023. This is ONLY true in environments where the device has had the **Windows Production
+PCA 2011** revoked from its db — which is a separate, additional enforcement step.
+
+IMAGE-ME (ThinkPad P14s Gen 5, Lenovo firmware update) had **UEFI CA 2011 removed** (the third-party
+UEFI CA), but **Windows Production PCA 2011 remains trusted**. Therefore:
+
+- `winload.efi` inside boot.wim (signed by Windows Production PCA 2011) → ✅ still trusted
+- `bootmgfw_EX.efi` (Windows Production PCA 2011) → ✅ still trusted  
+- Only `ipxe-shim.efi` (UEFI CA 2011) → ❌ no longer trusted
+
+The techdirectarchive articles describe environments where **BOTH** CA 2011 chains are being revoked
+(some Dell SafeBIOS devices), which is a more aggressive enforcement. That situation DOES require CA
+2023 updates to WinPE internals. For IMAGE-ME, only the iPXE shim needs to change.
+
+### Sources
+
+| Source | Published | Relevance |
+|---|---|---|
+| [Lenovo Press LP2353](https://lenovopress.lenovo.com/lp2353-updating-windows-boot-manager-and-winpe-windows-uefi-ca-2023-certificate) | 2025-2026 | Official Lenovo guide: build custom WinPE outside MDT with CA 2023 |
+| [TechDirectArchive Part 2](https://techdirectarchive.com/2026/04/27/update-winpe-boot-images-with-windows-uefi-ca-certificates-part-2/) | 2026-04-27 | Updating WinPE boot images with CA 2023 certs |
+| [TechDirectArchive Part 3](https://techdirectarchive.com/2026/05/08/fix-operating-system-loader-failed-signature-verification-on-dell-safe-bios-systems-via-pxe-part-3/) | 2026-05-08 | Dell SafeBIOS PXE; boot_EX source files; trust gap analysis |
+| [TechDirectArchive Part 4](https://techdirectarchive.com/2026/05/15/pxe-boot-failure-access-denied-or-aborted-with-secure-boot-on/) | 2026-05-15 | **Key:** ADK still broken as of May 2026; MDT overwrites patches; confirms no durable fix without MS ADK update |
+| [miloch.dev SCCM playbook](https://miloch.dev/blog/secure-boot-certificates-2026-sccm/) | 2026-05-21 | Full enterprise playbook: AvailableUpdates registry, SCCM Baselines, event-log signals |
+| [System Center Dudes](https://www.systemcenterdudes.com/update-sccm-boot-images-for-devices-with-hardened-secure-boot/) | 2026-06-09 | SCCM boot images for hardened Secure Boot; CA 2023 checkbox in ConfigMgr 2509 |
+| [2Pint Software](https://2pintsoftware.com/news/details/kb5025885-and-boot-wims) | 2024-04-19 | KB5025885 + boot WIM updates; TrustedInstaller permission issue replacing winload.efi |
+| [winreflection.com](https://www.winreflection.com/simplify-pxe-booting-no-wds-required-on-unifi-setups/) | 2024-08-15 | PXE without WDS on UniFi; confirms 0xc0000225 with bootmgfw.efi UEFI boot without WDS |
+
+---
+
 ## ✅ DHCP OPTIONS — already applied, no changes needed
 
 | Field | Current value | Notes |
