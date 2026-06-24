@@ -12,13 +12,33 @@
 | PostgreSQL 16 | ✅ Running | Data restored from 38 MB dump; 164 devices, 166 driver packages |
 | JuniperInventory (FastAPI) | ✅ Running | NSSM service; 10 env vars set; `itsdangerous>=2.0` added to requirements.txt |
 | Caddy | ✅ Running | `tls internal` certs for inventory domains; HTTP file server on port 80/443 |
-| WDSServer | ✅ Running | Initialized StandAlone; boot.wim (custom WinPE, 509.4 MB) registered |
+| WDSServer | ✅ Running | Initialized StandAlone; boot.wim (custom WinPE, 515.5 MB) registered |
 | boot_EX EFI | ✅ Present | `C:\RemoteInstall\boot_EX\x64\wdsmgfw_EX.efi` (1143.8 KB, CA 2023 signed) |
 | WIM images | ✅ Copied | win10.wim, win10-pro.wim, win11-home.wim, win11-pro.wim, win11.wim; .bad files removed |
 | Drivers | ✅ Copied | 15 GB driver warehouse to `C:\deploy\drivers\` |
-| DHCP option 67 | ⬜ Pending | Jason to update in UniFi UI — see section below |
+| DHCP option 67 | ✅ Done | `boot_EX\x64\wdsmgfw_EX.efi` set in UniFi — PXE boot confirmed working |
+| WinPE NIC driver | ✅ Injected | Realtek RTL8111EPV (`rt68cx21x64.inf`, `rt68dcx21x64.inf`) from Lenovo DS569123 WinPE PE11 pack |
 
-**One action needed before PXE test:** change DHCP option 67 in UniFi (see "WDS DHCP changes" section).
+**All restoration steps complete.** PXE boot tested on ThinkPad P14s Gen 5 (IMAGE-ME).
+
+### WinPE NIC driver injection (for future models)
+
+If a new model fails to get network in WinPE, inject drivers from Lenovo's SCCM WinPE package:
+
+```powershell
+# On pc-deploy — run as scheduled task under SYSTEM (DISM takes ~5 min total)
+# 1. Find the right SCCM WinPE package at https://support.lenovo.com (search DS number for model)
+# 2. Download from https://download.lenovo.com/pccbbs/mobiles/<filename>.exe
+# 3. Mount boot.wim, inject driver INF, commit:
+$mountDir = "C:\WinPE_Mount"
+New-Item -ItemType Directory $mountDir -Force | Out-Null
+dism.exe /Mount-Image /ImageFile:"C:\RemoteInstall\Boot\x64\Images\boot.wim" /Index:1 /MountDir:$mountDir
+dism.exe /Image:$mountDir /Add-Driver /Driver:"C:\path\to\driver.inf"
+dism.exe /Unmount-Image /MountDir:$mountDir /Commit
+# WDS serves the updated boot.wim automatically — no restart needed
+```
+
+Injected driver files saved to `C:\deploy\drivers\_winpe-drivers\lenovo-thinkpad-p14s-gen5\` on pc-deploy.
 
 
 
