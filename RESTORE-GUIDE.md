@@ -17,28 +17,45 @@
 | WIM images | ✅ Copied | win10.wim, win10-pro.wim, win11-home.wim, win11-pro.wim, win11.wim; .bad files removed |
 | Drivers | ✅ Copied | 15 GB driver warehouse to `C:\deploy\drivers\` |
 | DHCP option 67 | ✅ Done | `boot_EX\x64\wdsmgfw_EX.efi` set in UniFi — PXE boot confirmed working |
-| WinPE NIC driver | ✅ Injected | Realtek RTL8111EPV (`rt68cx21x64.inf`, `rt68dcx21x64.inf`) from Lenovo DS569123 WinPE PE11 pack |
+| WinPE NIC driver | ✅ Injected (2026-06-24) | **Intel I219-V** (`e1dn.inf`, VEN_8086 DEV_550B) — P14s Gen 5 AMD has Intel NIC, not Realtek. Staged at `C:\deploy\drivers\_winpe-drivers\intel-i219v\`. |
+| toolkit.ps1 logging | ✅ Added (2026-06-24) | toolkit.ps1 now writes structured logs to `X:\Logs\` (always) + deploy share `logs\` + POSTs to `/ingest/winpe-event` when network is up. Added [6] Hardware Info menu item with PCI DeviceIDs for NIC diagnosis. |
 
-**All restoration steps complete.** PXE boot tested on ThinkPad P14s Gen 5 (IMAGE-ME).
+**PXE boot end-to-end verified.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging.
+
+> **Lesson learned:** The Lenovo SCCM WinPE PE11 pack (DS569123) for ThinkPad P14s Gen 5 AMD only
+> contains Realtek DEV_8168 drivers. The P14s Gen 5 AMD actually uses an **Intel I219-V** (DEV_550B).
+> Always verify the actual PCI hardware ID from Device Manager (Hardware Ids tab) before assuming
+> the SCCM pack covers the right chip. Use toolkit option [6] Hardware Info in WinPE to confirm.
 
 ### WinPE NIC driver injection (for future models)
 
-If a new model fails to get network in WinPE, inject drivers from Lenovo's SCCM WinPE package:
+If a new model fails to get network in WinPE:
+1. Boot into Windows on that machine (or a twin), open Device Manager → NIC → Details → Hardware Ids
+2. Note the `VEN_XXXX&DEV_XXXX` — this tells you the exact chip
+3. Export the driver from the Windows driver store (`C:\Windows\System32\DriverStore\FileRepository\`)
+4. Copy to `C:\deploy\drivers\_winpe-drivers\<model>\` on the deploy share
+5. Run the DISM task below to inject and commit
 
 ```powershell
 # On pc-deploy — run as scheduled task under SYSTEM (DISM takes ~5 min total)
-# 1. Find the right SCCM WinPE package at https://support.lenovo.com (search DS number for model)
-# 2. Download from https://download.lenovo.com/pccbbs/mobiles/<filename>.exe
-# 3. Mount boot.wim, inject driver INF, commit:
-$mountDir = "C:\WinPE_Mount"
-New-Item -ItemType Directory $mountDir -Force | Out-Null
-dism.exe /Mount-Image /ImageFile:"C:\RemoteInstall\Boot\x64\Images\boot.wim" /Index:1 /MountDir:$mountDir
-dism.exe /Image:$mountDir /Add-Driver /Driver:"C:\path\to\driver.inf"
-dism.exe /Unmount-Image /MountDir:$mountDir /Commit
-# WDS serves the updated boot.wim automatically — no restart needed
+$mount  = "C:\WinPE_amd64\mount"
+$wim    = "C:\RemoteInstall\Boot\x64\Images\boot.wim"
+$driver = "C:\deploy\drivers\_winpe-drivers\<model>"   # folder with .inf/.sys/.cat
+
+New-Item -ItemType Directory $mount -Force | Out-Null
+dism /Mount-Wim /WimFile:$wim /Index:1 /MountDir:$mount
+dism /Image:$mount /Add-Driver /Driver:$driver /Recurse
+dism /Unmount-Wim /MountDir:$mount /Commit
+# WDS serves the updated boot.wim automatically — no service restart needed
 ```
 
-Injected driver files saved to `C:\deploy\drivers\_winpe-drivers\lenovo-thinkpad-p14s-gen5\` on pc-deploy.
+Known NIC → driver mapping:
+| Model | Chip | VEN/DEV | Driver INF | Source |
+|---|---|---|---|---|
+| ThinkPad P14s Gen 5 AMD | Intel I219-V | VEN_8086 DEV_550B REV_20 | `e1dn.inf` | ENG-2 driver store |
+| *(Realtek injection, incorrect for P14s)* | RTL8168/8111 | VEN_10EC DEV_8168 | `rt68cx21x64.inf` | Lenovo DS569123 WinPE PE11 |
+
+Staged driver files at `C:\deploy\drivers\_winpe-drivers\intel-i219v\` on pc-deploy.
 
 
 
