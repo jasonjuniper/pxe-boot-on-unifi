@@ -22,10 +22,11 @@
 
 **PXE boot end-to-end verified.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging.
 
-> **Lesson learned:** The Lenovo SCCM WinPE PE11 pack (DS569123) for ThinkPad P14s Gen 5 AMD only
-> contains Realtek DEV_8168 drivers. The P14s Gen 5 AMD actually uses an **Intel I219-V** (DEV_550B).
-> Always verify the actual PCI hardware ID from Device Manager (Hardware Ids tab) before assuming
-> the SCCM pack covers the right chip. Use toolkit option [6] Hardware Info in WinPE to confirm.
+> **Lesson learned:** DS569123 is the Lenovo SCCM WinPE PE11 pack for the **AMD variant** of the
+> P14s Gen 5. We have the **Intel variant** (type 21G2, Core Ultra 7). The Intel platform ships with
+> an Intel I219-V NIC (DEV_550B) — not Realtek — so the AMD pack's Realtek drivers were wrong entirely.
+> Always verify the actual PCI hardware ID from Device Manager (Hardware Ids tab) before assuming any
+> vendor-supplied driver pack covers the right chip. Use toolkit option [6] Hardware Info in WinPE to confirm.
 
 ### WinPE NIC driver injection (for future models)
 
@@ -52,8 +53,8 @@ dism /Unmount-Wim /MountDir:$mount /Commit
 Known NIC → driver mapping:
 | Model | Chip | VEN/DEV | Driver INF | Source |
 |---|---|---|---|---|
-| ThinkPad P14s Gen 5 AMD | Intel I219-V | VEN_8086 DEV_550B REV_20 | `e1dn.inf` | ENG-2 driver store |
-| *(Realtek injection, incorrect for P14s)* | RTL8168/8111 | VEN_10EC DEV_8168 | `rt68cx21x64.inf` | Lenovo DS569123 WinPE PE11 |
+| ThinkPad P14s Gen 5 Intel (21G2, Core Ultra 7) | Intel I219-V | VEN_8086 DEV_550B REV_20 | `e1dn.inf` | ENG-2 driver store |
+| *(Realtek injection — wrong variant)* | RTL8168/8111 | VEN_10EC DEV_8168 | `rt68cx21x64.inf` | Lenovo DS569123 WinPE PE11 (AMD variant) |
 
 Staged driver files at `C:\deploy\drivers\_winpe-drivers\intel-i219v\` on pc-deploy.
 
