@@ -1,8 +1,26 @@
 # pc-deploy → Windows Server 2025 Restoration Guide
 
 **Prepared:** 2026-06-23  
+**Completed:** 2026-06-24  
 **Reason:** Bare metal WS2025 install to gain WDS + `boot_EX` Secure Boot PXE support  
 **Backup location:** `C:\deploy-backup\` on ENG-2  
+
+## Restoration status (2026-06-24)
+
+| Component | Status | Notes |
+|---|---|---|
+| PostgreSQL 16 | ✅ Running | Data restored from 38 MB dump; 164 devices, 166 driver packages |
+| JuniperInventory (FastAPI) | ✅ Running | NSSM service; 10 env vars set; `itsdangerous>=2.0` added to requirements.txt |
+| Caddy | ✅ Running | `tls internal` certs for inventory domains; HTTP file server on port 80/443 |
+| WDSServer | ✅ Running | Initialized StandAlone; boot.wim (custom WinPE, 509.4 MB) registered |
+| boot_EX EFI | ✅ Present | `C:\RemoteInstall\boot_EX\x64\wdsmgfw_EX.efi` (1143.8 KB, CA 2023 signed) |
+| WIM images | ✅ Copied | win10.wim, win10-pro.wim, win11-home.wim, win11-pro.wim, win11.wim; .bad files removed |
+| Drivers | ✅ Copied | 15 GB driver warehouse to `C:\deploy\drivers\` |
+| DHCP option 67 | ⬜ Pending | Jason to update in UniFi UI — see section below |
+
+**One action needed before PXE test:** change DHCP option 67 in UniFi (see "WDS DHCP changes" section).
+
+
 
 ---
 
@@ -86,20 +104,59 @@ Add boot.wim to WDS: `wdsutil /Add-Image /ImageFile:"C:\deploy-backup\boot-wim\b
 
 ### 4. Install PostgreSQL 16
 
-Download from https://www.postgresql.org/download/windows/  
-Install to `C:\Program Files\PostgreSQL\16\`  
-Set postgres superuser password (store in 1Password as `op://Private/inventory-server/pg-superpassword`)
+Installer is downloaded to `C:\pg16-installer.exe` on pc-deploy (333 MB, PostgreSQL 16.9 for Windows x64).
+Source: `https://get.enterprisedb.com/postgresql/postgresql-16.9-1-windows-x64.exe`
+
+**Silent install (run as scheduled task under SYSTEM — do NOT pass password via cmd.exe `set`, it breaks on special chars):**
 
 ```powershell
-# Create inventory database and user
-$env:PGPASSWORD = 'postgres-superuser-password'
-& 'C:\Program Files\PostgreSQL\16\bin\psql.exe' -U postgres -c "CREATE USER inv WITH PASSWORD '<db-password>';"
-& 'C:\Program Files\PostgreSQL\16\bin\psql.exe' -U postgres -c "CREATE DATABASE inventory OWNER inv;"
+# On ENG-2: decrypt pg-super, pass via encrypted WinRM channel, Base64-embed in script on pc-deploy
+$cred    = Import-Clixml "C:\Users\ENG2\.juniper\winrm-cred.xml"
+$sec     = Get-Content "C:\Users\ENG2\.juniper\pg-super.enc" | ConvertTo-SecureString
+$pgSuper = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+               [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+$sec = $null
 
-# Restore from dump (copy inventory-db.dump to pc-deploy first)
-$env:PGPASSWORD = '<db-password>'
-& 'C:\Program Files\PostgreSQL\16\bin\pg_restore.exe' -U inv -h 127.0.0.1 -d inventory 'C:\ISOs\inventory-db.dump'
-$env:PGPASSWORD = $null
+Invoke-Command -ComputerName 192.168.5.141 -Credential $cred -Authentication Negotiate -ArgumentList $pgSuper -ScriptBlock {
+    param($pw)
+    $pwB64 = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($pw)); $pw = $null
+    $l1 = '$p = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("' + $pwB64 + '"))'
+    $l2 = '$proc = Start-Process "C:\pg16-installer.exe" -ArgumentList @("--mode","unattended","--superpassword",$p,"--datadir","C:\PGdata","--servicename","postgresql-16","--disable-components","pgAdmin,stackbuilder") -Wait -PassThru -NoNewWindow'
+    $l3 = '$p = $null'
+    $l4 = '"ExitCode=$($proc.ExitCode) at $(Get-Date)" | Set-Content "C:\pg16-install-result.txt"'
+    Set-Content "C:\pg-inst.ps1" -Value @($l1,$l2,$l3,$l4) -Encoding UTF8
+    icacls "C:\pg-inst.ps1" /inheritance:r /grant "NT AUTHORITY\SYSTEM:(F)" /grant "BUILTIN\Administrators:(R)" 2>&1 | Out-Null; $pwB64=$null
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -ExecutionPolicy Bypass -File C:\pg-inst.ps1"
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName "PG16-Install" -Action $action -Principal $principal -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)) -Force | Out-Null
+    Start-ScheduledTask -TaskName "PG16-Install"
+}
+$pgSuper = $null
+# Monitor: poll C:\pg16-install-result.txt on pc-deploy for ExitCode=0
+```
+
+Result: installs to `C:\Program Files\PostgreSQL\16\`, data at `C:\PGdata\`, service `postgresql-16`.
+
+```powershell
+# After install — create inv user and inventory database
+# On ENG-2: decrypt db-pw, pass via WinRM
+$sec   = Get-Content "C:\Users\ENG2\.juniper\db-pw.enc" | ConvertTo-SecureString
+$dbPw  = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+             [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)); $sec=$null
+$sec   = Get-Content "C:\Users\ENG2\.juniper\pg-super.enc" | ConvertTo-SecureString
+$pgSup = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+             [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)); $sec=$null
+
+Invoke-Command -ComputerName 192.168.5.141 -Credential $cred -Authentication Negotiate -ArgumentList $pgSup,$dbPw -ScriptBlock {
+    param($sup,$db)
+    $env:PGPASSWORD = $sup
+    & 'C:\Program Files\PostgreSQL\16\bin\psql.exe' -U postgres -h 127.0.0.1 -c "CREATE USER inv WITH PASSWORD '$db';"
+    & 'C:\Program Files\PostgreSQL\16\bin\psql.exe' -U postgres -h 127.0.0.1 -c "CREATE DATABASE inventory OWNER inv;"
+    $env:PGPASSWORD = $db
+    & 'C:\Program Files\PostgreSQL\16\bin\pg_restore.exe' -U inv -h 127.0.0.1 -d inventory 'C:\deploy\inventory-db.dump'
+    $env:PGPASSWORD = $null; $sup=$null; $db=$null
+}
+$pgSup=$null; $dbPw=$null
 ```
 
 ### 5. Restore inventory app
