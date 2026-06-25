@@ -156,6 +156,38 @@ USB-C dock Realtek/Intel GbE) and add that driver to the rebuilt WIM.
 Then: register the rebuilt WIM, regenerate the WDS BCD (keep the `path` element), and have Jason
 PXE-boot IMAGE-ME with **Secure Boot ON**. Expected: boots cleanly to the deploy prompt.
 
+## ✅ PATCHED WinPE BUILT & REGISTERED (catalog-free, via WinRE base)
+
+Since `catalog.update.microsoft.com` was down for the LCU, used the **host's serviced WinRE image
+as the WinPE base** — already at build **26100.32995** with a current, non-revoked, version-matched
+winload. Build steps (all on pc-deploy, scripted in `C:\WinPE-src\`):
+1. `reagentc /disable` → staged `WinRE.wim` (26100.32995) → copied to `C:\WinPE-src\winre-base.wim`
+   → `reagentc /enable` (WinRE confirmed back Enabled).
+2. Copied base → mounted → added OCs **WinPE-NetFx, WinPE-PowerShell, WinPE-DismCmdlets** (+en-US)
+   so `deploy.ps1` can run (WinRE lacks PowerShell by default; WMI/Scripting/StorageWMI already present).
+3. Removed WinRE's `winpeshl.ini` so it boots to `startnet.cmd` (not the recovery UI).
+4. Baked `startnet.cmd` + `deploy-boot.ps1` + `toolkit.ps1` into `X:\Windows\System32\`.
+5. Committed + exported → `winpe-deploy-final.wim` (784 MB).
+6. `Remove-WdsBootImage` old broken image; `Import-WdsBootImage` new one as
+   **"Juniper WinPE (patched 26100.32995)"** (now the only x64 boot image).
+7. **Re-applied the BCD `path` fix** — this WDS/Server-2025 build generates loader entries WITHOUT
+   `path \windows\system32\boot\winload.efi` on import (systemic, not a hand-edit). Set it on
+   `winpe-deploy-final.wim.bcd` + restarted WDS; served BCD now has the path.
+
+State now: NBP `wdsmgfw_EX`+`bootmgfw_EX` (CA-2023) → BCD (with path) → **winpe-deploy-final.wim
+(winload 26100.32995, non-revoked)** → PowerShell WinPE → `deploy-boot.ps1`. DHCP opt 67 unchanged.
+
+### TEST: PXE-boot IMAGE-ME with **Secure Boot ON**
+Expected: clears `0xc0000272`, boots to the **"Juniper Design – PC Deployment System"** prompt
+(T=toolkit, D=deploy). That confirms the Secure Boot + winload fix end-to-end.
+
+### If it boots but has no network (NIC)
+The WIM relies on WinRE's inbox NIC drivers. If IMAGE-ME (ThinkPad P14s Gen 5, Lenovo type **21G2**)
+has no network in WinPE, inject its NIC driver: `21G2-driver-manifest.json` +
+`scripts/09-inject-usb-nic-drivers.ps1` are on pc-deploy; mount `winpe-deploy-final.wim`,
+`Add-WindowsDriver` the NIC `.inf`, commit, re-import. (Many P14s units PXE/network via a USB-C
+dock → likely a Realtek USB GbE / RTL8153.)
+
 ## (Earlier) NEXT STEP — physical boot test
 
 PXE-boot **IMAGE-ME** (ThinkPad P14s Gen 5, MAC C8-53-09-2D-0D-56) **with Secure Boot ON**
