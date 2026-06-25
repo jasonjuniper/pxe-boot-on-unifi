@@ -5,22 +5,26 @@
 **Reason:** Bare metal WS2025 install to gain WDS + `boot_EX` Secure Boot PXE support  
 **Backup location:** `C:\deploy-backup\` on ENG-2  
 
-## Restoration status (2026-06-24)
+## Restoration status (2026-06-25)
 
 | Component | Status | Notes |
 |---|---|---|
 | PostgreSQL 16 | ✅ Running | Data restored from 38 MB dump; 164 devices, 166 driver packages |
 | JuniperInventory (FastAPI) | ✅ Running | NSSM service; 10 env vars set; `itsdangerous>=2.0` added to requirements.txt |
 | Caddy | ✅ Running | `tls internal` certs for inventory domains; HTTP file server on port 80/443 |
-| WDSServer | ✅ Running | Initialized StandAlone; boot.wim (custom WinPE, 515.5 MB) registered |
+| WDSServer | ✅ Running | Initialized StandAlone; boot.wim (custom WinPE, ~519 MB) registered as x64uefi |
 | boot_EX EFI | ✅ Present | `C:\RemoteInstall\boot_EX\x64\wdsmgfw_EX.efi` (1143.8 KB, CA 2023 signed) |
 | WIM images | ✅ Copied | win10.wim, win10-pro.wim, win11-home.wim, win11-pro.wim, win11.wim; .bad files removed |
 | Drivers | ✅ Copied | 15 GB driver warehouse to `C:\deploy\drivers\` |
 | DHCP option 67 | ✅ Done | `boot_EX\x64\wdsmgfw_EX.efi` set in UniFi — PXE boot confirmed working |
-| WinPE NIC driver | ✅ Injected (2026-06-24) | **Intel I219-V** (`e1dn.inf`, VEN_8086 DEV_550B) — P14s Gen 5 AMD has Intel NIC, not Realtek. Staged at `C:\deploy\drivers\_winpe-drivers\intel-i219v\`. |
-| toolkit.ps1 logging | ✅ Added (2026-06-24) | toolkit.ps1 now writes structured logs to `X:\Logs\` (always) + deploy share `logs\` + POSTs to `/ingest/winpe-event` when network is up. Added [6] Hardware Info menu item with PCI DeviceIDs for NIC diagnosis. |
+| WinPE NIC driver | ✅ Injected (2026-06-24) | **Intel I219-V** (`e1dn.inf`, VEN_8086 DEV_550B) — P14s Gen 5 Intel has Intel NIC, not Realtek. Staged at `C:\deploy\drivers\_winpe-drivers\intel-i219v\`. |
+| toolkit.ps1 logging | ✅ Added (2026-06-24) | toolkit.ps1 writes structured logs to `X:\Logs\` (always) + deploy share `logs\` + POSTs to `/ingest/winpe-event`. Added [6] Hardware Info menu item with PCI DeviceIDs for NIC diagnosis. |
+| /ingest/winpe-event API | ✅ Added (2026-06-25) | New endpoint added to inventory app — accepts WinPE diagnostic bundles, writes to `/imaging` live log viewer |
+| Alert timezone bug | ✅ Fixed (2026-06-25) | `alerts.py`: `datetime.now()` → `datetime.now(timezone.utc)` — was crashing the alert scheduler every hour |
+| inv.juniperdesign.local DNS | ⚠️ Wrong | Points CNAME → `eng-1.juniperdesign.local` (192.168.13.94). Should be A record → 192.168.5.141. **Jason to fix in UniFi UI.** |
+| P14s Gen 5 post-install drivers | ⚠️ Not catalogued | Zero entries in driver catalog for ThinkPad P14s Gen 5 Intel (21G2). WinPE NIC driver is injected but post-install drivers (NIC, GPU, audio, etc.) need to be added to the catalog. |
 
-**PXE boot end-to-end verified.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging.
+**PXE boot end-to-end verified.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging. 0xc0000272 fixed 2026-06-24 (x64uefi default boot image was not set).
 
 > **Lesson learned:** DS569123 is the Lenovo SCCM WinPE PE11 pack for the **AMD variant** of the
 > P14s Gen 5. We have the **Intel variant** (type 21G2, Core Ultra 7). The Intel platform ships with
@@ -59,6 +63,94 @@ Known NIC → driver mapping:
 Staged driver files at `C:\deploy\drivers\_winpe-drivers\intel-i219v\` on pc-deploy.
 
 
+
+---
+
+## Inventory server functional audit (2026-06-25)
+
+### Services
+
+| Service | Status | Port(s) |
+|---|---|---|
+| WDSServer | ✅ Running | UDP 69 (TFTP, built-in to WDS — tftpd64 NOT installed or needed) |
+| postgresql-16 | ✅ Running | 5432 (localhost only) |
+| JuniperInventory | ✅ Running | 8080 |
+| Caddy | ✅ Running | 80, 443 |
+| tftpd64 | ✅ NOT present | Fully replaced by WDS native TFTP |
+
+### API endpoints (verified)
+
+| Endpoint | Method | Status |
+|---|---|---|
+| `/healthz` | GET | ✅ `{"ok":true}` |
+| `/ingest/endpoint` | POST | ✅ Device registration |
+| `/ingest/host` | POST | ✅ Host scanner batch |
+| `/ingest/imaging-log` | POST | ✅ Live log lines for `/imaging` viewer |
+| `/ingest/winpe-event` | POST | ✅ **Added 2026-06-25** — WinPE toolkit diagnostic events |
+| `/api/devices` | GET | ✅ Device list |
+| `/api/drivers` | GET | ✅ Driver catalog (166 entries: 143 Lenovo, 23 Dell) |
+| `/api/drivers/manifest.json` | GET | ✅ DISM-compatible manifest |
+| `/imaging` | GET | ✅ Live imaging log viewer |
+
+### DNS (UniFi static DNS — Jason to fix)
+
+| Hostname | Current | Expected | Action needed |
+|---|---|---|---|
+| `inventory.juniperdesign.local` | A → 192.168.5.141 | ✅ Correct | None |
+| `pc-deploy.juniperdesign.local` | A → 192.168.5.141 | ✅ Correct | None |
+| `inv.juniperdesign.local` | CNAME → eng-1.juniperdesign.local | A → 192.168.5.141 | **Delete CNAME, add A record** |
+
+To fix `inv.juniperdesign.local` in UniFi:
+1. UniFi UI → Network → Settings → Services → DNS → Static DNS
+2. Delete the entry for `inv.juniperdesign.local` (currently CNAME to eng-1)
+3. Add new A record: `inv.juniperdesign.local` → `192.168.5.141`
+
+### Known bugs fixed this session
+
+**Alert timezone crash (`alerts.py`):**
+- Symptom: `[alerts] rule Agent silent > 7 days failed: can't subtract offset-naive and offset-aware datetimes` — logged every hour
+- Root cause: `datetime.now()` (naive) subtracted from `r["captured_at"]` (PostgreSQL TIMESTAMPTZ, always tz-aware)
+- Fix: `from datetime import datetime, timezone` + `datetime.now(timezone.utc)` with fallback tzinfo on captured_at
+
+**Missing `/ingest/winpe-event` endpoint:**
+- Symptom: toolkit.ps1 logged to file fine, but API POST returned 404
+- Fix: Added new endpoint to `main.py`; writes events to `C:\inventory\imaging-logs\<hostname>.log` so they appear in the live `/imaging` viewer
+
+---
+
+## Service assessment: Windows 11-era vs Server 2025 native
+
+| Service | Legacy approach (W11) | Current (WS2025) | Recommendation |
+|---|---|---|---|
+| TFTP / PXE boot | tftpd64 (third-party) | WDS native TFTP | ✅ Already migrated — tftpd64 removed |
+| Boot image serving | tftpd64 + custom iPXE | WDS + boot_EX (CA 2023 signed) | ✅ Already migrated — better Secure Boot support |
+| HTTPS proxy / file server | Caddy | IIS (available on WS2025) | **Keep Caddy** — IIS is heavier and requires more configuration; Caddy handles TLS-internal certs automatically |
+| Service wrapper | NSSM | Task Scheduler / SC.exe | **Keep NSSM** — Python/uvicorn requires a wrapper; NSSM handles stdout/stderr logging and restart policies better than native SC.exe |
+| Database | PostgreSQL 16 | SQL Server Express (free) | **Keep PostgreSQL** — no migration benefit; SQL Server Express has 10 GB limit and different syntax |
+| Deploy share | SMB / `deploy$` | SMB / `deploy$` | ✅ Already native Windows |
+| Inventory web app | FastAPI / Python | ASP.NET Core or Azure app | **Keep FastAPI** — no reason to rewrite a working app |
+
+**Net assessment:** All meaningful migrations are already done. The move to WDS on Server 2025 was the only service that *required* Server 2025. Everything else (Caddy, NSSM, PostgreSQL, FastAPI) works fine and would cost more to migrate than to keep.
+
+---
+
+## P14s Gen 5 Intel (21G2) driver coverage
+
+| Phase | Component | Status |
+|---|---|---|
+| WinPE (boot) | Intel I219-V NIC (VEN_8086 DEV_550B) | ✅ Injected into boot.wim |
+| Post-install | Intel I219-V NIC | ⚠️ Not in driver catalog |
+| Post-install | Intel Arc Graphics (Meteor Lake integrated) | ⚠️ Not in driver catalog |
+| Post-install | Intel SST Audio | ⚠️ Not in driver catalog |
+| Post-install | Fingerprint reader | ⚠️ Not in driver catalog |
+| Post-install | Intel Thunderbolt 4 | ⚠️ Not in driver catalog |
+| Post-install | Intel Bluetooth | ⚠️ Not in driver catalog |
+
+Post-install drivers for the P14s Gen 5 Intel can be sourced two ways:
+1. **Lenovo's PSREF/SCCM pack for model 21G2** — download from [Lenovo Support](https://support.lenovo.com) for ThinkPad P14s Gen 5, type 21G2
+2. **Extract from ENG-2 driver store** — ENG-2 is an identical model; run `pnputil /export-driver * C:\drivers-export\` and filter by hardware ID
+
+Once downloaded, add via the inventory web UI at `http://192.168.5.141:8080/drivers` and mark `confirmed_working` after verifying on IMAGE-ME.
 
 ---
 
