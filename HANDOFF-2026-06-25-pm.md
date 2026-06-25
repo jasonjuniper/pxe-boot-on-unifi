@@ -118,6 +118,44 @@ confirms the unpatched `wdsmgfw.efi` is 2011-signed and SB-rejected — we alrea
 
 Alternative: clean WinPE rebuild from a patched ADK (more steps; discards accumulated cruft).
 
+## SESSION END STATE (2026-06-25 PM)
+
+### Confirmed by Jason's Secure Boot test
+- Reset Secure Boot keys to factory → no change
+- "Allow Microsoft 3rd Party UEFI CA" ON → no change
+- **Secure Boot OFF → boots to WinPE** (no NIC driver). WDS log: SB-OFF reaches Boot.SDI + full WIM;
+  SB-ON stops before Boot.SDI. ⇒ Secure Boot rejects the OS-loader (`winload`) stage. Root cause = the
+  WIM is build **26100.1 (Apr 2024)**, whose `winload` predates the enforced DBX/SBAT revocations.
+
+### Done this session
+- EX/CA-2023 boot chain swapped in (wdsmgfw/bootmgfw). BCD missing `path` fixed. Both verified.
+- **ADK 10.1.26100.2454 + WinPE add-on installed** on pc-deploy.
+- **pc-deploy maintenance:** Windows Update current (26100.32995, 0 pending). Dell Command Update
+  installed and applied 11 driver updates (Intel HID/SerialIO/UHD/RST/DPTF, NVIDIA Quadro, Realtek
+  card reader + audio, Goodix fingerprint, Killer WiFi/BT). `.NET 8` runtime + **PowerShell 7.6.3**
+  installed (PATH + remoting endpoint). A reboot will clear the last few driverless devices (GPU/chipset).
+- Repo committed + pushed to GitHub.
+- Cred cached DPAPI at `C:\Users\ENG2\.pc-deploy-cred.xml`.
+
+### THE ONE REMAINING STEP — build a patched WinPE (winload not revoked)
+The fix is a WinPE whose boot files are current. Options, in order of preference:
+1. **Apply latest 24H2 (26100) SSU+LCU to a WinPE**, then register with WDS. *Blocked right now:*
+   `catalog.update.microsoft.com` is returning its transient "please try again later" error (MSCatalog
+   retried ~12×). Retry later, or download the LCU `.msu` manually from the catalog in a browser.
+2. **Use the host's serviced WinRE image as the base** (catalog-free). The fully-patched host's
+   `WinRE.wim` has a current, non-revoked, version-matched winload. Stage via `reagentc /disable`
+   (copies to `C:\Windows\System32\Recovery\WinRE.wim`), copy it out, `reagentc /enable`. Then add
+   WinPE OCs (WMI, NetFx, PowerShell, Scripting, StorageWMI), inject deploy.ps1/startnet + the NIC
+   driver, export, register with WDS. *(First attempt staged nothing — re-try; WinRE confirmed Enabled.)*
+3. Copype from the new ADK gives 26100.1 (still revoked) — must then apply the LCU (option 1).
+
+Also fold in: **inject the correct NIC driver for IMAGE-ME (ThinkPad P14s Gen 5)** — current WIM has
+Intel I219-V (wrong), which is why SB-OFF WinPE had no network. Identify its actual NIC (likely a
+USB-C dock Realtek/Intel GbE) and add that driver to the rebuilt WIM.
+
+Then: register the rebuilt WIM, regenerate the WDS BCD (keep the `path` element), and have Jason
+PXE-boot IMAGE-ME with **Secure Boot ON**. Expected: boots cleanly to the deploy prompt.
+
 ## (Earlier) NEXT STEP — physical boot test
 
 PXE-boot **IMAGE-ME** (ThinkPad P14s Gen 5, MAC C8-53-09-2D-0D-56) **with Secure Boot ON**
