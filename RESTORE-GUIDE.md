@@ -24,7 +24,9 @@
 | inv.juniperdesign.local DNS | ✅ Fixed (2026-06-25) | Old CNAME → eng-1 deleted; A record → 192.168.5.141 now active. All three inventory hostnames resolve correctly. |
 | P14s Gen 5 post-install drivers | ⚠️ Not catalogued | Zero entries in driver catalog for ThinkPad P14s Gen 5 Intel (21G2). WinPE NIC driver is injected but post-install drivers (NIC, GPU, audio, etc.) need to be added to the catalog. |
 
-**PXE boot end-to-end verified.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging. 0xc0000272 fixed 2026-06-24 (x64uefi default boot image was not set).
+**PXE boot end-to-end verified 2026-06-24.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging.
+
+**2026-06-25:** WDS BINL port 4011 (and Caddy ports 80/443) were missing from Windows Firewall — added. Port 4011 is the root cause of 0xc0000272 appearing after font download: bootmgfw.efi needs UDP 4011 to authorize the boot.wim download session. EFI files restored to April 2024 baseline after failed KB5025885 EX-file experiment. DHCP option 67 = `boot_EX\x64\wdsmgfw_EX.efi` (unchanged — was already correct).
 
 > **Lesson learned:** DS569123 is the Lenovo SCCM WinPE PE11 pack for the **AMD variant** of the
 > P14s Gen 5. We have the **Intel variant** (type 21G2, Core Ultra 7). The Intel platform ships with
@@ -77,6 +79,28 @@ Staged driver files at `C:\deploy\drivers\_winpe-drivers\intel-i219v\` on pc-dep
 | JuniperInventory | ✅ Running | 8080 |
 | Caddy | ✅ Running | 80, 443 |
 | tftpd64 | ✅ NOT present | Fully replaced by WDS native TFTP |
+
+### Windows Firewall rules required (2026-06-25)
+
+These rules are NOT created automatically by WDS or Caddy — they must be added manually after any rebuild:
+
+```powershell
+# PXE / WDS
+New-NetFirewallRule -DisplayName "WDS DHCP ProxyDHCP UDP 67" -Direction Inbound -Protocol UDP -LocalPort 67 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "WDS TFTP UDP 69"           -Direction Inbound -Protocol UDP -LocalPort 69 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "WDS BINL UDP 4011"         -Direction Inbound -Protocol UDP -LocalPort 4011 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "WDS RIS UDP 4012"          -Direction Inbound -Protocol UDP -LocalPort 4012 -Action Allow -Profile Any
+
+# Caddy reverse proxy (inventory UI)
+New-NetFirewallRule -DisplayName "Caddy HTTP"  -Direction Inbound -Protocol TCP -LocalPort 80  -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "Caddy HTTPS" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Any
+```
+
+> **Why port 4011 matters:** WDS BINL (Boot Information Negotiation Layer) runs on UDP 4011.
+> After `bootmgfw.efi` displays the boot menu and the user selects an entry (or the 30s timeout
+> fires), it contacts WDS BINL to authorize the Boot.SDI / boot.wim download session. If port
+> 4011 is blocked, this auth step silently fails → **0xc0000272** before Boot.SDI is ever
+> requested. This was the root cause of 0xc0000272 on 2026-06-25.
 
 ### API endpoints (verified)
 
