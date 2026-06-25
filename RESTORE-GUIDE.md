@@ -21,7 +21,7 @@
 | toolkit.ps1 logging | ✅ Added (2026-06-24) | toolkit.ps1 writes structured logs to `X:\Logs\` (always) + deploy share `logs\` + POSTs to `/ingest/winpe-event`. Added [6] Hardware Info menu item with PCI DeviceIDs for NIC diagnosis. |
 | /ingest/winpe-event API | ✅ Added (2026-06-25) | New endpoint added to inventory app — accepts WinPE diagnostic bundles, writes to `/imaging` live log viewer |
 | Alert timezone bug | ✅ Fixed (2026-06-25) | `alerts.py`: `datetime.now()` → `datetime.now(timezone.utc)` — was crashing the alert scheduler every hour |
-| inv.juniperdesign.local DNS | ⚠️ Wrong | Points CNAME → `eng-1.juniperdesign.local` (192.168.13.94). Should be A record → 192.168.5.141. **Jason to fix in UniFi UI.** |
+| inv.juniperdesign.local DNS | ✅ Fixed (2026-06-25) | Old CNAME → eng-1 deleted; A record → 192.168.5.141 now active. All three inventory hostnames resolve correctly. |
 | P14s Gen 5 post-install drivers | ⚠️ Not catalogued | Zero entries in driver catalog for ThinkPad P14s Gen 5 Intel (21G2). WinPE NIC driver is injected but post-install drivers (NIC, GPU, audio, etc.) need to be added to the catalog. |
 
 **PXE boot end-to-end verified.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging. 0xc0000272 fixed 2026-06-24 (x64uefi default boot image was not set).
@@ -94,16 +94,11 @@ Staged driver files at `C:\deploy\drivers\_winpe-drivers\intel-i219v\` on pc-dep
 
 ### DNS (UniFi static DNS — Jason to fix)
 
-| Hostname | Current | Expected | Action needed |
-|---|---|---|---|
-| `inventory.juniperdesign.local` | A → 192.168.5.141 | ✅ Correct | None |
-| `pc-deploy.juniperdesign.local` | A → 192.168.5.141 | ✅ Correct | None |
-| `inv.juniperdesign.local` | CNAME → eng-1.juniperdesign.local | A → 192.168.5.141 | **Delete CNAME, add A record** |
-
-To fix `inv.juniperdesign.local` in UniFi:
-1. UniFi UI → Network → Settings → Services → DNS → Static DNS
-2. Delete the entry for `inv.juniperdesign.local` (currently CNAME to eng-1)
-3. Add new A record: `inv.juniperdesign.local` → `192.168.5.141`
+| Hostname | Status | Value |
+|---|---|---|
+| `inventory.juniperdesign.local` | ✅ | A → 192.168.5.141 |
+| `inv.juniperdesign.local` | ✅ Fixed 2026-06-25 | A → 192.168.5.141 (old CNAME → eng-1 deleted via API) |
+| `pc-deploy.juniperdesign.local` | ✅ | A → 192.168.5.141 |
 
 ### Known bugs fixed this session
 
