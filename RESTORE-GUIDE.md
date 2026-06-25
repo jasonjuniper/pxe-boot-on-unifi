@@ -16,7 +16,7 @@
 | boot_EX EFI | ✅ Present | `C:\RemoteInstall\boot_EX\x64\wdsmgfw_EX.efi` (1143.8 KB, CA 2023 signed) |
 | WIM images | ✅ Copied | win10.wim, win10-pro.wim, win11-home.wim, win11-pro.wim, win11.wim; .bad files removed |
 | Drivers | ✅ Copied | 15 GB driver warehouse to `C:\deploy\drivers\` |
-| DHCP option 67 | ✅ Done | `boot_EX\x64\wdsmgfw_EX.efi` set in UniFi — PXE boot confirmed working |
+| DHCP option 67 | ⚠️ Reverted | `Boot\x64\wdsmgfw.efi` — see HANDOFF-2026-06-25.md; 0xc0000272 unresolved |
 | WinPE NIC driver | ✅ Injected (2026-06-24) | **Intel I219-V** (`e1dn.inf`, VEN_8086 DEV_550B) — P14s Gen 5 Intel has Intel NIC, not Realtek. Staged at `C:\deploy\drivers\_winpe-drivers\intel-i219v\`. |
 | toolkit.ps1 logging | ✅ Added (2026-06-24) | toolkit.ps1 writes structured logs to `X:\Logs\` (always) + deploy share `logs\` + POSTs to `/ingest/winpe-event`. Added [6] Hardware Info menu item with PCI DeviceIDs for NIC diagnosis. |
 | /ingest/winpe-event API | ✅ Added (2026-06-25) | New endpoint added to inventory app — accepts WinPE diagnostic bundles, writes to `/imaging` live log viewer |
@@ -26,7 +26,7 @@
 
 **PXE boot end-to-end verified 2026-06-24.** WIM rebuilt 2026-06-24 with Intel I219-V driver + logging.
 
-**2026-06-25:** WDS BINL port 4011 (and Caddy ports 80/443) were missing from Windows Firewall — added. Port 4011 is the root cause of 0xc0000272 appearing after font download: bootmgfw.efi needs UDP 4011 to authorize the boot.wim download session. EFI files restored to April 2024 baseline after failed KB5025885 EX-file experiment. DHCP option 67 = `boot_EX\x64\wdsmgfw_EX.efi` (unchanged — was already correct).
+**2026-06-25 — PXE boot BROKEN, root cause unresolved.** Added firewall rules UDP 67/69/4011/4012 (WDS) and TCP 80/443 (Caddy). Restored all 4 EFI files to April 2024 baseline. DHCP option 67 reverted to `Boot\x64\wdsmgfw.efi`. Despite all changes, 0xc0000272 persists — fires after fonts download, before Boot.SDI. WinRM also broken (Test-WSMan hangs). See `HANDOFF-2026-06-25.md` for full state, hypotheses, and next-session action plan.
 
 > **Lesson learned:** DS569123 is the Lenovo SCCM WinPE PE11 pack for the **AMD variant** of the
 > P14s Gen 5. We have the **Intel variant** (type 21G2, Core Ultra 7). The Intel platform ships with
