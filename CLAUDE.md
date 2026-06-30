@@ -248,6 +248,25 @@ Cross-references inventory device models, driver catalog status, and on-disk fil
 Reports: models in inventory missing from manifest, manifest entries with no files
 on disk, catalog entries with a newer version available, entries marked confirmed_buggy.
 
+#### Lenovo driver curate pipeline (catalog -> .inf -> confirmed_working)
+
+End-to-end flow for Lenovo models (run on pc-deploy, scripts in `C:\deploy\scripts`):
+1. `sync-lenovo-drivers.ps1 -ManifestPath <MT>-driver-manifest.json -Model "<model>" -MachineType <MT>`
+   upserts catalog rows (status=unconfirmed) from a per-machine-type SoftPaq manifest.
+2. `curate-lenovo-model.ps1 -MachineType <MT> -Slug <model-slug>` downloads each SoftPaq
+   `.exe`, silently extracts it (`/VERYSILENT /EXTRACT=YES`), keeps ONLY packages that
+   yield `.inf` (BIOS/firmware flashers excluded), and stages them under
+   `C:\deploy\drivers\<slug>-curated\<subdir>\<name>\`. Writes `_staging\<MT>_curate-results.json`.
+3. Promote: move the old `<slug>` aside, rename `<slug>-curated` -> `<slug>`, then mark the
+   kept catalog rows `confirmed_working` with `file_path = <slug>\<subdir>\<name>`.
+4. `GET /api/drivers/manifest.json` regenerates the manifest from confirmed_working rows.
+   The endpoint auto-includes each model's real WMI Model strings (e.g. `21G2002DUS`) by
+   matching the catalog `machine_type` prefix against the `devices` table, so deploy.ps1's
+   `Invoke-DriverInjection` matches a real machine at image time.
+
+Curated models (offline DISM-injectable): ThinkPad P14s Gen 5 (21G2, 142 .inf),
+ThinkPad T14s Gen 4 (21FE, 99 .inf). Other Lenovo models still hold raw `.exe` only
+(unconfirmed) and rely on the post-boot online installer until curated.
 #### Adding a new driver
 
 Use the web UI at `http://192.168.5.141:8080/drivers` (admin login required).
