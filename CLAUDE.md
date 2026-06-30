@@ -266,3 +266,74 @@ driver and mark it confirmed_working or confirmed_buggy via the status panel.
 
 This works for any OEM PC shipped with Windows 8 or later (ACPI MSDM table).
 Non-OEM machines will activate via digital license or KMS automatically.
+
+## Provisioning status screen + lockout (kiosk)
+
+During post-image setup the machine now shows a **fullscreen status screen** and
+**locks the user out** until all phases finish. This solves the old problem where
+a user could log in mid-install and see no indication that setup was still running.
+
+### How it works
+- **`scripts/provision-status.ps1`** - a borderless, topmost, fullscreen **WPF**
+  window (navy Juniper background, "Setting up this PC", determinate progress bar,
+  phase label + sub-status, "Step X of Y", elapsed time). It polls
+  `C:\ProgramData\JuniperSetup\progress.json` every ~1.5s. Alt-F4/close and keys
+  are swallowed so it can't be dismissed. ASCII-safe, no BOM. Relaunched fresh on
+  every provisioning reboot.
+- **Kiosk lockout**: `orchestrator.ps1 -Bootstrap` arms autologon for `junadmin`
+  (using the password it just pulled from the bootstrap API - never stored in the
+  repo) and sets the **Winlogon Shell** to launch `provision-status.ps1` INSTEAD of
+  `explorer.exe`. Auto-logged-in `junadmin` therefore sees ONLY the status screen -
+  no desktop, no Start menu, no taskbar = locked out. Both the system-wide
+  `HKLM\...\Winlogon\Shell` (reliable on first logon) and the per-user shell are set.
+  Fast user switching is hidden. `AutoLogonCount` is set high and **re-armed on every
+  orchestrator run** so a long multi-reboot Windows Update pass never drops to the
+  normal login screen mid-provision.
+- **Teardown on completion**: when the orchestrator reaches the `done` branch it sets
+  `progress.json` state=`done`/100%, restores the Shell to `explorer.exe`, clears
+  `AutoAdminLogon`/`DefaultPassword`/`AutoLogonCount`/`DefaultUserName`, un-hides fast
+  user switching, removes the scheduled task, then reboots. **Next boot = clean normal
+  login screen** for the end user. Teardown is idempotent.
+
+### progress.json schema (`C:\ProgramData\JuniperSetup\progress.json`, UTF8 no BOM)
+| Field | Type | Meaning |
+|---|---|---|
+| `overallPercent` | int 0-100 | weighted across phases (windows-update 5-45, install-packages 45-80, remove-bloatware 80-92, file-associations 92-99, done=100) |
+| `phaseKey` | string | current phase key, or `bootstrap`/`done` |
+| `phaseLabel` | string | friendly text, e.g. "Installing Windows updates" |
+| `phaseIndex` / `phaseTotal` | int | 1-based phase position / total phases |
+| `stepMessage` | string | optional sub-status |
+| `state` | string | `running` \| `rebooting` \| `done` \| `error` |
+| `updatedUtc` | string | ISO-8601 UTC timestamp |
+
+`orchestrator.ps1` writes it (helper `Write-ProgressJson` + `Publish-PhaseProgress`)
+at bootstrap, every phase transition, and completion. It writes to a `.tmp` then
+atomically moves into place, so the GUI never reads a half-written file.
+
+**Phase sub-status:** a phase script can surface live detail by writing one line to
+`C:\ProgramData\JuniperSetup\logs\<phaseKey>.step`; the orchestrator folds it into
+`progress.json` as `stepMessage` on the next transition. (Optional - phases work
+unchanged without it.)
+
+### Break-glass recovery (stuck machine)
+Two escapes, so a tech is never permanently locked out:
+1. **Flag file**: create `C:\ProgramData\JuniperSetup\break-glass.txt` (e.g. over the
+   admin share from another PC) and reboot - the next orchestrator run tears down the
+   kiosk and restores a normal desktop/login.
+2. **Hotkey**: on the kiosk screen press **Ctrl+Shift+Alt+F12** to immediately launch
+   `explorer.exe` on that session and close the kiosk window (this session only).
+3. **Auto safety timeout**: the kiosk self-tears-down after `$KioskMaxHours` (default 8)
+   from imaging start, in case a phase hangs.
+
+### Staging / self-update
+`scripts/deploy.ps1` stages `provision-status.ps1` into `C:\ProgramData\JuniperSetup\`
+alongside the orchestrator. The orchestrator's self-update list now includes
+`provision-status.ps1`, so the lockout screen can be **hotfixed from the deploy share
+without re-imaging**.
+
+> Not end-to-end testable without imaging a real machine. To validate on the next
+> image: watch for the fullscreen status screen right after the first post-OOBE
+> autologon, confirm there is no desktop/taskbar, confirm the bar advances across
+> phases and reboots, and confirm the FINAL boot lands on a normal login screen
+> (no autologon, explorer shell restored). Check `imaging.log` for the
+> "Kiosk mode armed" and "Kiosk mode removed" lines.
