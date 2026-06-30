@@ -6,8 +6,18 @@
   "models": {
     "dell-xps-13-9380": {
       "description": "Full driver pack for Dell XPS 13 9380 (Cannon Point-LP, 8th gen Whiskey Lake-U). Subfolders: rst (Intel RST RAID, DEV_9DD7), wifi (Intel Wireless-AC 9560 netwtw08 v21.30, DEV_9DF0), serial-io (Intel Serial IO CNL GPIO+I2C v30.100.2020.7 - touchpad), audio-realtek (Realtek APO v11.0.6000.795 + service), heci (Intel ME), bluetooth (Intel ibtusb v24.20.0.3, USB VID_8087&PID_0AAA), thunderbolt (Intel TbtHostController v1.41.1379.0 for JHL6340, TbtBusDrv + TbtP2pNdisDrv + services).",
-      "wmiModels": ["XPS 13 9380"],
+      "wmiModels": [
+        "XPS 13 9380"
+      ],
       "driverPath": "dell-xps-13-9380"
+    },
+    "lenovo-thinkpad-p14s-gen5": {
+      "description": "Full driver pack for Lenovo ThinkPad P14s Gen 5 (machine type 21G2, Intel Meteor Lake). Exported from an identical reference unit (model 21G2002DUS) via pnputil /export-driver - includes chipset, Intel Management Engine, graphics (Intel iGPU), networking (Intel Wi-Fi/BT + Ethernet), storage (Intel RST/NVMe), audio, input (touchpad/trackpoint), and Lenovo platform drivers. DISM /Add-Driver /Recurse injects all .inf packages offline.",
+      "wmiModels": [
+        "21G2002DUS",
+        "ThinkPad P14s Gen 5"
+      ],
+      "driverPath": "lenovo-thinkpad-p14s-gen5"
     }
   }
 }
