@@ -427,3 +427,55 @@ without re-imaging**.
 > phases and reboots, and confirm the FINAL boot lands on a normal login screen
 > (no autologon, explorer shell restored). Check `imaging.log` for the
 > "Kiosk mode armed" and "Kiosk mode removed" lines.
+
+## End-to-end imaging status + per-phase log upload
+
+The inventory **Imaging tab (`/deploy/status`)** shows each machine's progress
+for the WHOLE lifecycle - WinPE imaging through every post-install phase to
+`done` - as ONE record, and uploads per-phase log files viewable from the page.
+
+### Unified `device_provisioning` timeline (one record, WinPE -> done)
+A single `device_provisioning` row per device is resolved serial-first
+(serial -> MAC -> hostname, same as the agent), so WinPE and post-install both
+write the SAME record and a re-image reuses it.
+
+- **WinPE** (`deploy.ps1`): `Send-WinpeProgress` posts coarse milestones to
+  `POST /ingest/deploy-progress` with `state=winpe`, `phaseKey=winpe`, and
+  `overallPercent` 1-5 ("Imaging Windows" -> "Applying Windows image" ->
+  "Injecting drivers" -> "Finalizing - rebooting to Windows"). Keyed by
+  serial/MAC/hostname so it stitches to the record the orchestrator continues.
+- **Post-install** (`orchestrator.ps1`): `Send-ProgressToServer` (already wired)
+  continues the same record across the 4 phases (windows-update 5-45,
+  install-packages 45-80, remove-bloatware 80-92, file-associations 92-99) to
+  `state=done`/100%. The WinPE 1-5 band sits below the post-install bands so the
+  bar advances monotonically across the whole process.
+- All reporting is **best-effort** - a server error never blocks or aborts
+  imaging (every call is wrapped, short timeouts, swallowed exceptions).
+
+### `POST /ingest/deploy-log` contract (auth-free, like all `/ingest/*`)
+Upload a finished phase's log. Body (JSON):
+`{ serial?, hostname?, mac?, phase_key, status: "ok"|"error", log_text, ts }`.
+The server resolves the device (serial-first), writes the bytes to
+`C:\inventory\provisioning-logs\<device_id>\<phase>-<utc-ts>.log`, and inserts an
+index row into the `provisioning_logs` table (migration `db/27_provisioning_logs.sql`).
+Oversized logs are tailed to the last ~480 KB by the client and capped at 512 KB
+server-side (errors live at the end).
+
+**When logs upload (best-effort):**
+- `orchestrator.ps1` `Send-PhaseLog` uploads `logs\<phaseKey>.log` at the END of
+  each phase (`status=ok`) AND immediately when a phase fails (`status=error`).
+- `deploy.ps1` `Send-WinpeLog` uploads the WinPE phase log on completion
+  (`status=ok`) and on a fatal WinPE error (`status=error`, e.g. DISM apply fail).
+
+### Viewing logs on the Imaging tab
+Each live progress card on `/deploy/status` has a **Logs** button (turns red if any
+error log exists). It calls `GET /api/deploy/logs?device=<id>` to list the device's
+uploaded phase logs (newest first, ok/error badges) and opens any one in a viewer
+via `GET /api/deploy/log/<log_id>` (with a download link). The page keeps its
+existing 4s auto-refresh. The `/deploy/status` HTML page stays behind login
+(302 -> /login); the `/ingest/*` and `/api/*` routes are auth-free for imaging clients.
+
+> Fully testable only on a real image. To validate: watch a machine appear on
+> `/deploy/status` during WinPE (purple "winpe" state, 1-5%), see it continue
+> through the 4 post-install phases to done/100% in the SAME card, then open the
+> Logs drawer and confirm each phase's log is present (error phases flagged red).

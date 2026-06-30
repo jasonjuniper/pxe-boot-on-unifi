@@ -67,6 +67,68 @@ $Script:WpeTargetName = $null   # set after computer name is chosen
 $Script:WpeMasterLog  = $null   # set after staging paths are created on target
 $Script:WpePhaseLog   = $null
 
+# Machine identity for progress/log reporting - populated once identity is known.
+$Script:WpeSerial = $null
+$Script:WpeMac    = $null
+
+# Send-WinpeProgress: best-effort coarse WinPE milestone to /ingest/deploy-progress.
+# Feeds the SAME device_provisioning record the post-install orchestrator uses, so
+# the Imaging tab (/deploy/status) shows the whole lifecycle: WinPE -> post-install
+# -> done. Keyed by serial/MAC/hostname (serial-first resolve) so it stitches to the
+# record the orchestrator will later update. Never throws - imaging must not depend
+# on the server. WinPE-safe (Invoke-RestMethod is available).
+function Send-WinpeProgress {
+    param(
+        [Parameter(Mandatory)][int]$Percent,
+        [Parameter(Mandatory)][string]$Label,
+        [string]$Step = '',
+        [ValidateSet('winpe','error')][string]$State = 'winpe'
+    )
+    try {
+        $body = [ordered]@{
+            serial         = $Script:WpeSerial
+            hostname       = $Script:WpeTargetName
+            mac            = $Script:WpeMac
+            overallPercent = $Percent
+            phaseKey       = 'winpe'
+            phaseLabel     = $Label
+            phaseIndex     = 0
+            phaseTotal     = 0
+            stepMessage    = $Step
+            state          = $State
+            updatedUtc     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            source         = 'deploy.ps1'
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod "$InvApi/ingest/deploy-progress" -Method Post `
+            -ContentType 'application/json' -Body $body -TimeoutSec 4 -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
+# Send-WinpeLog: best-effort upload of the WinPE phase log to /ingest/deploy-log.
+# Called once at the end of the WinPE phase (status ok) or on a fatal WinPE error.
+function Send-WinpeLog {
+    param([ValidateSet('ok','error')][string]$Status = 'ok')
+    try {
+        $logText = ''
+        if ($Script:WpePhaseLog -and (Test-Path $Script:WpePhaseLog)) {
+            $logText = [IO.File]::ReadAllText($Script:WpePhaseLog)
+        } elseif ($Script:WpeMasterLog -and (Test-Path $Script:WpeMasterLog)) {
+            $logText = [IO.File]::ReadAllText($Script:WpeMasterLog)
+        }
+        $body = [ordered]@{
+            serial    = $Script:WpeSerial
+            hostname  = $Script:WpeTargetName
+            mac       = $Script:WpeMac
+            phase_key = 'winpe'
+            status    = $Status
+            log_text  = $logText
+            ts        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod "$InvApi/ingest/deploy-log" -Method Post `
+            -ContentType 'application/json' -Body $body -TimeoutSec 6 -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
 $OsOptions = @{
     '1' = @{
         Label    = 'Windows 11 Home'
@@ -322,6 +384,10 @@ $primaryNic = ($allNics | Where-Object { $_['type'] -eq 'ethernet' } | Select-Ob
 if (-not $primaryNic) { $primaryNic = ($allNics | Select-Object -First 1) }
 $primaryMac = if ($primaryNic) { $primaryNic['mac'] } else { '' }
 
+# Cache identity for WinPE progress/log reporting to the Imaging tab.
+$Script:WpeSerial = if ($serialClean) { $serialClean } else { $null }
+$Script:WpeMac    = if ($primaryMac)  { $primaryMac }  else { $null }
+
 # --- UEFI OEM license detection -----------------------------------------------
 # OA3xOriginalProductKeyDescription returns e.g. "Windows 11 Home" or "Windows 11 Pro".
 # Used to auto-suggest the correct edition for OS selection.
@@ -564,6 +630,10 @@ if (-not (Test-Path $wimPath)) {
 # Name is now known - set for Write-DeployLog remote log key
 $Script:WpeTargetName = $computerName
 
+# First WinPE milestone -> Imaging tab (same device_provisioning record the
+# post-install orchestrator will later continue through to 'done').
+Send-WinpeProgress -Percent 1 -Label 'Imaging Windows' -Step 'Starting imaging'
+
 # Send first remote log entry immediately so the machine appears on pc-deploy
 try {
     $ts0     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -625,10 +695,12 @@ if ($p.ExitCode -ne 0) {
 }
 Write-Host '  Partitioned: S: (EFI), C: (Windows).' -ForegroundColor Green
 Write-DeployLog 'Step: Partition complete'
+Send-WinpeProgress -Percent 2 -Label 'Imaging Windows' -Step 'Disk partitioned'
 
 # --- Apply WIM --------------------------------------------------------------
 
 Write-DeployLog "Step: Applying $($os.Label) (DISM - 10-20 min)"
+Send-WinpeProgress -Percent 3 -Label 'Applying Windows image' -Step "Applying $($os.Label)"
 Write-Host ''
 Write-Host "  Applying $($os.Label) (index $($os.WimIndex))..." -ForegroundColor Cyan
 Write-Host '  This takes 10-20 minutes depending on disk speed.'
@@ -636,10 +708,13 @@ Write-Host ''
 $p = Start-Process dism -ArgumentList "/Apply-Image /ImageFile:`"$wimPath`" /Index:$($os.WimIndex) /ApplyDir:C:\" -Wait -PassThru -NoNewWindow
 if ($p.ExitCode -ne 0) {
     Write-Host "  DISM apply failed (exit $($p.ExitCode))" -ForegroundColor Red
+    Send-WinpeProgress -Percent 3 -Label 'Applying Windows image' -Step "DISM apply failed (exit $($p.ExitCode))" -State 'error'
+    Send-WinpeLog -Status 'error'
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Image applied.' -ForegroundColor Green
 Write-DeployLog 'Step: WIM applied'
+Send-WinpeProgress -Percent 4 -Label 'Injecting drivers' -Step 'Windows image applied'
 
 # --- Inject Drivers (offline) -----------------------------------------------
 
@@ -814,6 +889,10 @@ if ($pxeRemoved -gt 0) {
 # --- Write final WinPE log entry before disconnecting share -----------------
 
 Write-DeployLog "WinPE phase complete - rebooting into Windows"
+# Final WinPE milestone + upload of the WinPE log to the Imaging tab. The
+# post-install orchestrator takes over this same device record after first boot.
+Send-WinpeProgress -Percent 5 -Label 'Finalizing - rebooting to Windows' -Step 'Rebooting into Windows setup'
+Send-WinpeLog -Status 'ok'
 
 # --- Cleanup and reboot -----------------------------------------------------
 

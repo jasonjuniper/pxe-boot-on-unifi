@@ -92,6 +92,44 @@ function Send-ProgressToServer {
     } catch {}
 }
 
+# Best-effort upload of a finished phase's log file to the inventory server so it
+# is viewable from the Imaging tab (/deploy/status). Called at the END of every
+# phase (status 'ok') and immediately when a phase fails (status 'error').
+# Never throws; imaging must not depend on the server being reachable. Tails the
+# last 480 KB if the log is huge (errors live at the end).
+function Send-PhaseLog {
+    param(
+        [Parameter(Mandatory)][string]$PhaseKey,
+        [ValidateSet('ok','error')][string]$Status = 'ok'
+    )
+    try {
+        $logPath = "$SetupRoot\logs\$PhaseKey.log"
+        $logText = ''
+        if (Test-Path $logPath) {
+            $bytes = [IO.File]::ReadAllBytes($logPath)
+            $cap   = 480 * 1024
+            if ($bytes.Length -gt $cap) {
+                $tail   = $bytes[($bytes.Length - $cap)..($bytes.Length - 1)]
+                $logText = "...[truncated to last 480 KB]...`r`n" + [Text.Encoding]::UTF8.GetString($tail)
+            } else {
+                $logText = [Text.Encoding]::UTF8.GetString($bytes)
+            }
+        }
+        $id = Get-MachineIdentity
+        $body = @{
+            serial    = $id.serial
+            hostname  = $id.hostname
+            mac       = $id.mac
+            phase_key = $PhaseKey
+            status    = $Status
+            log_text  = $logText
+            ts        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri "$InvApi/ingest/deploy-log" -Method Post `
+            -ContentType 'application/json' -Body $body -TimeoutSec 8 -ErrorAction Stop | Out-Null
+    } catch {}
+}
+
 # Self-update: pull fresh scripts from the deploy share at the start of every run.
 # This lets us hotfix phase scripts (and this orchestrator) without re-imaging.
 # Silently skipped if the share is unreachable.
@@ -639,6 +677,7 @@ if ($exitCode -eq 3010) {
 } elseif ($exitCode -eq 0) {
     # Phase complete - advance and immediately run next phase
     Publish-PhaseProgress -PhaseKey $phase -Fraction 1.0 -State 'running'
+    Send-PhaseLog -PhaseKey $phase -Status 'ok'   # upload finished phase log
     $nextPhase = Get-NextPhase -Current $phase
     Write-Log "Phase '$phase' succeeded - advancing to '$nextPhase'" -MasterOnly
     Write-Log "Advancing to '$nextPhase'"
@@ -676,6 +715,7 @@ if ($exitCode -eq 3010) {
             $next2 = Get-NextPhase -Current $nextPhase
             Save-PhaseState -Phase $next2 -Round 0
             Publish-PhaseProgress -PhaseKey $nextPhase -Fraction 1.0 -State 'running'
+            Send-PhaseLog -PhaseKey $nextPhase -Status 'ok'   # upload finished phase log
             Write-Log "Phase '$nextPhase' succeeded - next phase '$next2' will run on next scheduled trigger" -MasterOnly
             # If that was the final phase, tear down now rather than waiting for a reboot.
             if ($next2 -eq 'done') {
@@ -692,6 +732,7 @@ if ($exitCode -eq 3010) {
             $next2 = Get-NextPhase -Current $nextPhase
             Save-PhaseState -Phase $next2 -Round 0
             Publish-PhaseProgress -PhaseKey $nextPhase -Fraction 1.0 -State 'running'
+            Send-PhaseLog -PhaseKey $nextPhase -Status 'error'   # upload failed phase log
             Write-Log "Phase '$nextPhase' exited $exitCode2 (non-fatal) - continuing to '$next2'" -Level WARN -MasterOnly
         }
     }
@@ -700,6 +741,7 @@ if ($exitCode -eq 3010) {
     # Non-zero, non-3010: log the error but advance so imaging doesn't stall
     $nextPhase = Get-NextPhase -Current $phase
     Publish-PhaseProgress -PhaseKey $phase -Fraction 1.0 -State 'running'
+    Send-PhaseLog -PhaseKey $phase -Status 'error'   # upload failed phase log
     Write-Log "Phase '$phase' exited $exitCode (non-fatal error) - advancing to '$nextPhase'" -Level WARN -MasterOnly
     Write-Log "Phase '$phase' non-fatal error (exit=$exitCode) - continuing" -Level WARN
     Save-PhaseState -Phase $nextPhase -Round 0
