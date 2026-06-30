@@ -188,6 +188,27 @@ has no network in WinPE, inject its NIC driver: `21G2-driver-manifest.json` +
 `Add-WindowsDriver` the NIC `.inf`, commit, re-import. (Many P14s units PXE/network via a USB-C
 dock → likely a Realtek USB GbE / RTL8153.)
 
+## ✅ SECURE BOOT SOLVED + NIC FIXED (2026-06-30)
+
+Jason's test: **Secure Boot ON now boots all the way to the "Juniper Design – PC Deployment System"
+prompt** → `0xc0000272` is fully resolved (EX/CA-2023 chain + patched non-revoked winload). Pressing
+**D** then "retried and gave up" = no network = the NIC, now isolated alone.
+
+**NIC correction:** IMAGE-ME is **identical to ENG-2 = ThinkPad P14s Gen 5 (21G2002DUS)** with an
+**integrated Intel Ethernet Connection (18) I219-V** (`PCI\VEN_8086&DEV_550B&...REV_20`, e1dn.sys
+20.0.2.x) — NOT a USB-C dock NIC (earlier wrong assumption). The WinRE-based rebuild had dropped the
+I219-V driver the old WIM carried.
+
+**Fix:** injected `C:\deploy\drivers\_winpe-drivers\intel-i219v\e1dn.inf` (v20.0.2.19, explicitly lists
+DEV_550B) into `winpe-deploy-final.wim`; also kept USB NIC drivers (Realtek RTL815x `rtucx21x64`/`rtux64w10`,
+ASIX `ax88179`/`ax88772`, RNDIS) for the ASIX USB adapter / dock case. WIM now has 4 net drivers.
+Re-imported as **"Juniper WinPE (patched + I219-V)"**, re-applied BCD `path`, restarted WDS — verified.
+
+### RETEST: PXE-boot IMAGE-ME (Secure Boot ON) → press D
+Expected: I219-V binds, gets DHCP, maps `\\192.168.5.141\deploy$`, runs live `deploy.ps1` → imaging starts.
+(If integrated NIC still doesn't bind, ENG-2's exact live driver is v20.0.2.22 / `oem109.inf` — export
+via `pnputil /export-driver` and inject; but 20.0.2.19 covers DEV_550B so it should bind.)
+
 ## (Earlier) NEXT STEP — physical boot test
 
 PXE-boot **IMAGE-ME** (ThinkPad P14s Gen 5, MAC C8-53-09-2D-0D-56) **with Secure Boot ON**
