@@ -274,6 +274,42 @@ Set `file_path` relative to `C:\deploy\drivers\` - e.g. `lenovo-thinkpad-t14s\ne
 This is the same path convention as manifest.json `driverPath`. After saving, test the
 driver and mark it confirmed_working or confirmed_buggy via the status panel.
 
+## OOBE / no Microsoft account (local accounts only)
+
+Juniper images use **local admin accounts only - never a Microsoft account**.
+Two layers keep OOBE off the MSA / Office-365 sign-in path:
+
+1. **Unattend (`oobeSystem` pass, both win11 + win10):** the `junadmin` local
+   admin is created in `UserAccounts\LocalAccounts`, and `Microsoft-Windows-Shell-Setup\OOBE`
+   sets `HideOnlineAccountScreens=true`, `HideLocalAccountScreen=true`, `HideEULAPage=true`,
+   `HideOEMRegistrationScreen=true`, `HideWirelessSetupInOOBE=true`, `NetworkLocation=Work`,
+   `ProtectYourPC=3`, `SkipMachineOOBE/SkipUserOOBE=true`. Because a local account already
+   exists, OOBE has no reason to demand an MSA - this is the supported method. Win11 also
+   sets `HKLM\...\OOBE\BypassNRO=1` via a `specialize`-pass `RunSynchronousCommand`
+   (belt-and-suspenders for builds that gate the local-account path on a network adapter).
+   Note: BypassNRO is increasingly restricted on 24H2 - the local-account + Hide* flags are
+   what we actually rely on; BypassNRO is only a fallback.
+
+2. **Post-OOBE nag suppression (`scripts/SetupComplete.cmd`):** runs once post-OOBE as
+   SYSTEM, before the login screen and before the orchestrator arms junadmin autologon, so
+   the keys are machine-wide and idempotent. It writes:
+   - `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement\ScoobeSystemSettingEnabled=0`
+     (kills the "Let's finish setting up your device" SCOOBE prompt)
+   - `HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent\{DisableConsumerFeatures,
+     DisableWindowsConsumerFeatures,DisableSoftLanding}=1` (consumer/Spotlight/suggestion content)
+   - `HKLM\SOFTWARE\Policies\Microsoft\OneDrive\DisablePersonalSync=1` (OneDrive personal
+     first-run nag - does NOT uninstall OneDrive)
+   - `HKLM\SOFTWARE\Policies\Microsoft\office\16.0\common\signin\SignInOptions=3` (Office/M365
+     first-launch sign-in disabled, so Office installed later via the catalog never forces MSA)
+
+   These keys do NOT touch junadmin creation, autologon, the JuniperImaging task, or the
+   kiosk/provision-status screen - all keep working.
+
+**Verify on next image:** OOBE completes with no online-account / "sign in with Microsoft"
+screen and lands on the local junadmin session; no "finish setting up your device" prompt;
+first launch of Office (when installed) shows no M365 sign-in nag. The reg writes are logged
+in `C:\ProgramData\JuniperSetup\imaging.log` ("Applying OOBE no-MSA / first-run nag suppression").
+
 ## Windows activation (OEM UEFI key)
 
 `04-install-packages.ps1` includes an OEM activation step that:

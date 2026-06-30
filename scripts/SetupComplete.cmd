@@ -19,6 +19,33 @@ if not exist "%SETUP_ROOT%" mkdir "%SETUP_ROOT%"
 :: Write bootstrap entry to master log
 echo %DATE% %TIME%  [INFO ]  [SetupComplete         ]  SetupComplete.cmd fired - bootstrapping JuniperImaging >> "%LOG%"
 
+:: ===========================================================================
+:: OOBE / no-Microsoft-account hardening (machine-wide, SYSTEM context)
+:: Runs once post-OOBE, before the login screen and before the orchestrator
+:: arms junadmin autologon. Suppresses the post-OOBE "Let's finish setting up
+:: your device" SCOOBE nag, Windows consumer/Spotlight content, the OneDrive
+:: personal first-run, and the Office/M365 first-run sign-in. Local accounts
+:: only - no Microsoft account is ever introduced. All keys idempotent.
+:: ===========================================================================
+echo %DATE% %TIME%  [INFO ]  [SetupComplete         ]  Applying OOBE no-MSA / first-run nag suppression >> "%LOG%"
+
+:: "Let's finish setting up your device" (SCOOBE) engagement prompts
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" /v ScoobeSystemSettingEnabled /t REG_DWORD /d 0 /f >> "%LOG%" 2>&1
+
+:: Windows consumer features / Spotlight / soft-landing suggestion content
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableConsumerFeatures /t REG_DWORD /d 1 /f >> "%LOG%" 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsConsumerFeatures /t REG_DWORD /d 1 /f >> "%LOG%" 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableSoftLanding /t REG_DWORD /d 1 /f >> "%LOG%" 2>&1
+
+:: OneDrive: stop the personal-account first-run/auto-setup nag (does NOT uninstall OneDrive)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\OneDrive" /v DisablePersonalSync /t REG_DWORD /d 1 /f >> "%LOG%" 2>&1
+
+:: Office / Microsoft 365: disable the first-launch "sign in" prompt (machine policy
+:: so Office installed later via the catalog does not force an M365 sign-in). 3 = sign-in disabled.
+reg add "HKLM\SOFTWARE\Policies\Microsoft\office\16.0\common\signin" /v SignInOptions /t REG_DWORD /d 3 /f >> "%LOG%" 2>&1
+
+echo %DATE% %TIME%  [INFO ]  [SetupComplete         ]  OOBE no-MSA / first-run nag suppression applied >> "%LOG%"
+
 :: Verify the orchestrator script was staged by deploy.ps1
 if not exist "%ORCH%" (
     echo %DATE% %TIME%  [ERROR]  [SetupComplete         ]  orchestrator.ps1 not found at %ORCH% >> "%LOG%"
