@@ -166,7 +166,7 @@ function Get-DriverManifest([string]$DeployShare) {
     # Prefer live manifest from inventory API (auto-generated from confirmed_working entries).
     # Falls back to the static manifest.json on the deploy share.
     try {
-        $m = Invoke-RestMethod "$InvApi/api/drivers/manifest.json" -TimeoutSec 5 -ErrorAction Stop
+        $m = Invoke-RestMethod "$InvApi/api/drivers/manifest.json" -TimeoutSec 20 -ErrorAction Stop
         if ($m.models) {
             Write-Host '  (driver manifest: live from inventory API)' -ForegroundColor DarkGray
             return $m
@@ -359,7 +359,13 @@ $hwWmiCS   = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyCont
 $hwWmiBios = Get-WmiObject -Class Win32_BIOS -ErrorAction SilentlyContinue
 $hwMfr     = if ($hwWmiCS)   { $hwWmiCS.Manufacturer.Trim()  } else { 'Unknown' }
 $hwModel   = if ($hwWmiCS)   { $hwWmiCS.Model.Trim()         } else { 'Unknown' }
-$hwSerial  = if ($hwWmiBios) { $hwWmiBios.SerialNumber.Trim() } else { '' }
+$hwSerial  = ''
+$_serSrc = @()
+if ($hwWmiBios) { $_serSrc += "$($hwWmiBios.SerialNumber)".Trim() }
+try { $_e = Get-WmiObject Win32_SystemEnclosure -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_e) { $_serSrc += "$($_e.SerialNumber)".Trim() } } catch {}
+try { $_p = Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_p) { $_serSrc += "$($_p.IdentifyingNumber)".Trim() } } catch {}
+$_bogusSer = @('to be filled','default string','system serial','tbd','0','00000000','na','n/a','not specified','none','chassis serial','ffffffffff')
+foreach ($_s in $_serSrc) { if ($_s -and $_s.Length -ge 3) { $_b=$false; foreach($_x in $_bogusSer){ if($_s -ilike "*$_x*"){ $_b=$true; break } }; if(-not $_b){ $hwSerial = $_s; break } } }
 
 # Filter placeholder serials that BIOSes ship with
 $_bogus = @('to be filled','default string','system serial','tbd','0','00000000',
@@ -480,7 +486,7 @@ function Resolve-PriorDevice {
     # Returns the device record whose $ExactField equals $ExactValue (case-insensitive), or $null.
     try {
         $results = Invoke-RestMethod "$InvApi/api/devices?q=$([uri]::EscapeDataString($Query))" `
-            -TimeoutSec 5 -ErrorAction Stop
+            -TimeoutSec 20 -ErrorAction Stop
         return @($results | Where-Object { "$($_.$ExactField)" -ieq $ExactValue }) | Select-Object -First 1
     } catch { return $null }
 }
