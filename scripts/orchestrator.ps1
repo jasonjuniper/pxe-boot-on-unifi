@@ -137,7 +137,7 @@ $_shareScripts = '\\192.168.5.141\deploy$\scripts'
 if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
     try {
         foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
-                         '06-join-wifi.ps1',
+                         '06-join-wifi.ps1','10-setup-user.ps1',
                          '07-remove-bloatware.ps1','08-set-file-associations.ps1',
                          'provision-status.ps1')) {
             $s = Join-Path $_shareScripts $f
@@ -169,6 +169,7 @@ $Phases = [ordered]@{
     'windows-update'    = '03-windows-update.ps1'
     'install-packages'  = '04-install-packages.ps1'
     'remove-bloatware'  = '07-remove-bloatware.ps1'
+    'setup-user'        = '10-setup-user.ps1'
     'file-associations' = '08-set-file-associations.ps1'
 }
 
@@ -178,9 +179,10 @@ $Phases = [ordered]@{
 $PhaseMeta = [ordered]@{
     'join-wifi'         = @{ Label = 'Connecting to office Wi-Fi';        Start = 1;  End = 4  }
     'windows-update'    = @{ Label = 'Installing Windows updates';        Start = 4;  End = 45 }
-    'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 78 }
-    'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 78; End = 90 }
-    'file-associations' = @{ Label = 'Configuring default applications';  Start = 90; End = 99 }
+    'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 76 }
+    'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 76; End = 85 }
+    'setup-user'        = @{ Label = 'Setting up the assigned user';      Start = 85; End = 91 }
+    'file-associations' = @{ Label = 'Configuring default applications';  Start = 91; End = 99 }
 }
 
 . "$SetupRoot\Logging.ps1"

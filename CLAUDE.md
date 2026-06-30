@@ -164,8 +164,8 @@ operator's final choices back so the next re-image remembers them.
 
 **After first logon** the `orchestrator.ps1` phase pipeline runs (driven by its
 `$Phases` ordered map): `join-wifi` -> `windows-update` -> `install-packages` ->
-`remove-bloatware` -> `file-associations`. (`03b` driver install + the inventory
-agent are invoked from within `04`.)
+`remove-bloatware` -> `setup-user` -> `file-associations`. (`03b` driver install +
+the inventory agent are invoked from within `04`.)
 
 **Wi-Fi is now the FIRST phase** (ahead of `windows-update`): the machine joins
 office Wi-Fi before the long, multi-reboot update phase, so if someone unplugs
@@ -173,8 +173,40 @@ ethernet mid-update the box stays online and provisioning keeps going. The Wi-Fi
 driver is injected offline in WinPE and ethernet is how the box imaged, so the join
 works at the first post-OOBE boot. `06-join-wifi.ps1` stays best-effort/non-fatal -
 a desktop with no Wi-Fi NIC exits 0 and the phase just advances. Progress bands
-(monotonic, 0-100): join-wifi 1-4, windows-update 4-45, install-packages 45-78,
-remove-bloatware 78-90, file-associations 90-99, done=100.
+(monotonic, 0-100): join-wifi 1-4, windows-update 4-45, install-packages 45-76,
+remove-bloatware 76-85, setup-user 85-91, file-associations 91-99, done=100.
+
+### Assigned-user local account (`setup-user` phase, `10-setup-user.ps1`)
+
+Near the end of provisioning the orchestrator creates the **assigned user's local
+admin account** so the machine is ready for its owner at first real logon (the
+kiosk still locks login until provisioning completes).
+
+- **Who:** resolves this machine in inventory by BIOS serial
+  (`GET /api/devices?q=<serial>`), reads the assigned **owner** (`owner_email`
+  preferred, `owner` display name for the full name). If the device record has no
+  linked owner, it falls back to the auto-discovered primary user from the last
+  agent snapshot (`GET /api/device/<id>` -> `system_info.primary_user_email` /
+  `primary_user_name`).
+- **Account name:** derived from the email/UPN local-part (e.g.
+  `jason@juniperdesign.com` -> `jason`; `jay.smith@...` -> `jay.smith`), else
+  first-initial+last from the display name (`Jane Doe` -> `jdoe`). Sanitised to a
+  valid Windows local name (<=20 chars, invalid chars stripped, no leading/trailing
+  dot). Reserved names (junadmin/administrator/guest/etc.) are skipped to avoid
+  collision.
+- **What it does:** creates the local account (or resets it if it already exists),
+  sets its full name, **adds it to the local `Administrators` group**, and forces a
+  **password change at first logon** (`PasswordExpired = 1` via ADSI).
+- **Initial password (no secret in repo):** fetched at runtime from the inventory
+  server's auth-exempt `GET /api/management/user-init` (RFC-1918 only), which reads
+  `C:\inventory\user-init.json` (`{"initialPassword":"..."}`, ACL'd to SYSTEM +
+  Administrators) on pc-deploy. The password is the same generic onboarding value
+  for all machines, stored in 1Password (`Private/Juniper New-PC Initial Password`),
+  held in memory only, cleared immediately after use, and **never logged**. To
+  rotate: regenerate the 1Password item and rewrite `C:\inventory\user-init.json`
+  (no service restart needed).
+- **Best-effort/non-fatal:** no assigned owner, an unreachable API, a reserved/blank
+  derived name, or a missing password config all exit 0 - the image never aborts.
 
 - `03-windows-update.ps1` - all Windows updates
 - `03b-install-catalog-drivers.ps1` - post-boot online driver install from inventory
