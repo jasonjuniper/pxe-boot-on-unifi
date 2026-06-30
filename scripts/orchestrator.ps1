@@ -38,6 +38,60 @@ $ProgressFile = "$SetupRoot\progress.json"
 $TaskName   = 'JuniperImaging'
 $KioskUser  = 'junadmin'
 
+# Inventory server base URL - the live imaging-progress dashboard ingests our
+# progress.json here so a tech can watch this machine image from /deploy/status.
+$InvApi = 'http://192.168.5.141:8080'
+
+# Cache machine identity once (serial + hostname + primary MAC) so each progress
+# POST can be resolved to this device record (serial-first, same as the agent).
+$script:MachineIdentity = $null
+function Get-MachineIdentity {
+    if ($script:MachineIdentity) { return $script:MachineIdentity }
+    $serial = $null; $mac = $null
+    try { $serial = (Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue).SerialNumber } catch {}
+    try {
+        $nic = Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
+               Where-Object { $_.PhysicalAdapter -and $_.MACAddress -and $_.NetEnabled } |
+               Select-Object -First 1
+        if (-not $nic) {
+            $nic = Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue |
+                   Where-Object { $_.PhysicalAdapter -and $_.MACAddress } | Select-Object -First 1
+        }
+        if ($nic) { $mac = $nic.MACAddress }
+    } catch {}
+    $script:MachineIdentity = [pscustomobject]@{
+        serial   = if ($serial) { "$serial".Trim() } else { $null }
+        hostname = $env:COMPUTERNAME
+        mac      = if ($mac) { "$mac".Replace('-',':').ToLower() } else { $null }
+    }
+    return $script:MachineIdentity
+}
+
+# Best-effort POST of a progress snapshot to the inventory server. Never throws;
+# imaging must not depend on the server being reachable.
+function Send-ProgressToServer {
+    param($Progress)
+    try {
+        $id = Get-MachineIdentity
+        $body = @{
+            serial         = $id.serial
+            hostname       = $id.hostname
+            mac            = $id.mac
+            overallPercent = [int]$Progress.overallPercent
+            phaseKey       = $Progress.phaseKey
+            phaseLabel     = $Progress.phaseLabel
+            phaseIndex     = [int]$Progress.phaseIndex
+            phaseTotal     = [int]$Progress.phaseTotal
+            stepMessage    = $Progress.stepMessage
+            state          = $Progress.state
+            updatedUtc     = $Progress.updatedUtc
+            source         = 'orchestrator'
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri "$InvApi/ingest/deploy-progress" -Method Post `
+            -ContentType 'application/json' -Body $body -TimeoutSec 5 -ErrorAction Stop | Out-Null
+    } catch {}
+}
+
 # Self-update: pull fresh scripts from the deploy share at the start of every run.
 # This lets us hotfix phase scripts (and this orchestrator) without re-imaging.
 # Silently skipped if the share is unreachable.
@@ -149,6 +203,7 @@ function Write-ProgressJson {
             $tmp = "$ProgressFile.tmp"
             [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
             Move-Item $tmp $ProgressFile -Force -ErrorAction Stop
+            Send-ProgressToServer -Progress $obj
             return
         } catch {
             Start-Sleep -Milliseconds 150
