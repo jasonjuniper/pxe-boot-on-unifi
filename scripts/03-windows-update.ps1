@@ -72,6 +72,99 @@ function Report-WU {
     } catch {}
 }
 
+# ---- Failure tracking + loop guard ------------------------------------------
+# A single update that fails every round would otherwise reboot-loop the machine
+# forever (exit 3010 each round -> reboot -> same failure -> 3010 ...).  We track
+# per-update fail counts across rounds in wu-failures.json and, once an update has
+# failed >= $MaxFailPerUpdate rounds, SKIP it (exclude from the install set) so the
+# phase can finish the other updates and reach 'done'.  We also cap total rounds
+# ($MaxRounds) and stop rebooting when a round installs 0 new updates with only
+# failing/skipped ones left ("stall").  In all those cases imaging COMPLETES with a
+# clearly-flagged warning instead of looping.  ASCII-safe, idempotent.
+$MaxFailPerUpdate = 3      # skip an update after it has failed this many rounds
+$MaxRounds        = 12     # absolute backstop on Windows Update rounds
+$FailFile         = 'C:\ProgramData\JuniperSetup\wu-failures.json'
+
+# Load the persisted { "<id>": { kb=..., title=..., hresult=..., count=N } } map.
+function Get-WuFailures {
+    try {
+        if (Test-Path $FailFile) {
+            $raw = Get-Content $FailFile -Raw -ErrorAction Stop
+            if ($raw -and $raw.Trim()) {
+                $o = $raw | ConvertFrom-Json
+                $h = @{}
+                foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value }
+                return $h
+            }
+        }
+    } catch {}
+    return @{}
+}
+
+# Persist the fail map atomically (.tmp + move). Best-effort.
+function Save-WuFailures {
+    param([hashtable]$Map)
+    try {
+        $json = ($Map | ConvertTo-Json -Depth 5 -Compress)
+        $tmp  = "$FailFile.tmp"
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item $tmp $FailFile -Force -ErrorAction Stop
+    } catch {}
+}
+
+# Stable per-update key: prefer the WUA UpdateID (GUID), else the KB, else title.
+function Get-UpdateKey {
+    param($Update)
+    try { if ($Update.Identity -and $Update.Identity.UpdateID) { return "$($Update.Identity.UpdateID)" } } catch {}
+    try { if ($Update.KBArticleIDs -and $Update.KBArticleIDs.Count -gt 0) { return "KB$($Update.KBArticleIDs.Item(0))" } } catch {}
+    return "$($Update.Title)"
+}
+
+# Bare KB label ("KB1234567" or "") for messages/summaries.
+function Get-KbBare {
+    param($Update)
+    try { if ($Update.KBArticleIDs -and $Update.KBArticleIDs.Count -gt 0) { return "KB$($Update.KBArticleIDs.Item(0))" } } catch {}
+    return ''
+}
+
+# Best-effort upload of the WU phase log + a concise failure summary to the
+# inventory server (/ingest/deploy-log).  status='error' so the Imaging tab flags
+# the card red and a tech can read which KBs failed + HResults from /deploy/status
+# WITHOUT reaching the machine.  Mirrors orchestrator.ps1 Send-PhaseLog (serial ->
+# mac -> hostname resolve via Get-ProgIdentity).  Never throws.
+function Send-WuFailureLog {
+    param([string]$Summary = '', [string]$Status = 'error')
+    try {
+        $invApi  = $Script:ProgInvApi; if (-not $invApi) { $invApi = 'http://192.168.5.141:8080' }
+        $logPath = 'C:\ProgramData\JuniperSetup\logs\windows-update.log'
+        $logText = ''
+        if (Test-Path $logPath) {
+            $bytes = [IO.File]::ReadAllBytes($logPath)
+            $cap   = 480 * 1024
+            if ($bytes.Length -gt $cap) {
+                $tail    = $bytes[($bytes.Length - $cap)..($bytes.Length - 1)]
+                $logText = "...[truncated to last 480 KB]...`r`n" + [Text.Encoding]::UTF8.GetString($tail)
+            } else {
+                $logText = [Text.Encoding]::UTF8.GetString($bytes)
+            }
+        }
+        if ($Summary) { $logText = "===== WINDOWS UPDATE FAILURE SUMMARY =====`r`n$Summary`r`n==========================================`r`n`r`n" + $logText }
+        $id = $null
+        try { if (Get-Command Get-ProgIdentity -ErrorAction SilentlyContinue) { $id = Get-ProgIdentity } } catch {}
+        $body = @{
+            serial    = if ($id) { $id.serial }   else { $null }
+            hostname  = if ($id) { $id.hostname } else { $env:COMPUTERNAME }
+            mac       = if ($id) { $id.mac }      else { $null }
+            phase_key = 'windows-update'
+            status    = $Status
+            log_text  = $logText
+            ts        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri "$invApi/ingest/deploy-log" -Method Post `
+            -ContentType 'application/json' -Body $body -TimeoutSec 8 -ErrorAction Stop | Out-Null
+    } catch {}
+}
+
 Report-WU -RoundFraction 0.02 -Step "Round $Round - preparing Windows Update..."
 
 # ---- Register Microsoft Update + enable driver/optional updates -------------
@@ -175,12 +268,41 @@ if ($DryRun) {
     exit 0
 }
 
-# ---- Accept EULAs -----------------------------------------------------------
+# ---- Load persisted per-update failure history ------------------------------
+# { "<updateKey>": { kb, title, hresult, count } } - count = rounds this update
+# has failed.  Used to (a) skip updates that have failed >= $MaxFailPerUpdate
+# rounds and (b) build the at-phase-end failure summary.
+$failMap = Get-WuFailures
+
+# ---- Partition this round's pending updates into install-set vs skip-set -----
+# An update whose persisted fail count has reached $MaxFailPerUpdate is EXCLUDED
+# from the install collection this round (and every later round) so it can never
+# reboot-loop the machine.  We just don't add it - no decline API is called.
+$toInstall = New-Object System.Collections.ArrayList
+$skipNow   = New-Object System.Collections.ArrayList
 for ($i = 0; $i -lt $count; $i++) {
-    $u = $updates.Item($i)
-    if (-not $u.EulaAccepted) {
-        try { $u.AcceptEula() } catch {}
+    $u   = $updates.Item($i)
+    $key = Get-UpdateKey -Update $u
+    $fc  = 0
+    if ($failMap.ContainsKey($key)) { try { $fc = [int]$failMap[$key].count } catch { $fc = 0 } }
+    if ($fc -ge $MaxFailPerUpdate) {
+        [void]$skipNow.Add([pscustomobject]@{ Update = $u; Key = $key; Kb = (Get-KbBare -Update $u); FailCount = $fc })
+    } else {
+        [void]$toInstall.Add([pscustomobject]@{ Update = $u; Key = $key; Kb = (Get-KbBare -Update $u) })
     }
+}
+
+foreach ($s in $skipNow) {
+    $kbTxt = if ($s.Kb) { $s.Kb } else { $s.Key }
+    Write-Log "  SKIPPING $kbTxt (failed $($s.FailCount)x in prior rounds) - excluded from install set" -Level WARN
+    Report-WU -RoundFraction 0.12 -Step ("Skipping update {0} (failed {1}x) - continuing" -f $kbTxt, $s.FailCount) -State 'warning'
+}
+
+$installCount = $toInstall.Count
+
+# ---- Accept EULAs (install-set only) ----------------------------------------
+foreach ($item in $toInstall) {
+    if (-not $item.Update.EulaAccepted) { try { $item.Update.AcceptEula() } catch {} }
 }
 
 # Short KB label for a step message: "(KB1234567)" if present, else "".
@@ -197,25 +319,33 @@ function Get-KbLabel {
 # ---- Install ONE update at a time so progress is per-item -------------------
 # Installing the whole collection in a single .Install() call gives no per-item
 # feedback. Iterating one-at-a-time lets us report "Round R - installing X of Y:
-# <Title> (<KB>)" BEFORE each item with a moving sub-percent.  WUA still handles
-# downloading lazily during install, so download progress is folded in.  A reboot
-# requirement on ANY item ends the round (rest install on the next reboot's round).
-Write-Log "Installing $count update(s) one at a time (orchestrator handles reboot)..."
+# <Title> (<KB>)" BEFORE each item AND the RESULT after each (success/fail with
+# KB + HResult).  WUA still handles downloading lazily during install, so download
+# progress is folded in.  A reboot requirement on ANY item ends the round.
+Write-Log "Installing $installCount update(s) one at a time ($($skipNow.Count) skipped; orchestrator handles reboot)..."
 $succeeded = 0; $failed = 0; $rebootNeeded = $false; $anyAborted = $false
 $rcNames = @{0='NotStarted';1='InProgress';2='Succeeded';3='SucceededWithErrors';4='Failed';5='Aborted'}
+# Per-round record of which updates failed THIS round (keyed by update key) so we
+# can increment the persisted fail map exactly once per update per round.
+$failedThisRound = @{}
+$lastFailKb = ''; $lastFailHr = ''
 
-for ($i = 0; $i -lt $count; $i++) {
-    $u     = $updates.Item($i)
+for ($i = 0; $i -lt $installCount; $i++) {
+    $item  = $toInstall[$i]
+    $u     = $item.Update
     $title = "$($u.Title)"
+    $key   = $item.Key
+    $kbBare = $item.Kb
     $kb    = Get-KbLabel -Update $u
     $short = if ($title.Length -gt 70) { $title.Substring(0,67) + '...' } else { $title }
 
     # Sub-percent across the install span (0.15..0.95 of this round's slice),
     # scaled by item index so the bar creeps forward as each update completes.
-    $frac = 0.15 + (0.80 * ($i / [double]$count))
-    Report-WU -RoundFraction $frac -Step ("Round {0} - installing {1} of {2}: {3} {4}" -f $Round, ($i+1), $count, $short, $kb).Trim()
-    Write-Log "  [$($i+1)/$count] Installing: $title $kb"
+    $frac = 0.15 + (0.80 * ($i / [double]$installCount))
+    Report-WU -RoundFraction $frac -Step ("Round {0} - installing {1} of {2}: {3} {4}" -f $Round, ($i+1), $installCount, $short, $kb).Trim()
+    Write-Log "  [$($i+1)/$installCount] Installing: $title $kb"
 
+    $thisFailed = $false; $thisHr = ''
     try {
         # Single-item collection for download + install of just this update.
         $one = New-Object -ComObject Microsoft.Update.UpdateColl
@@ -236,30 +366,100 @@ for ($i = 0; $i -lt $count; $i++) {
         $ir = $inst.Install()
 
         $rc = [int]$ir.ResultCode
+        $hresultHex = '0x{0:X8}' -f ([int64]$ir.HResult -band 0xFFFFFFFF)
+        $urName = if ($rcNames.ContainsKey($rc)) { $rcNames[$rc] } else { 'Unknown' }
+        # ResultCode 2 = Succeeded.  4 (Failed) / 5 (Aborted) = hard failure.
+        # 3 (SucceededWithErrors) = soft failure - treat as failed so it is retried
+        # / eventually skipped rather than silently counted as success.
         if ($rc -eq 2) {
             $succeeded++
+            Write-Log "       OK  $kbBare ($urName)"
         } else {
             $failed++
-            $hresultHex = '0x{0:X8}' -f ([int64]$ir.HResult -band 0xFFFFFFFF)
-            $urName = if ($rcNames.ContainsKey($rc)) { $rcNames[$rc] } else { 'Unknown' }
-            Write-Log "       FAIL code=$rc ($urName) HResult=$hresultHex" -Level WARN
+            $thisFailed = $true; $thisHr = $hresultHex
+            Write-Log "       FAIL code=$rc ($urName) $kbBare HResult=$hresultHex" -Level WARN
             if ($rc -eq 5) { $anyAborted = $true }
         }
         if ($ir.RebootRequired) { $rebootNeeded = $true }
     } catch {
         $failed++
-        Write-Log "       install exception: $_" -Level WARN
+        $thisFailed = $true; $thisHr = 'exception'
+        Write-Log "       install exception ($kbBare): $_" -Level WARN
+    }
+
+    if ($thisFailed) {
+        $failedThisRound[$key] = [pscustomobject]@{ kb = $kbBare; title = $title; hresult = $thisHr }
+        $lastFailKb = if ($kbBare) { $kbBare } else { $key }
+        $lastFailHr = $thisHr
+    }
+
+    # Per-round running tally surfaced live: "Round R: installed N, FAILED M
+    # (last: KB.... HResult)".  Always carries the failing KB + HResult.
+    if ($failed -gt 0) {
+        $tally = ("Round {0}: installed {1}, FAILED {2} (last: {3} {4})" -f $Round, $succeeded, $failed, $lastFailKb, $lastFailHr)
+        Report-WU -RoundFraction $frac -Step $tally -State 'warning'
+    } else {
+        Report-WU -RoundFraction $frac -Step ("Round {0}: installed {1} of {2} OK" -f $Round, $succeeded, $installCount)
     }
 
     # If a reboot is pending, stop installing further items this round - they
     # will install on the next reboot's round (overallPercent floor keeps rising).
     if ($rebootNeeded) {
-        Write-Log "  Reboot required after [$($i+1)/$count] - deferring remaining to next round"
+        Write-Log "  Reboot required after [$($i+1)/$installCount] - deferring remaining to next round"
         break
     }
 }
 
-Write-Log "Round $Round install summary: $succeeded succeeded, $failed failed (of $count attempted)"
+# ---- Persist this round's failures (increment counts) -----------------------
+foreach ($k in $failedThisRound.Keys) {
+    $info = $failedThisRound[$k]
+    if ($failMap.ContainsKey($k)) {
+        $prev = 0; try { $prev = [int]$failMap[$k].count } catch { $prev = 0 }
+        $failMap[$k] = [pscustomobject]@{ kb = $info.kb; title = $info.title; hresult = $info.hresult; count = ($prev + 1) }
+    } else {
+        $failMap[$k] = [pscustomobject]@{ kb = $info.kb; title = $info.title; hresult = $info.hresult; count = 1 }
+    }
+}
+Save-WuFailures -Map $failMap
+
+Write-Log "Round $Round install summary: $succeeded succeeded, $failed failed, $($skipNow.Count) skipped (of $count pending)"
+
+# ---- Build a failure summary string (KB + HResult per persistently-failed) --
+function Get-FailureSummary {
+    $lines = @()
+    foreach ($k in $failMap.Keys) {
+        $e = $failMap[$k]
+        $kbT = if ($e.kb) { $e.kb } else { $k }
+        $lines += ("{0} failed {1}x (HResult {2})" -f $kbT, $e.count, $e.hresult)
+    }
+    return ($lines -join '; ')
+}
+
+# List of KBs we are skipping/giving up on (for the flagged completion message).
+function Get-SkippedKbList {
+    $kbs = @()
+    foreach ($k in $failMap.Keys) {
+        if ([int]$failMap[$k].count -ge $MaxFailPerUpdate) {
+            $kbs += $(if ($failMap[$k].kb) { $failMap[$k].kb } else { $k })
+        }
+    }
+    return $kbs
+}
+
+# Whenever any update failed this round, upload the WU log + summary flagged red.
+if ($failed -gt 0) {
+    Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
+}
+
+# ---- Decide next action -----------------------------------------------------
+# A "stall" = this round installed 0 NEW updates yet updates are still pending.
+# That means every remaining update is failing or already at the skip threshold,
+# so rebooting again would loop forever.  Likewise once we hit $MaxRounds we stop.
+$pendingAfter = -1
+try { $pendingAfter = $searcher.Search("IsInstalled=0").Updates.Count } catch {}
+
+$stall   = ($succeeded -eq 0) -and ($pendingAfter -ne 0)
+$cappedOut = ($Round -ge $MaxRounds)
 
 if ($rebootNeeded) {
     Report-WU -RoundFraction 0.98 -Step "Round $Round - updates installed, restarting to continue..." -State 'rebooting'
@@ -268,39 +468,86 @@ if ($rebootNeeded) {
     exit 3010
 }
 
+if ($cappedOut -and $pendingAfter -ne 0) {
+    # Backstop: too many rounds.  Stop rebooting for updates; finish the phase with
+    # a flagged warning so imaging proceeds rather than looping indefinitely.
+    $skipped = Get-SkippedKbList
+    $msg = if ($skipped.Count -gt 0) {
+        ("Windows Update stopped after {0} rounds - {1} update(s) never installed: {2} (see log)" -f $MaxRounds, $skipped.Count, ($skipped -join ', '))
+    } else {
+        ("Windows Update stopped after {0} rounds with updates still pending (see log)" -f $MaxRounds)
+    }
+    Report-WU -RoundFraction 1.0 -Step $msg -State 'warning'
+    Write-Log $msg -Level WARN
+    Send-WuFailureLog -Summary ((Get-FailureSummary) + " | ROUND CAP REACHED") -Status 'error'
+    Write-PhaseSummary -ExitCode 0 -Notes "round cap ($MaxRounds) reached; $($skipped.Count) update(s) skipped"
+    exit 0
+}
+
+if ($stall) {
+    # No update succeeded this round and updates are still pending - they are all
+    # failing or being skipped.  Treat the phase as complete-with-failures: do NOT
+    # reboot again (it would loop).  Flag clearly and let the orchestrator advance.
+    $failedKbs = Get-SkippedKbList
+    if ($failedKbs.Count -eq 0) {
+        # Nothing has yet crossed the skip threshold, but this round still made no
+        # progress; list whatever has failed at least once so the tech sees it.
+        foreach ($k in $failMap.Keys) { $failedKbs += $(if ($failMap[$k].kb) { $failMap[$k].kb } else { $k }) }
+    }
+    $n = $failedKbs.Count
+    $msg = ("Windows Update finished with {0} failed update(s): {1} (see log)" -f $n, ($failedKbs -join ', '))
+    Report-WU -RoundFraction 1.0 -Step $msg -State 'warning'
+    Write-Log "$msg - no progress this round, stopping reboots so imaging completes" -Level WARN
+    Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
+    Write-PhaseSummary -ExitCode 0 -Notes "stall: 0 installed, $n failing update(s) skipped"
+    exit 0
+}
+
 if ($anyAborted -and $succeeded -eq 0) {
     # Everything aborted with nothing installed - truly fatal, no point rebooting.
     Report-WU -RoundFraction 0.98 -Step 'Windows Update install aborted' -State 'error'
-    Write-Log "Update install aborted (0/$count succeeded)" -Level ERROR
+    Write-Log "Update install aborted (0/$installCount succeeded)" -Level ERROR
+    Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
     Write-PhaseSummary -ExitCode 1 -Notes 'Install aborted'
     exit 1
 }
 
-if ($failed -gt 0) {
-    # Some updates failed but no reboot was flagged - Windows Update often needs
-    # multiple passes. Reboot and retry; the search next round skips installed
-    # ones and retries the rest.
-    Report-WU -RoundFraction 0.98 -Step "Round $Round - some updates need a retry, restarting..." -State 'rebooting'
-    Write-Log "Some updates failed ($succeeded/$count succeeded) - rebooting to retry" -Level WARN
-    Write-PhaseSummary -ExitCode 3010 -Notes "$succeeded/$count OK, $failed failed, retrying after reboot" -Reboot
+if ($failed -gt 0 -and $succeeded -gt 0) {
+    # Some updates failed but at least one succeeded (progress made) and no reboot
+    # was flagged - WU often needs multiple passes.  Reboot and retry; failing ones
+    # accrue fail counts and get skipped once they hit $MaxFailPerUpdate.
+    Report-WU -RoundFraction 0.98 -Step ("Round {0}: installed {1}, FAILED {2} - retrying after restart..." -f $Round, $succeeded, $failed) -State 'rebooting'
+    Write-Log "Some updates failed ($succeeded OK, $failed failed) - rebooting to retry" -Level WARN
+    Write-PhaseSummary -ExitCode 3010 -Notes "$succeeded OK, $failed failed, retrying after reboot" -Reboot
     exit 3010
 }
 
-# Installed but no reboot flag - check for chained prereqs (new updates that
-# only became visible after this batch installed).
-$remaining = 0
-try {
-    $remaining = $searcher.Search("IsInstalled=0").Updates.Count
-} catch {}
-
-if ($remaining -gt 0) {
+# Installed (or nothing left to install) with no reboot flag - check for chained
+# prereqs (new updates that only became visible after this batch installed).
+if ($pendingAfter -gt 0) {
     Report-WU -RoundFraction 0.98 -Step "Round $Round - more updates available, restarting..." -State 'rebooting'
-    Write-Log "$count installed, $remaining more pending - signaling reboot to re-run"
-    Write-PhaseSummary -ExitCode 3010 -Notes "$count installed, $remaining remaining" -Reboot
+    Write-Log "$succeeded installed, $pendingAfter more pending - signaling reboot to re-run"
+    Write-PhaseSummary -ExitCode 3010 -Notes "$succeeded installed, $pendingAfter remaining" -Reboot
     exit 3010
+}
+
+# ---- Clean completion (no pending updates left) -----------------------------
+# If anything ever failed across rounds, surface it on completion too (warning +
+# log upload) so the tech sees it even though imaging finished successfully.
+$everFailed = ($failMap.Keys.Count -gt 0)
+if ($everFailed) {
+    $skipped = Get-SkippedKbList
+    if ($skipped.Count -gt 0) {
+        $msg = ("Windows Update complete - {0} update(s) skipped after repeated failure: {1} (see log)" -f $skipped.Count, ($skipped -join ', '))
+        Report-WU -RoundFraction 1.0 -Step $msg -State 'warning'
+        Write-Log $msg -Level WARN
+        Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
+        Write-PhaseSummary -ExitCode 0 -Notes "complete with $($skipped.Count) skipped update(s)"
+        exit 0
+    }
 }
 
 Report-WU -RoundFraction 1.0 -Step 'Windows updates complete'
-Write-Log "$count update(s) installed successfully"
-Write-PhaseSummary -ExitCode 0 -Notes "$count updates installed"
+Write-Log "Windows updates complete ($succeeded installed this round)"
+Write-PhaseSummary -ExitCode 0 -Notes "$succeeded updates installed"
 exit 0

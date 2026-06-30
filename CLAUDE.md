@@ -181,6 +181,53 @@ agent are invoked from within `04`.)
   "Wi-Fi join during imaging" below.
 - `07-remove-bloatware.ps1` - removes unwanted Windows features and apps
 
+### Windows Update failure surfacing + loop guard
+
+`03-windows-update.ps1` installs updates one-at-a-time across many reboot "rounds"
+(round number from `phase.json`). On top of the granular per-update progress it now
+makes update FAILURES impossible to miss and guarantees a repeatedly-failing update
+can never trap a machine in an endless reboot loop. All best-effort - a failing
+update is skipped/flagged so imaging COMPLETES, never aborts.
+
+- **Per-update RESULT reporting.** After each install it sets `stepMessage` to a
+  running per-round tally, e.g. `"Round 3: installed 12, FAILED 1 (last: KB5034123
+  0x80240022)"` with `state=warning` whenever anything failed this round; a clean
+  item shows `"Round 3: installed N of M OK"`. The failing KB + HResult are always
+  in the message. Failed = WUA `ResultCode` 4 (Failed) / 5 (Aborted); 3
+  (SucceededWithErrors) is treated as a SOFT failure (counted as failed) so it is
+  retried/eventually skipped rather than silently passed.
+- **Per-update failure history** persists in
+  `C:\ProgramData\JuniperSetup\wu-failures.json`
+  (`{ "<updateKey>": { kb, title, hresult, count } }`, key = WUA UpdateID GUID, else
+  KB, else title). Each round increments `count` for updates that failed that round.
+  Bootstrap (`orchestrator.ps1`) deletes this file at the start of a fresh image so
+  a prior image's skip counts never carry over.
+- **Skip-after-3 loop guard.** An update whose `count >= 3` is EXCLUDED from the
+  install collection on every subsequent round (no decline API is called - it is
+  just not added), surfaced as `"Skipping update KB... (failed 3x) - continuing"`.
+  This lets the phase finish the OTHER updates and reach `done`.
+- **Stall detection.** If a round installs **0** new updates yet updates are still
+  pending (everything left is failing/being-skipped), the phase is treated as
+  complete-with-failures: it STOPS returning 3010 (no more pointless reboots),
+  publishes `state=warning` + `"Windows Update finished with N failed update(s):
+  KB..., KB... (see log)"`, exits **0**, and the orchestrator advances to the next
+  phase. **Round cap** `$MaxRounds=12` is an absolute backstop - after the cap it
+  stops rebooting for updates and moves on with a flagged warning.
+- **WU log upload on failure.** Whenever any update fails (and again at phase end if
+  any failures occurred), `Send-WuFailureLog` uploads the phase log + a concise
+  per-KB/HResult summary to `/ingest/deploy-log` with `status=error`, so the Imaging
+  tab flags the card red and a tech reads exactly which KBs failed + HResults from
+  `/deploy/status` without reaching the machine.
+- **Imaging tab.** `device_provisioning.state` (free-form TEXT) gains a `warning`
+  value rendered distinctly in `deploy_status.html` (amber pill + amber bar + red
+  bold step text; sorts just below `error`). The FAILED stepMessage and the
+  "updated Ns ago" freshness stay visible; the per-card Logs button turns red
+  because an `error` log exists. No migration was needed.
+
+> Only fully verifiable on a real image (a genuinely failing KB). Synthetic
+> `/ingest/deploy-progress` (state=warning) + `/ingest/deploy-log` (status=error)
+> round-trips were verified against `/api/deploy/progress` and the logs API.
+
 ### Wi-Fi join during imaging
 Imaged PCs auto-join the corporate Wi-Fi during post-install.
 - **Source chain:** UniFi controller (read via the Inventory `X-API-Key`,

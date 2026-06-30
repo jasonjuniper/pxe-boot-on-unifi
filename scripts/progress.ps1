@@ -82,7 +82,7 @@ function Publish-Progress {
         [string]$StepMessage = '',
         [int]$PhaseIndex = 1,
         [int]$PhaseTotal = 5,
-        [ValidateSet('running','rebooting','done','error')][string]$State = 'running',
+        [ValidateSet('running','rebooting','done','error','warning')][string]$State = 'running',
         [string]$Source = 'phase'
     )
     $pct = [int]$OverallPercent

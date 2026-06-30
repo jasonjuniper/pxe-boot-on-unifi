@@ -657,6 +657,10 @@ if ($Bootstrap) {
         (Get-Date -Format 'o') | Set-Content "$SetupRoot\.imaging-start" -Encoding ASCII
     }
 
+    # Fresh image: clear the Windows Update per-update failure history so a prior
+    # image's skip counts never carry over (the file persists in ProgramData).
+    try { Remove-Item "$SetupRoot\wu-failures.json" -Force -ErrorAction SilentlyContinue } catch {}
+
     # Keep the machine awake on AC for the whole (multi-reboot) install. Captures the
     # prior AC timeouts first so completion/teardown can restore them. Persistent.
     Disable-SleepOnAc
