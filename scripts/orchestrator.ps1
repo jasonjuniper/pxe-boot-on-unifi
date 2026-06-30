@@ -360,8 +360,10 @@ function Remove-PerUserShell {
 function Set-AutoLogon {
     # Arms autologon for junadmin.  Password comes from the bootstrap API (the
     # same value 04-install-packages sets); never stored in the repo.  We set a
-    # high AutoLogonCount so the kiosk survives many reboots, and re-arm it each run.
-    param([string]$Password, [int]$Count = 999)
+    # very high AutoLogonCount (100000) so the kiosk survives the MANY back-to-back
+    # reboots Windows Update can trigger between orchestrator runs, and we re-arm it
+    # each run anyway.
+    param([string]$Password, [int]$Count = 100000)
     try {
         Set-ItemProperty -Path $WinlogonKey -Name 'AutoAdminLogon'  -Value '1'        -Type String -Force
         Set-ItemProperty -Path $WinlogonKey -Name 'DefaultUserName' -Value $KioskUser -Type String -Force
@@ -377,11 +379,35 @@ function Set-AutoLogon {
 function Reset-AutoLogonCount {
     # Re-arm the count on every boot so a long, many-reboot Windows Update run
     # never exhausts it and drops to the normal login screen mid-provision.
-    param([int]$Count = 999)
+    # Uses the same very high value (100000) as Set-KioskMode so the count cannot
+    # realistically run out during a single imaging job.
+    param([int]$Count = 100000)
     try {
         if ((Get-ItemProperty -Path $WinlogonKey -Name 'AutoAdminLogon' -ErrorAction SilentlyContinue).AutoAdminLogon -eq '1') {
             Set-ItemProperty -Path $WinlogonKey -Name 'AutoLogonCount' -Value $Count -Type DWord -Force
         }
+    } catch {}
+}
+
+function Reassert-KioskArming {
+    # Belt-and-suspenders: re-assert the autologon flags + kiosk Shell on EVERY
+    # orchestrator run (not just bootstrap), so even a stray reboot that did not go
+    # through a clean orchestrator pass re-arms on the next boot.  This does NOT
+    # touch DefaultPassword (the bootstrap-API value already in the registry stays
+    # exactly as-is - never re-read, re-written, or logged).  No-op unless the
+    # kiosk is already armed (AutoAdminLogon=1), so a torn-down machine stays down.
+    try {
+        $aal = (Get-ItemProperty -Path $WinlogonKey -Name 'AutoAdminLogon' -ErrorAction SilentlyContinue).AutoAdminLogon
+        if ($aal -ne '1') { return }
+        # Re-assert the identity + autologon flag (password left untouched).
+        Set-ItemProperty -Path $WinlogonKey -Name 'AutoAdminLogon'   -Value '1'        -Type String -Force
+        Set-ItemProperty -Path $WinlogonKey -Name 'DefaultUserName'  -Value $KioskUser -Type String -Force
+        Set-ItemProperty -Path $WinlogonKey -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String -Force
+        Set-ItemProperty -Path $WinlogonKey -Name 'AutoLogonCount'   -Value 100000     -Type DWord  -Force
+        # Re-assert the kiosk Shell so junadmin always lands on the status screen.
+        $shellCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$SetupRoot\provision-status.ps1`""
+        Set-ItemProperty -Path $WinlogonKey -Name 'Shell' -Value $shellCmd -Type String -Force
+        [void](Set-PerUserShell -ShellCommand $shellCmd)
     } catch {}
 }
 
@@ -407,7 +433,7 @@ function Set-KioskMode {
     # Belt-and-suspenders: per-user shell (no-op if junadmin profile not created yet).
     $okPerUser = Set-PerUserShell -ShellCommand $shellCmd
 
-    $okLogon = Set-AutoLogon -Password $Password -Count 999
+    $okLogon = Set-AutoLogon -Password $Password -Count 100000
     # Hide the "Switch user" / other-user tiles so nobody can sidestep the kiosk.
     try {
         $polKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
@@ -440,6 +466,85 @@ function Remove-KioskMode {
         }
     } catch {}
     Write-Log "Kiosk mode removed - explorer shell + normal logon restored" -MasterOnly
+}
+
+# ---- Power management (keep awake on AC during install) ---------------------
+# Imaging spans many reboots and long unattended waits.  The machine images while
+# plugged in, so we disable AC standby/hibernate/monitor sleep for the WHOLE run.
+# powercfg writes the active scheme persistently, so the settings survive reboots
+# (important - this spans dozens of them).  We snapshot the prior AC timeout
+# minutes to a file at bootstrap so completion/teardown can restore them; if the
+# snapshot is missing/unreadable we restore sane defaults instead.  Battery (DC)
+# settings are left untouched.  All calls best-effort - never abort imaging.
+
+$PowerStateFile = "$SetupRoot\.power-ac-prior.json"
+
+function Get-AcTimeoutMinutes {
+    # Parse 'powercfg /query' for the Current AC Power Setting of a given GUID and
+    # return the value in MINUTES (powercfg reports the index in seconds).  Returns
+    # $null if it can't be read.
+    param([string]$SubGuid, [string]$SettingGuid)
+    try {
+        $out = & powercfg /query SCHEME_CURRENT $SubGuid $SettingGuid 2>$null
+        $line = $out | Where-Object { $_ -match 'Current AC Power Setting Index' } | Select-Object -First 1
+        if ($line -and ($line -match '0x[0-9a-fA-F]+')) {
+            $secs = [Convert]::ToInt64($Matches[0], 16)
+            return [int]([math]::Round($secs / 60))
+        }
+    } catch {}
+    return $null
+}
+
+function Save-PriorAcPower {
+    # Capture current AC standby/hibernate/monitor timeouts (minutes) BEFORE we
+    # change them, so they can be restored on completion.  Idempotent: only writes
+    # the snapshot once (so a re-run after we've already set 0 doesn't capture 0).
+    if (Test-Path $PowerStateFile) { return }
+    $subSleep = 'SUB_SLEEP'; $subVideo = 'SUB_VIDEO'
+    $gStandby   = 'STANDBYIDLE'
+    $gHibernate = 'HIBERNATEIDLE'
+    $gMonitor   = 'VIDEOIDLE'
+    $prior = [ordered]@{
+        standby   = Get-AcTimeoutMinutes -SubGuid $subSleep -SettingGuid $gStandby
+        hibernate = Get-AcTimeoutMinutes -SubGuid $subSleep -SettingGuid $gHibernate
+        monitor   = Get-AcTimeoutMinutes -SubGuid $subVideo -SettingGuid $gMonitor
+        capturedUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    try { ($prior | ConvertTo-Json -Compress) | Set-Content $PowerStateFile -Encoding ASCII -ErrorAction Stop } catch {}
+    Write-Log ("Captured prior AC power timeouts (min): standby={0} hibernate={1} monitor={2}" -f `
+        $prior.standby, $prior.hibernate, $prior.monitor) -MasterOnly
+}
+
+function Disable-SleepOnAc {
+    # Force the machine to stay awake on AC for the whole install (display stays on
+    # so the kiosk status screen remains visible).  Persistent across reboots.
+    try { Save-PriorAcPower } catch {}
+    try { & powercfg /change standby-timeout-ac   0 2>$null } catch {}
+    try { & powercfg /change hibernate-timeout-ac 0 2>$null } catch {}
+    try { & powercfg /change monitor-timeout-ac   0 2>$null } catch {}
+    Write-Log "Sleep disabled on AC (standby/hibernate/monitor timeout-ac = 0) for imaging" -MasterOnly
+}
+
+function Restore-PowerSettings {
+    # Restore AC power timeouts on completion/teardown.  Prefer the captured prior
+    # values; fall back to sane defaults (standby 30, monitor 10, hibernate 0 min)
+    # if the snapshot is missing or unreadable.  Best-effort; battery left alone.
+    $standby = 30; $monitor = 10; $hibernate = 0; $src = 'defaults'
+    try {
+        if (Test-Path $PowerStateFile) {
+            $p = Get-Content $PowerStateFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($null -ne $p.standby)   { $standby   = [int]$p.standby }
+            if ($null -ne $p.hibernate) { $hibernate = [int]$p.hibernate }
+            if ($null -ne $p.monitor)   { $monitor   = [int]$p.monitor }
+            $src = 'captured'
+        }
+    } catch {}
+    try { & powercfg /change standby-timeout-ac   $standby   2>$null } catch {}
+    try { & powercfg /change hibernate-timeout-ac $hibernate 2>$null } catch {}
+    try { & powercfg /change monitor-timeout-ac   $monitor   2>$null } catch {}
+    try { Remove-Item $PowerStateFile -Force -ErrorAction SilentlyContinue } catch {}
+    Write-Log ("Power settings restored from {0} (AC min): standby={1} hibernate={2} monitor={3}" -f `
+        $src, $standby, $hibernate, $monitor) -MasterOnly
 }
 
 # Break-glass / safety timeout.  If imaging has been running absurdly long (a
@@ -544,6 +649,10 @@ if ($Bootstrap) {
         (Get-Date -Format 'o') | Set-Content "$SetupRoot\.imaging-start" -Encoding ASCII
     }
 
+    # Keep the machine awake on AC for the whole (multi-reboot) install. Captures the
+    # prior AC timeouts first so completion/teardown can restore them. Persistent.
+    Disable-SleepOnAc
+
     # Create the JuniperImaging scheduled task (fires on every startup, SYSTEM)
     $action    = New-ScheduledTaskAction `
                     -Execute 'powershell.exe' `
@@ -622,7 +731,16 @@ if ($Bootstrap) {
 
 # Re-arm the autologon count so a long multi-reboot run never falls back to the
 # normal login screen mid-provision.
-Reset-AutoLogonCount -Count 999
+Reset-AutoLogonCount -Count 100000
+
+# Belt-and-suspenders: re-assert AutoAdminLogon + identity + kiosk Shell every run
+# (password left untouched) so even a stray reboot that skipped the orchestrator
+# still auto-logs junadmin into the kiosk on the next boot.
+Reassert-KioskArming
+
+# Re-assert no-sleep-on-AC each run (idempotent; capture is skipped if already
+# snapshotted at bootstrap) in case anything reset the power scheme.
+Disable-SleepOnAc
 
 # Break-glass / safety timeout: if a tech dropped the flag file or imaging has run
 # too long, tear down the kiosk so the machine isn't locked forever, then let the
@@ -630,6 +748,7 @@ Reset-AutoLogonCount -Count 999
 if (Test-BreakGlass) {
     Write-Log "Break-glass / safety timeout triggered - removing kiosk lockout" -Level WARN -MasterOnly
     Remove-KioskMode
+    Restore-PowerSettings
 }
 
 # ---- Main: run current phase ------------------------------------------------
@@ -644,6 +763,7 @@ if ($phase -eq 'done') {
         -PhaseLabel 'Setup complete' -PhaseIndex $Phases.Count -PhaseTotal $Phases.Count `
         -StepMessage 'Almost finished - restarting' -State 'done'
     Remove-KioskMode
+    Restore-PowerSettings
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     # Give the status GUI a moment to show "done" then reboot into a clean login.
     Start-Sleep 6
@@ -693,6 +813,7 @@ if ($exitCode -eq 3010) {
             -PhaseLabel 'Setup complete' -PhaseIndex $Phases.Count -PhaseTotal $Phases.Count `
             -StepMessage 'Almost finished - restarting' -State 'done'
         Remove-KioskMode
+        Restore-PowerSettings
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
         Start-Sleep 6
         Restart-Computer -Force
@@ -727,6 +848,7 @@ if ($exitCode -eq 3010) {
                     -PhaseLabel 'Setup complete' -PhaseIndex $Phases.Count -PhaseTotal $Phases.Count `
                     -StepMessage 'Almost finished - restarting' -State 'done'
                 Remove-KioskMode
+                Restore-PowerSettings
                 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
                 Start-Sleep 6
                 Restart-Computer -Force

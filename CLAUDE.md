@@ -442,14 +442,37 @@ a user could log in mid-install and see no indication that setup was still runni
   `explorer.exe`. Auto-logged-in `junadmin` therefore sees ONLY the status screen -
   no desktop, no Start menu, no taskbar = locked out. Both the system-wide
   `HKLM\...\Winlogon\Shell` (reliable on first logon) and the per-user shell are set.
-  Fast user switching is hidden. `AutoLogonCount` is set high and **re-armed on every
-  orchestrator run** so a long multi-reboot Windows Update pass never drops to the
-  normal login screen mid-provision.
+  Fast user switching is hidden. `AutoLogonCount` is set to a **very high value
+  (100000)** in BOTH `Set-KioskMode`/`Set-AutoLogon` and `Reset-AutoLogonCount`, and
+  is **re-armed on every orchestrator run**, so the MANY rapid back-to-back reboots
+  Windows Update triggers between orchestrator runs can never exhaust the count and
+  drop the machine to the normal login screen mid-provision. As belt-and-suspenders,
+  `Reassert-KioskArming` runs every orchestrator pass (not only bootstrap) and
+  re-asserts `AutoAdminLogon=1` + `DefaultUserName`/`DefaultDomainName` + the kiosk
+  Shell (provision-status.ps1) - **without touching `DefaultPassword`** (the
+  bootstrap-API value is never re-read or logged) - so even a stray reboot that
+  skipped the orchestrator re-arms junadmin straight into the kiosk on the next boot.
+  Net: from the first post-OOBE boot until `done` (or a stop), every boot auto-logs
+  junadmin into the fullscreen status screen - never a usable desktop OR a login prompt.
+- **No sleep during install**: at `-Bootstrap` (and idempotently re-asserted each run)
+  the orchestrator forces the machine to stay awake **on AC** for the whole multi-reboot
+  install via `powercfg /change standby-timeout-ac 0`, `hibernate-timeout-ac 0`, and
+  `monitor-timeout-ac 0` (display kept on so the kiosk screen stays visible). `powercfg`
+  persists the active scheme across reboots, which matters since imaging spans dozens of
+  them. Machines image plugged in, so only AC settings are touched; battery/DC is left
+  alone. Before changing them, `Save-PriorAcPower` snapshots the prior AC standby/
+  hibernate/monitor minutes (parsed from `powercfg /query`) to
+  `C:\ProgramData\JuniperSetup\.power-ac-prior.json` so they can be restored. All power
+  calls are best-effort (try/catch) and never abort imaging.
 - **Teardown on completion**: when the orchestrator reaches the `done` branch it sets
   `progress.json` state=`done`/100%, restores the Shell to `explorer.exe`, clears
   `AutoAdminLogon`/`DefaultPassword`/`AutoLogonCount`/`DefaultUserName`, un-hides fast
-  user switching, removes the scheduled task, then reboots. **Next boot = clean normal
-  login screen** for the end user. Teardown is idempotent.
+  user switching, **restores power settings** via `Restore-PowerSettings` (captured
+  prior AC values, or sane defaults standby 30 / monitor 10 / hibernate 0 min if the
+  snapshot is missing/unreadable), removes the scheduled task, then reboots. The same
+  `Remove-KioskMode` + `Restore-PowerSettings` pair also runs on the break-glass/safety-
+  timeout teardown path. **Next boot = clean normal login screen** for the end user.
+  Teardown is idempotent.
 
 ### progress.json schema (`C:\ProgramData\JuniperSetup\progress.json`, UTF8 no BOM)
 | Field | Type | Meaning |
