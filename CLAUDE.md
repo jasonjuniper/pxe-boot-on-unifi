@@ -83,9 +83,44 @@ The correct stack for a Windows 11 imaging server is:
 ## Script run order (per target PC, post-install)
 
 **WinPE phase** - `deploy.ps1` handles:
-partition -> DISM apply WIM -> unattend inject -> bcdboot
+resolve machine + name/OS pre-fill (see below) -> partition -> DISM apply WIM
+-> unattend inject -> bcdboot
 -> offline driver injection (DISM /Add-Driver from manifest.json or live API)
--> pre-register machine in inventory -> reboot
+-> pre-register machine in inventory (pushes chosen name + OS back) -> reboot
+
+### Name/OS inventory round-trip (10s pre-fill)
+
+Before applying the image, `deploy.ps1` looks this machine up in inventory and
+pre-fills the computer name and OS edition from its last record, then pushes the
+operator's final choices back so the next re-image remembers them.
+
+- **Resolution** (mirrors the server's own dedupe order): exact BIOS/chassis
+  serial first (`GET /api/devices?q=<serial>`, filtered to `serial_number` exact),
+  then primary/any MAC (`?q=<mac>`, filtered to `mac_address` exact). Junk serials
+  ("to be filled", etc.) are skipped so it falls straight to MAC. Helper:
+  `Resolve-PriorDevice`. Defaults: name = inventory `hostname`; OS edition = UEFI
+  MSDM license (preferred, since the firmware key is authoritative) else inventory
+  `os_caption`/`os` mapped to a WIM (`*11*Home*`->win11-home, `*11*Pro*`->win11-pro,
+  `*10*`->win10-pro).
+- **10s per-field countdown** (two INDEPENDENT fields, helper `Invoke-FieldCountdown`,
+  modeled on the `[Console]::KeyAvailable`/`ReadKey` loop proven in
+  `winpe/deploy-boot.ps1`): the Name field shows `Computer name [<lastName>]` and
+  auto-accepts after 10s of no keypress; pressing any key stops the countdown and
+  opens a validated `Read-Host` (Enter keeps the default). The OS field then runs
+  its own separate 10s countdown defaulting to the resolved edition; a keypress
+  opens the existing edition menu (Enter keeps the default). No default on a field
+  -> today's mandatory prompt/menu for that field only.
+- **Push back**: the existing pre-register step posts the final
+  `hostname` + `os_caption` ("Microsoft <edition>") + ethernet/wireless MACs +
+  serial to `POST /ingest/endpoint` (auth-free, WinPE-reachable). Best-effort,
+  wrapped in try/catch - never blocks imaging if the server is down. No new endpoint
+  was needed; `/ingest/endpoint` already resolves serial->MAC->hostname and upserts
+  `hostname`/`os`/`os_caption`, so a re-image re-resolves to the same record.
+- **Validate on next (re)image**: a known machine shows "Inventory match found"
+  with the resolved-via source, the name default appears and auto-accepts at 10s
+  (or a keypress lets you retype), the OS default appears and auto-accepts at 10s
+  (or a keypress shows the menu), and after imaging the device record in inventory
+  reflects the chosen name + OS. Brand-new hardware just prompts as before.
 
 **After first logon** (via `FirstLogonCommands` in unattend):
 `03` -> `03b` -> `04` -> `07` (05 and 06 can be added as needed)
