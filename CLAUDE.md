@@ -88,6 +88,46 @@ resolve machine + name/OS pre-fill (see below) -> partition -> DISM apply WIM
 -> offline driver injection (DISM /Add-Driver from manifest.json or live API)
 -> pre-register machine in inventory (pushes chosen name + OS back) -> reboot
 
+### WinPE serial via SMBIOS + OEM edition detection (WinPE limits)
+
+Two hardware-identity reads in `deploy.ps1` are hardened so brand-new (never-inventoried)
+machines pre-fill correctly. **WinPE reality, verified on ENG-2 (Lenovo P14s Gen 5) and
+from the WinPE build (`01c-build-winpe.ps1` adds `WinPE-WMI` + `WinPE-NetFX`):**
+
+- **Serial (`Get-SmbiosHardwareSerial`)** - reads the raw SMBIOS table via
+  `Get-WmiObject -Namespace root\wmi -Class MSSmBios_RawSMBiosTables` (`.SMBiosData`)
+  and parses the **Type 1** (System Information) Serial Number string (string-index at
+  formatted-area offset `0x07`), with **Type 3** (Chassis) as a secondary. This needs
+  **no `Add-Type`/csc** (WinPE-WMI provides the provider). The high-level WMI classes
+  (`Win32_BIOS` / `Win32_SystemEnclosure`) return junk on **Lenovo ThinkPads in WinPE**
+  (Dell works); the SMBIOS Type 1 serial is correct. Precedence: existing
+  `Win32_BIOS`/`Enclosure`/`CSProduct` values first if valid, else the SMBIOS-parsed
+  serial; same placeholder/`$_bogus` filter applies. **Validated:** on ENG-2 the parsed
+  Type 1 serial (`PF5XFBL6`) == `(Get-CimInstance Win32_BIOS).SerialNumber` exactly.
+- **OEM edition (`Get-OemMsdmInfo` + tiered default)** - the exact edition NAME is only
+  computed by `SoftwareLicensingService`, which **does not exist in WinPE**; the MSDM
+  ACPI table carries the product KEY, not the edition name (key->edition needs
+  pkeyconfig). So the precise edition is **not readable in WinPE**. What we do:
+  - Detect an embedded OEM/MSDM license via P/Invoke
+    `GetSystemFirmwareTable('ACPI','MSDM')`. **HONEST LIMIT:** this needs `Add-Type`,
+    which needs `csc.exe`; WinPE-NetFX ships only the .NET *runtime*, **not the
+    compiler**, so `Add-Type` generally **fails in WinPE** and MSDM detection returns
+    `Present=$false` there (it works in full Windows - verified on ENG-2: Add-Type
+    compiles, MSDM present, 25-char key extractable). There is no `root\wmi` class that
+    exposes an arbitrary ACPI table by signature, so MSDM cannot be read without P/Invoke.
+    The product key is held in memory only - **never logged** to repo or shared logs.
+  - **Edition-default tiers** (`$defaultOsKey`): (a) a precise `SoftwareLicensingService`
+    edition name (`$slsEditionResolved`, full Windows only) wins over all; (b) inventory's
+    last `os_key` from `Resolve-PriorDevice` wins for re-images over a mere business-SKU
+    guess; (c) for new hardware with an OEM license present, default to **Pro** when the
+    model is a Juniper business SKU (Lenovo ThinkPad/ThinkStation/`^21`/`^20`, Dell
+    Precision/Latitude/OptiPlex, HP EliteBook/ProBook/ZBook/EliteDesk) - surfaced as
+    "OEM digital license detected (defaulting to Windows 11 Pro for business SKU)"; (d)
+    else fall through to the operator menu.
+
+Both reads are wrapped in try/catch and best-effort - a missing provider or failed
+compile never breaks imaging; the existing WMI/SLS reads remain as fallbacks.
+
 ### Name/OS inventory round-trip (10s pre-fill)
 
 Before applying the image, `deploy.ps1` looks this machine up in inventory and

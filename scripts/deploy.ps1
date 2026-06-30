@@ -162,6 +162,102 @@ function Get-NormalizedModelKey([string]$Manufacturer, [string]$Model) {
     return $key.ToLower()
 }
 
+function Get-SmbiosHardwareSerial {
+    # WinPE-reliable serial read that does NOT depend on the high-level WMI
+    # classes (Win32_BIOS / Win32_SystemEnclosure return junk on Lenovo
+    # ThinkPads in WinPE). Reads the raw SMBIOS table via root\wmi
+    # MSSmBios_RawSMBiosTables (provided by WinPE-WMI - no Add-Type/csc needed,
+    # which matters because WinPE-NetFX ships the runtime but NOT the C#
+    # compiler, so Add-Type cannot compile in WinPE) and parses the Type 1
+    # (System Information) Serial Number string, with Type 3 (Chassis) as a
+    # secondary. Validated on ENG-2 (Lenovo P14s Gen 5): the parsed Type 1
+    # serial == (Get-CimInstance Win32_BIOS).SerialNumber exactly.
+    # Returns a hashtable @{ Type1=<string>; Type3=<string> }; values $null on
+    # any failure. Never throws - wrapped so a missing provider can't break imaging.
+    $out = @{ Type1 = $null; Type3 = $null }
+    try {
+        $raw = (Get-WmiObject -Namespace root\wmi -Class MSSmBios_RawSMBiosTables -ErrorAction Stop).SMBiosData
+        if (-not $raw -or $raw.Length -lt 4) { return $out }
+        $Data = [byte[]]$raw
+        $len = $Data.Length
+        $i = 0
+        while ($i + 4 -le $len) {
+            $type = $Data[$i]
+            $flen = $Data[$i + 1]
+            if ($flen -lt 4) { break }
+            $formattedEnd = $i + $flen
+            if ($formattedEnd -gt $len) { break }
+            # Walk the null-separated string set after the formatted area
+            # (double-null terminates the structure's string table).
+            $strings = New-Object System.Collections.Generic.List[string]
+            $p = $formattedEnd
+            if ($p + 1 -lt $len -and $Data[$p] -eq 0 -and $Data[$p + 1] -eq 0) {
+                $p += 2  # no strings present
+            } else {
+                while ($p -lt $len) {
+                    $sb = New-Object System.Text.StringBuilder
+                    while ($p -lt $len -and $Data[$p] -ne 0) { [void]$sb.Append([char]$Data[$p]); $p++ }
+                    $strings.Add($sb.ToString())
+                    $p++  # skip the terminating null
+                    if ($p -lt $len -and $Data[$p] -eq 0) { $p++; break }  # double null -> end of structure
+                }
+            }
+            if (($type -eq 1 -or $type -eq 3) -and $flen -ge 8) {
+                $idx = $Data[$i + 0x07]   # Serial Number string-index, offset 0x07 in both Type 1 and Type 3
+                if ($idx -ge 1 -and $idx -le $strings.Count) {
+                    $val = "$($strings[$idx - 1])".Trim()
+                    if ($type -eq 1) { $out.Type1 = $val } else { $out.Type3 = $val }
+                }
+            }
+            $i = $p
+            if ($type -eq 127) { break }  # end-of-table marker
+        }
+    } catch {}
+    return $out
+}
+
+function Get-OemMsdmInfo {
+    # Best-effort detection of an embedded OEM Windows digital license by reading
+    # the MSDM ACPI firmware table. HONEST WinPE LIMIT: this needs P/Invoke
+    # (GetSystemFirmwareTable), which needs Add-Type -> csc.exe. WinPE-NetFX
+    # provides only the .NET runtime, not the compiler, so Add-Type generally
+    # FAILS in WinPE and this returns Present=$false there. It still works in
+    # full Windows (and harmlessly returns nothing if compilation fails), so it
+    # is kept as a best-effort signal. There is no root\wmi class that exposes an
+    # arbitrary ACPI table by signature, so MSDM cannot be read without P/Invoke.
+    # Returns @{ Present=$bool; Key=<25-char key or $null>; CompileOk=$bool }.
+    # The product KEY is captured in-memory only and is NEVER logged to the repo
+    # or to shared logs.
+    $out = @{ Present = $false; Key = $null; CompileOk = $false }
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class JuniperFwTable {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern uint GetSystemFirmwareTable(uint sig, uint id, byte[] buf, uint size);
+}
+'@ -ErrorAction Stop
+        $out.CompileOk = $true
+        $acpi = [uint32]0x41435049  # 'ACPI'
+        $msdm = [uint32]0x4D44534D  # 'MSDM'
+        $sz = [JuniperFwTable]::GetSystemFirmwareTable($acpi, $msdm, $null, 0)
+        if ($sz -gt 56) {
+            $out.Present = $true
+            $buf = New-Object byte[] $sz
+            [void][JuniperFwTable]::GetSystemFirmwareTable($acpi, $msdm, $buf, $sz)
+            # The 25-char product key (29 bytes incl. 4 dashes) sits at the end of
+            # the MSDM table. Extract it but keep it in memory only.
+            if ($sz -ge 29) {
+                $tail = $buf[($sz - 29)..($sz - 1)]
+                $k = (-join ($tail | ForEach-Object { [char]$_ })).Trim()
+                if ($k -match '^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$') { $out.Key = $k }
+            }
+        }
+    } catch {}
+    return $out
+}
+
 function Get-DriverManifest([string]$DeployShare) {
     # Prefer live manifest from inventory API (auto-generated from confirmed_working entries).
     # Falls back to the static manifest.json on the deploy share.
@@ -364,6 +460,16 @@ $_serSrc = @()
 if ($hwWmiBios) { $_serSrc += "$($hwWmiBios.SerialNumber)".Trim() }
 try { $_e = Get-WmiObject Win32_SystemEnclosure -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_e) { $_serSrc += "$($_e.SerialNumber)".Trim() } } catch {}
 try { $_p = Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_p) { $_serSrc += "$($_p.IdentifyingNumber)".Trim() } } catch {}
+# WinPE-reliable fallback: parse the raw SMBIOS table (Type 1 / Type 3). On Lenovo
+# ThinkPads the high-level WMI classes above return junk in WinPE, but the SMBIOS
+# Type 1 Serial Number is correct. Appended AFTER the WMI sources so a valid WMI
+# value still wins on Dell; the placeholder filter below drops bogus WMI values
+# and falls through to these. (Validated on ENG-2: Type 1 == Win32_BIOS serial.)
+try {
+    $_smb = Get-SmbiosHardwareSerial
+    if ($_smb.Type1) { $_serSrc += "$($_smb.Type1)".Trim() }
+    if ($_smb.Type3) { $_serSrc += "$($_smb.Type3)".Trim() }
+} catch {}
 $_bogusSer = @('to be filled','default string','system serial','tbd','0','00000000','na','n/a','not specified','none','chassis serial','ffffffffff')
 foreach ($_s in $_serSrc) { if ($_s -and $_s.Length -ge 3) { $_b=$false; foreach($_x in $_bogusSer){ if($_s -ilike "*$_x*"){ $_b=$true; break } }; if(-not $_b){ $hwSerial = $_s; break } } }
 
@@ -401,6 +507,7 @@ $Script:WpeMac    = if ($primaryMac)  { $primaryMac }  else { $null }
 # has no embedded MSDM key (digital license, volume, or VM).
 $oemKeyDesc   = ''
 $oemOsDefault = ''
+$slsEditionResolved = $false   # true only when SLS gave a precise edition name (full Windows)
 # WMI can be slow to start in WinPE - retry up to 3 times before giving up.
 $slsRetry = 0
 do {
@@ -416,6 +523,7 @@ do {
                 '*10*'              { '3' }
                 default             { '' }
             }
+            if ($oemOsDefault) { $slsEditionResolved = $true }
         }
         break  # WMI responded (key may or may not exist)
     } catch {
@@ -424,33 +532,43 @@ do {
     }
 } while ($slsRetry -lt 3)
 
-# If WMI gave nothing, try reading the MSDM ACPI firmware table directly.
-# This confirms a key is present even when SoftwareLicensingService is unavailable,
-# so the operator is warned to select carefully rather than defaulting to Pro.
-if (-not $oemKeyDesc) {
-    try {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public class AcpiFirmware {
-    [DllImport("kernel32.dll", SetLastError=true)]
-    public static extern uint GetSystemFirmwareTable(
-        uint FirmwareTableProviderSignature,
-        uint FirmwareTableID,
-        IntPtr pFirmwareTableBuffer,
-        uint BufferSize);
+# --- Tiered OEM edition default (honest about WinPE limits) -------------------
+# The exact edition NAME ("Windows 11 Pro") is only computed by
+# SoftwareLicensingService, which does NOT exist in WinPE; and the MSDM ACPI
+# table carries the product KEY, not the edition name (key->edition needs
+# pkeyconfig, unavailable here). So we cannot read the precise edition in WinPE.
+# What we CAN do: detect that an embedded OEM digital license is present and pick
+# a sensible default.
+#
+# $oemMsdm.Present is a best-effort signal - it needs P/Invoke and therefore
+# Add-Type/csc, which usually fails in WinPE (NetFX runtime, no compiler), so it
+# is typically $false in WinPE and true in full Windows. We never block on it.
+$oemMsdm    = Get-OemMsdmInfo
+$oemLicensed = $false
+if ($oemKeyDesc) {
+    # SLS gave us a real description (only happens in full Windows) - most authoritative.
+    $oemLicensed = $true
+} elseif ($oemMsdm.Present) {
+    $oemLicensed = $true
+    $oemKeyDesc  = '(OEM digital license present - edition not readable in WinPE)'
 }
-'@ -ErrorAction Stop
-        # ACPI = 0x41435049, MSDM = 0x4D44534D
-        $acpiSig  = [uint32]0x41435049
-        $msdmSig  = [uint32]0x4D44534D
-        $tblSize  = [AcpiFirmware]::GetSystemFirmwareTable($acpiSig, $msdmSig, [IntPtr]::Zero, 0)
-        if ($tblSize -gt 56) {
-            # Table is present and long enough to hold a product key.
-            # Cannot determine the edition from raw bytes alone - warn operator.
-            $oemKeyDesc = '(OEM key in MSDM - edition unreadable, select carefully)'
-        }
-    } catch {}
+
+# Tier (b): for a NEW machine (no SLS edition name, no inventory yet) with an OEM
+# license present, default by chassis/model. Juniper images business laptops
+# (Lenovo ThinkPad P/T-series, Dell Precision/Latitude) which ship Windows 11 Pro,
+# so default to Pro ('2') when an OEM key is present and the model is a business SKU.
+# $oemOsDefault is left '' by the SLS block when SLS is unavailable; only fill it
+# here if SLS did not already resolve a precise edition.
+if (-not $oemOsDefault -and $oemLicensed) {
+    $_mfrL = "$hwMfr".ToLower()
+    $_mdlL = "$hwModel".ToLower()
+    $isBusinessSku =
+        ($_mfrL -match 'lenovo' -and $_mdlL -match 'thinkpad|thinkstation|^21|^20') -or
+        ($_mfrL -match 'dell'   -and $_mdlL -match 'precision|latitude|optiplex')   -or
+        ($_mfrL -match 'hp|hewlett' -and $_mdlL -match 'elitebook|probook|zbook|elitedesk')
+    if ($isBusinessSku) {
+        $oemOsDefault = '2'  # Windows 11 Pro
+    }
 }
 
 # --- Detect Hardware --------------------------------------------------------
@@ -461,10 +579,13 @@ Write-Host "    Model        : $hwModel"
 Write-Host "    Serial       : $(if ($serialClean) { $hwSerial } else { '(no usable serial)' })"
 Write-Host "    NICs         : $($allNics.Count) physical ($(@($allNics | Where-Object { $_['type'] -eq 'ethernet' }).Count) wired)"
 if ($oemKeyDesc) {
-    $oemHint = if ($oemOsDefault) { "  -> auto-select [$oemOsDefault] $($OsOptions[$oemOsDefault].Label)" } else { '' }
+    $oemHint = if ($oemOsDefault) { "  -> defaulting to [$oemOsDefault] $($OsOptions[$oemOsDefault].Label)" } else { '' }
     Write-Host "    UEFI License : $oemKeyDesc$oemHint" -ForegroundColor Green
+    if ($oemLicensed -and $oemOsDefault -and -not $slsEditionResolved) {
+        Write-Host "                   OEM digital license detected (defaulting to $($OsOptions[$oemOsDefault].Label) for business SKU)" -ForegroundColor DarkGray
+    }
 } else {
-    Write-Host '    UEFI License : (no OEM key - digital license or volume)' -ForegroundColor DarkGray
+    Write-Host '    UEFI License : (no OEM key detected in WinPE - select edition manually)' -ForegroundColor DarkGray
 }
 
 Write-Host ''
@@ -541,10 +662,19 @@ $computerName = ''
 
 # Defaults from inventory / UEFI
 $defaultName  = if ($prior -and $prior.hostname) { "$($prior.hostname)".ToUpper() } else { '' }
-# UEFI license key takes precedence over inventory for the OS edition, because the
-# UEFI key reflects what the machine is actually licensed for (inventory may record
-# a previously mis-imaged edition).
-$defaultOsKey = if ($oemOsDefault) { $oemOsDefault } elseif ($prior -and $prior.os_key) { $prior.os_key } else { '' }
+# Edition default precedence (tiered, documented in CLAUDE.md):
+#   (a) A PRECISE SLS edition name ($slsEditionResolved, full Windows only) is the
+#       most authoritative - it wins over everything.
+#   (b) Inventory's last os_key (now reliable after the API fix) wins for re-images
+#       over a mere business-SKU *guess* - a known machine keeps its recorded edition.
+#   (c) Otherwise the business-SKU OEM default ($oemOsDefault set to Pro when an MSDM
+#       license is present on a business laptop) applies for brand-new hardware.
+#   (d) Else no default -> operator menu.
+$defaultOsKey =
+    if ($slsEditionResolved -and $oemOsDefault) { $oemOsDefault }
+    elseif ($prior -and $prior.os_key)          { $prior.os_key }
+    elseif ($oemOsDefault)                       { $oemOsDefault }
+    else { '' }
 
 # Show what was found
 if ($prior) {
