@@ -110,7 +110,7 @@ function Get-DriverManifest([string]$DeployShare) {
 
     $path = "$DeployShare\drivers\manifest.json"
     if (Test-Path $path) {
-        return (Get-Content $path -Raw | ConvertFrom-Json)
+        return ([System.IO.File]::ReadAllText($path) | ConvertFrom-Json)
     }
     return $null
 }
@@ -186,7 +186,7 @@ function Invoke-DriverCoverageCheck {
     # Parse every hardware ID from every INF in the pack
     $coveredIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($inf in $infFiles) {
-        $raw = Get-Content $inf.FullName -Raw -ErrorAction SilentlyContinue
+        $raw = $(if (Test-Path $inf.FullName) { [System.IO.File]::ReadAllText($inf.FullName) })
         if (-not $raw) { continue }
         [regex]::Matches($raw, '(?i)(PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}|USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') |
             ForEach-Object { $coveredIds.Add($_.Value.ToUpper()) | Out-Null }
@@ -617,7 +617,7 @@ if (-not (Test-Path $unattendSrc)) {
     Write-Host "  WARN: Unattend not found at $unattendSrc - skipping." -ForegroundColor Yellow
 } else {
     New-Item 'C:\Windows\Panther' -ItemType Directory -Force | Out-Null
-    $xml = (Get-Content $unattendSrc -Raw) -replace '<ComputerName>\*</ComputerName>', "<ComputerName>$computerName</ComputerName>"
+    $xml = ([System.IO.File]::ReadAllText($unattendSrc)) -replace '<ComputerName>\*</ComputerName>', "<ComputerName>$computerName</ComputerName>"
     $xml | Set-Content 'C:\Windows\Panther\unattend.xml' -Encoding UTF8
     Write-Host "  unattend.xml written (ComputerName=$computerName)." -ForegroundColor Green
 }
