@@ -188,12 +188,15 @@ kiosk still locks login until provisioning completes).
   linked owner, it falls back to the auto-discovered primary user from the last
   agent snapshot (`GET /api/device/<id>` -> `system_info.primary_user_email` /
   `primary_user_name`).
-- **Account name:** derived from the email/UPN local-part (e.g.
-  `jason@juniperdesign.com` -> `jason`; `jay.smith@...` -> `jay.smith`), else
-  first-initial+last from the display name (`Jane Doe` -> `jdoe`). Sanitised to a
-  valid Windows local name (<=20 chars, invalid chars stripped, no leading/trailing
-  dot). Reserved names (junadmin/administrator/guest/etc.) are skipped to avoid
-  collision.
+- **Account name (Juniper convention):** `local_` + the owner's **first name**,
+  lowercased and stripped to letters/digits (e.g. owner "Faldu, Rishi" ->
+  **`local_rishi`**; "Smith, Jay" -> `local_jay`). First name comes from the
+  inventory display name (handles both "Last, First" and "First Last"); if only an
+  email is known, the first token of the local-part is used (`jay.smith@` -> jay).
+  Capped at 20 chars; reserved names skipped.
+- **Display name:** stored as "**First Last**" (e.g. inventory "Faldu, Rishi" ->
+  `Rishi Faldu`), Title-cased when the source is an all-lower email or ALL-CAPS
+  inventory entry, otherwise the inventory casing is preserved.
 - **What it does:** creates the local account (or resets it if it already exists),
   sets its full name, **adds it to the local `Administrators` group**, and forces a
   **password change at first logon** (`PasswordExpired = 1` via ADSI).

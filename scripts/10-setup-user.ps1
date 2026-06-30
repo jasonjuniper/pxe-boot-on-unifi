@@ -36,29 +36,48 @@ trap {
 $Reserved = @('junadmin','administrator','administrators','guest','admin',
               'defaultaccount','wdagutilityaccount','system','localsystem')
 
-# --- Derive a valid Windows local account name from an email/UPN or full name -
-function Get-AccountName {
+# Account NAMING CONVENTION (Juniper):
+#   username     = "local_" + <first name>   e.g. Rishi Faldu  -> local_rishi
+#   display name = "<First> <Last>"          e.g. Faldu, Rishi -> Rishi Faldu
+# The inventory owner display name is usually "Last, First"; we also handle
+# plain "First Last".  First name falls back to the email local-part's first
+# token (jay.smith@ -> jay) when no display name is present.
+
+# --- Split an owner into first/last, handling "Last, First" and "First Last" --
+function Get-NameParts {
     param([string]$Email, [string]$Name)
-    $base = $null
-    if ($Email -and $Email -match '@') {
-        $base = ($Email -split '@')[0]
-    } elseif ($Email) {
-        $base = $Email
+    $first = $null; $last = $null
+    if ($Name) {
+        $n = $Name.Trim()
+        if ($n -match ',') {
+            # "Last, First [Middle]"
+            $bits = $n -split ',', 2
+            $last = $bits[0].Trim()
+            $rest = @($bits[1].Trim() -split '\s+' | Where-Object { $_ })
+            if ($rest.Count -ge 1) { $first = $rest[0] }
+        } else {
+            # "First [Middle] Last"
+            $bits = @($n -split '\s+' | Where-Object { $_ })
+            if     ($bits.Count -ge 2) { $first = $bits[0]; $last = $bits[-1] }
+            elseif ($bits.Count -eq 1) { $first = $bits[0] }
+        }
     }
-    if (-not $base -and $Name) {
-        $parts = @($Name -split '\s+' | Where-Object { $_ })
-        if     ($parts.Count -ge 2) { $base = $parts[0].Substring(0,1) + $parts[-1] }
-        elseif ($parts.Count -eq 1) { $base = $parts[0] }
+    if (-not $first -and $Email -and $Email -match '@') {
+        # jay.smith@x -> jay ; rishi@x -> rishi
+        $first = (($Email -split '@')[0] -split '[._-]' | Where-Object { $_ } | Select-Object -First 1)
     }
-    if (-not $base) { return $null }
-    # Local usernames: <=20 chars, no  " / \ [ ] : ; | = , + * ? < > @ .
-    # Keep letters/digits/dot/hyphen/underscore; strip the rest.
-    $base = $base.ToLower() -replace '[^a-z0-9._-]', ''
-    $base = $base -replace '^\.+', ''     # no leading dot
-    $base = $base -replace '\.+$', ''     # no trailing dot
-    if ($base.Length -gt 20) { $base = $base.Substring(0,20) -replace '\.+$', '' }
-    if (-not $base) { return $null }
-    return $base
+    return [pscustomobject]@{ First = $first; Last = $last }
+}
+
+# --- Build the "local_<first>" account name (<=20 chars, valid local name) -----
+function Get-AccountName {
+    param([string]$First)
+    if (-not $First) { return $null }
+    $f = $First.ToLower() -replace '[^a-z0-9]', ''   # strip dots/apostrophes/hyphens
+    if (-not $f) { return $null }
+    $acct = "local_$f"
+    if ($acct.Length -gt 20) { $acct = $acct.Substring(0, 20) }
+    return $acct
 }
 
 # --- 1. Identify this machine by BIOS serial --------------------------------
@@ -116,17 +135,29 @@ if (-not $ownerEmail -and -not $ownerName) {
 }
 
 # --- 3. Derive + validate the account name ----------------------------------
-$acct = Get-AccountName -Email $ownerEmail -Name $ownerName
+$np   = Get-NameParts -Email $ownerEmail -Name $ownerName
+$acct = Get-AccountName -First $np.First
 if (-not $acct) {
-    Write-Host "WARN: could not derive a valid account name from owner ('$ownerEmail' / '$ownerName'). Skipping." -ForegroundColor Yellow
+    Write-Host "WARN: could not derive a first name from owner ('$ownerEmail' / '$ownerName'). Skipping." -ForegroundColor Yellow
     exit 0
 }
 if ($Reserved -contains $acct.ToLower()) {
     Write-Host "WARN: derived account '$acct' is reserved - skipping to avoid collision." -ForegroundColor Yellow
     exit 0
 }
-$fullName = if ($ownerName) { $ownerName } else { $acct }
-Write-Host "==> setup-user: assigned user account = '$acct' (full name '$fullName')" -ForegroundColor Cyan
+# Display name = "First Last".  Get-NameParts already preserves the inventory's
+# original case (e.g. "Faldu, Rishi" -> First="Rishi", Last="Faldu"); we only
+# Title-case the fallback case where the first name came from a lowercase email.
+$ti = (Get-Culture).TextInfo
+if     ($np.First -and $np.Last) { $fullName = "$($np.First) $($np.Last)" }
+elseif ($np.First)               { $fullName = $np.First }
+else                             { $fullName = $acct }
+# Title-case only when the name has no real mixed case (all-lower email fallback
+# or an ALL-CAPS inventory entry); a properly-cased "Rishi Faldu" is left as-is.
+if ($fullName -ceq $fullName.ToUpper() -or $fullName -ceq $fullName.ToLower()) {
+    $fullName = $ti.ToTitleCase($fullName.ToLower())
+}
+Write-Host "==> setup-user: assigned user account = '$acct' (display name '$fullName')" -ForegroundColor Cyan
 
 if ($DryRun) {
     Write-Host "(Dry run - would create/update local admin '$acct' with forced password change.)" -ForegroundColor Yellow
