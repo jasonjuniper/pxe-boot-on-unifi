@@ -34,7 +34,7 @@ Write-PhaseHeader -Description 'Windows Update'
 # Wrapped so a missing helper never breaks imaging.
 $PhaseKey   = 'windows-update'
 $PhaseLabel = 'Installing Windows updates'
-$PhaseIndex = 1
+$PhaseIndex = 2   # join-wifi is now phase 1; windows-update is phase 2
 $PhaseTotal = 5
 try { . 'C:\ProgramData\JuniperSetup\progress.ps1' } catch {}
 
@@ -125,6 +125,42 @@ function Get-KbBare {
     param($Update)
     try { if ($Update.KBArticleIDs -and $Update.KBArticleIDs.Count -gt 0) { return "KB$($Update.KBArticleIDs.Item(0))" } } catch {}
     return ''
+}
+
+# Is this WUA update a Servicing Stack Update (SSU)?  SSUs must be installed
+# BEFORE the cumulative/.NET/optional updates that depend on them - a missing or
+# out-of-date servicing stack is a common cause of a cumulative/.NET update that
+# fails to install every round.  We detect an SSU two ways (either is sufficient):
+#   1. Categories includes the "Servicing Stack Updates" category
+#      (CategoryID 2eb0c6a8-b6e9-4c33-8c39-92e9b3bf91e9), or
+#   2. Title matches "Servicing Stack Update" / "*servicing stack*".
+# Best-effort and wrapped - a provider quirk never throws.
+$Script:SsuCategoryId = '2eb0c6a8-b6e9-4c33-8c39-92e9b3bf91e9'
+function Test-IsSsu {
+    param($Update)
+    try {
+        if ($Update.Categories) {
+            foreach ($c in $Update.Categories) {
+                try { if ("$($c.CategoryID)" -eq $Script:SsuCategoryId) { return $true } } catch {}
+                try { if ("$($c.Name)" -match 'Servicing Stack') { return $true } } catch {}
+            }
+        }
+    } catch {}
+    try { if ("$($Update.Title)" -match 'Servicing Stack Update' -or "$($Update.Title)" -match 'servicing stack') { return $true } } catch {}
+    return $false
+}
+
+# Build a failure summary string (KB + HResult per persistently-failed update).
+# Defined early so the SSU-first pass (above the main install loop) can call it on
+# an SSU failure; reads the script-level $failMap which exists by the time it runs.
+function Get-FailureSummary {
+    $lines = @()
+    foreach ($k in $failMap.Keys) {
+        $e = $failMap[$k]
+        $kbT = if ($e.kb) { $e.kb } else { $k }
+        $lines += ("{0} failed {1}x (HResult {2})" -f $kbT, $e.count, $e.hresult)
+    }
+    return ($lines -join '; ')
 }
 
 # Best-effort upload of the WU phase log + a concise failure summary to the
@@ -273,6 +309,123 @@ if ($DryRun) {
 # has failed.  Used to (a) skip updates that have failed >= $MaxFailPerUpdate
 # rounds and (b) build the at-phase-end failure summary.
 $failMap = Get-WuFailures
+
+# ---- SSU-FIRST PASS ----------------------------------------------------------
+# Servicing Stack Updates (SSUs) are a prerequisite for the cumulative/.NET/
+# optional updates of the same month.  If a cumulative or .NET update is installed
+# before its required SSU, it can fail to install EVERY round (a common cause of a
+# repeatedly-failing update with a .NET/prerequisite flavour).  So before the main
+# install flow we install ONLY the pending SSUs first, in their own pass.  SSUs
+# normally do NOT need a reboot; but if the SSU install reports reboot-required we
+# return 3010 so the orchestrator reboots and the NEXT round continues with the
+# remaining (now-installable) updates.  This is purely an ORDERING change:
+#   - No SSU pending  -> this whole block is a no-op and behaviour is exactly as before.
+#   - SSUs pending    -> they install first; the main loop below then skips them
+#                        (already installed -> no longer in the IsInstalled=0 set on
+#                        the next round) and proceeds with everything else.
+# All the existing logic (granular reporting, per-update result, skip-after-3,
+# stall/round-cap, WU-log-on-failure, failMap increments) is preserved unchanged.
+$ssuItems = New-Object System.Collections.ArrayList
+for ($i = 0; $i -lt $count; $i++) {
+    $u = $updates.Item($i)
+    if (-not (Test-IsSsu -Update $u)) { continue }
+    $key = Get-UpdateKey -Update $u
+    $fc  = 0
+    if ($failMap.ContainsKey($key)) { try { $fc = [int]$failMap[$key].count } catch { $fc = 0 } }
+    # Honour the same skip-after-N guard: a persistently-failing SSU must not loop.
+    if ($fc -ge $MaxFailPerUpdate) {
+        Write-Log "  SSU $((Get-KbBare -Update $u)) failed ${fc}x previously - leaving to skip logic" -Level WARN
+        continue
+    }
+    [void]$ssuItems.Add([pscustomobject]@{ Update = $u; Key = $key; Kb = (Get-KbBare -Update $u) })
+}
+
+if ($ssuItems.Count -gt 0) {
+    Write-Log "SSU-first pass: $($ssuItems.Count) servicing stack update(s) pending - installing before all others"
+    Report-WU -RoundFraction 0.11 -Step ("Installing servicing stack update(s) first...")
+    $ssuFailedThisRound = @{}
+    $ssuReboot = $false; $ssuOk = 0; $ssuFail = 0
+    $ssuRcNames = @{0='NotStarted';1='InProgress';2='Succeeded';3='SucceededWithErrors';4='Failed';5='Aborted'}
+    for ($si = 0; $si -lt $ssuItems.Count; $si++) {
+        $sItem  = $ssuItems[$si]
+        $su     = $sItem.Update
+        $sTitle = "$($su.Title)"
+        $sKey   = $sItem.Key
+        $sKbBare = $sItem.Kb
+        if (-not $su.EulaAccepted) { try { $su.AcceptEula() } catch {} }
+        Report-WU -RoundFraction 0.12 -Step ("Installing servicing stack update {0} of {1}: {2}" -f ($si+1), $ssuItems.Count, $sKbBare).Trim()
+        Write-Log "  [SSU $($si+1)/$($ssuItems.Count)] Installing: $sTitle $sKbBare"
+        $sFailed = $false; $sHr = ''
+        try {
+            $sOne = New-Object -ComObject Microsoft.Update.UpdateColl
+            $sOne.Add($su) | Out-Null
+            try {
+                $sdl = $session.CreateUpdateDownloader()
+                $sdl.Updates = $sOne
+                $null = $sdl.Download()
+            } catch {
+                Write-Log "       SSU download warn: $_" -Level WARN -PhaseOnly
+            }
+            $sinst = $session.CreateUpdateInstaller()
+            $sinst.Updates = $sOne
+            $sinst.AllowSourcePrompts = $false
+            $sir = $sinst.Install()
+            $src = [int]$sir.ResultCode
+            $sHresultHex = '0x{0:X8}' -f ([int64]$sir.HResult -band 0xFFFFFFFF)
+            $sUrName = if ($ssuRcNames.ContainsKey($src)) { $ssuRcNames[$src] } else { 'Unknown' }
+            if ($src -eq 2) {
+                $ssuOk++
+                Write-Log "       OK  $sKbBare ($sUrName)"
+            } else {
+                $ssuFail++
+                $sFailed = $true; $sHr = $sHresultHex
+                Write-Log "       FAIL code=$src ($sUrName) $sKbBare HResult=$sHresultHex" -Level WARN
+            }
+            if ($sir.RebootRequired) { $ssuReboot = $true }
+        } catch {
+            $ssuFail++
+            $sFailed = $true; $sHr = 'exception'
+            Write-Log "       SSU install exception ($sKbBare): $_" -Level WARN
+        }
+        if ($sFailed) {
+            $ssuFailedThisRound[$sKey] = [pscustomobject]@{ kb = $sKbBare; title = $sTitle; hresult = $sHr }
+        }
+        if ($ssuReboot) {
+            Write-Log "  Reboot required after SSU $sKbBare - deferring remaining SSUs/updates to next round"
+            break
+        }
+    }
+
+    # Persist SSU failures into the same failMap (one increment per SSU per round).
+    foreach ($k in $ssuFailedThisRound.Keys) {
+        $info = $ssuFailedThisRound[$k]
+        if ($failMap.ContainsKey($k)) {
+            $prev = 0; try { $prev = [int]$failMap[$k].count } catch { $prev = 0 }
+            $failMap[$k] = [pscustomobject]@{ kb = $info.kb; title = $info.title; hresult = $info.hresult; count = ($prev + 1) }
+        } else {
+            $failMap[$k] = [pscustomobject]@{ kb = $info.kb; title = $info.title; hresult = $info.hresult; count = 1 }
+        }
+    }
+    Save-WuFailures -Map $failMap
+    Write-Log "SSU-first pass summary: $ssuOk installed, $ssuFail failed (reboot=$ssuReboot)"
+
+    if ($ssuFail -gt 0) {
+        Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
+    }
+
+    # SSUs usually need no reboot - but if one did, reboot now and resume next round
+    # with the remaining (now-installable) updates.
+    if ($ssuReboot) {
+        Report-WU -RoundFraction 0.14 -Step "Servicing stack update installed - restarting to continue..." -State 'rebooting'
+        Write-Log "Servicing stack update(s) require a reboot - rebooting; remaining updates continue next round"
+        Write-PhaseSummary -ExitCode 3010 -Notes "$ssuOk SSU(s) installed, reboot required" -Reboot
+        exit 3010
+    }
+    # No reboot needed: fall through to the normal install flow for everything else.
+    # The installed SSUs are no longer pending; the partition below naturally skips
+    # them.  (Get-FailureSummary is defined later but only CALLED on failure paths
+    # that run after its definition, so no ordering issue arises here.)
+}
 
 # ---- Partition this round's pending updates into install-set vs skip-set -----
 # An update whose persisted fail count has reached $MaxFailPerUpdate is EXCLUDED
@@ -423,17 +576,6 @@ foreach ($k in $failedThisRound.Keys) {
 Save-WuFailures -Map $failMap
 
 Write-Log "Round $Round install summary: $succeeded succeeded, $failed failed, $($skipNow.Count) skipped (of $count pending)"
-
-# ---- Build a failure summary string (KB + HResult per persistently-failed) --
-function Get-FailureSummary {
-    $lines = @()
-    foreach ($k in $failMap.Keys) {
-        $e = $failMap[$k]
-        $kbT = if ($e.kb) { $e.kb } else { $k }
-        $lines += ("{0} failed {1}x (HResult {2})" -f $kbT, $e.count, $e.hresult)
-    }
-    return ($lines -join '; ')
-}
 
 # List of KBs we are skipping/giving up on (for the flagged completion message).
 function Get-SkippedKbList {

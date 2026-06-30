@@ -163,9 +163,18 @@ operator's final choices back so the next re-image remembers them.
   reflects the chosen name + OS. Brand-new hardware just prompts as before.
 
 **After first logon** the `orchestrator.ps1` phase pipeline runs (driven by its
-`$Phases` ordered map): `windows-update` -> `install-packages` -> `join-wifi` ->
+`$Phases` ordered map): `join-wifi` -> `windows-update` -> `install-packages` ->
 `remove-bloatware` -> `file-associations`. (`03b` driver install + the inventory
 agent are invoked from within `04`.)
+
+**Wi-Fi is now the FIRST phase** (ahead of `windows-update`): the machine joins
+office Wi-Fi before the long, multi-reboot update phase, so if someone unplugs
+ethernet mid-update the box stays online and provisioning keeps going. The Wi-Fi
+driver is injected offline in WinPE and ethernet is how the box imaged, so the join
+works at the first post-OOBE boot. `06-join-wifi.ps1` stays best-effort/non-fatal -
+a desktop with no Wi-Fi NIC exits 0 and the phase just advances. Progress bands
+(monotonic, 0-100): join-wifi 1-4, windows-update 4-45, install-packages 45-78,
+remove-bloatware 78-90, file-associations 90-99, done=100.
 
 - `03-windows-update.ps1` - all Windows updates
 - `03b-install-catalog-drivers.ps1` - post-boot online driver install from inventory
@@ -177,9 +186,31 @@ agent are invoked from within `04`.)
   The inventory agent also installs the Juniper root CA certificate automatically,
   so HTTPS to internal services works after this step.
 - `06-join-wifi.ps1` - joins the office Wi-Fi (orchestrator phase `join-wifi`,
-  band 72-78, runs AFTER `install-packages` so NICs/drivers are in). See
-  "Wi-Fi join during imaging" below.
+  band 1-4, now the FIRST phase so Wi-Fi is up before the multi-reboot update pass
+  - ethernet-unplug fallback). Best-effort/non-fatal (exits 0 with no Wi-Fi NIC).
+  See "Wi-Fi join during imaging" below.
 - `07-remove-bloatware.ps1` - removes unwanted Windows features and apps
+
+### Servicing Stack Updates (SSUs) install FIRST
+
+`03-windows-update.ps1` now runs an **SSU-first pass** at the top of every round,
+before the cumulative/.NET/driver/optional updates. A repeatedly-failing update
+(often a .NET/prerequisite case) can stem from being installed before its required
+servicing-stack update; installing SSUs first avoids that.
+
+- An update is an SSU if its `Categories` includes the "Servicing Stack Updates"
+  category (CategoryID `2eb0c6a8-b6e9-4c33-8c39-92e9b3bf91e9`) or its `Title`
+  matches `Servicing Stack Update` / `*servicing stack*` (`Test-IsSsu` helper).
+- If any SSUs are pending, ONLY those are downloaded+installed first
+  (`stepMessage` "Installing servicing stack update(s) first..."), then the existing
+  flow installs everything else. SSUs usually need no reboot; if the SSU install
+  reports reboot-required, the phase returns **3010** so the orchestrator reboots and
+  the next round continues with the remaining (now-installable) updates.
+- **No-ops cleanly when no SSU is pending** - the block is gated on
+  `$ssuItems.Count -gt 0`, so behaviour is exactly as before. SSUs honour the same
+  skip-after-3 guard and feed the same `wu-failures.json` fail map / log upload.
+- This is purely an ORDERING change - granular reporting, per-update result,
+  skip-after-3, stall/round-cap, and WU-log-on-failure are all preserved.
 
 ### Windows Update failure surfacing + loop guard
 

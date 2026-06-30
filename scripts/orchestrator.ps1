@@ -158,20 +158,27 @@ if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
 }
 
 # Phase order: key matches phase.json "phase", value is script filename in $ScriptsDir
+# Wi-Fi join runs FIRST so the machine is already on wireless before the long,
+# multi-reboot Windows Update phase - if someone unplugs ethernet mid-update the
+# machine stays online and provisioning continues.  (The Wi-Fi driver is injected
+# offline in WinPE and ethernet is how the box imaged, so the join works at first
+# post-OOBE boot.  join-wifi is best-effort/non-fatal - a desktop with no Wi-Fi NIC
+# exits 0 and the phase advances.)
 $Phases = [ordered]@{
+    'join-wifi'         = '06-join-wifi.ps1'
     'windows-update'    = '03-windows-update.ps1'
     'install-packages'  = '04-install-packages.ps1'
-    'join-wifi'         = '06-join-wifi.ps1'
     'remove-bloatware'  = '07-remove-bloatware.ps1'
     'file-associations' = '08-set-file-associations.ps1'
 }
 
 # Friendly labels + weighted progress bands (overallPercent) per phase.
 # Each phase owns a [start,end] slice of the 0-100 bar; "done" = 100.
+# Bands are monotonic and cover 0-100 with join-wifi taking a small slice up front.
 $PhaseMeta = [ordered]@{
-    'windows-update'    = @{ Label = 'Installing Windows updates';        Start = 5;  End = 45 }
-    'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 72 }
-    'join-wifi'         = @{ Label = 'Connecting to office Wi-Fi';        Start = 72; End = 78 }
+    'join-wifi'         = @{ Label = 'Connecting to office Wi-Fi';        Start = 1;  End = 4  }
+    'windows-update'    = @{ Label = 'Installing Windows updates';        Start = 4;  End = 45 }
+    'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 78 }
     'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 78; End = 90 }
     'file-associations' = @{ Label = 'Configuring default applications';  Start = 90; End = 99 }
 }
@@ -185,7 +192,7 @@ function Get-PhaseState {
     if (Test-Path $PhaseFile) {
         try { return Get-Content $PhaseFile -Raw | ConvertFrom-Json } catch {}
     }
-    return [pscustomobject]@{ phase = 'windows-update'; round = 0 }
+    return [pscustomobject]@{ phase = 'join-wifi'; round = 0 }
 }
 
 function Save-PhaseState {
@@ -705,8 +712,8 @@ if ($Bootstrap) {
 
     # Write initial phase state if not already present
     if (-not (Test-Path $PhaseFile)) {
-        Save-PhaseState -Phase 'windows-update' -Round 0
-        Write-Log "Phase state initialized: windows-update" -MasterOnly
+        Save-PhaseState -Phase 'join-wifi' -Round 0
+        Write-Log "Phase state initialized: join-wifi" -MasterOnly
     }
 
     # Seed progress.json so the status GUI has something to show on first launch.
@@ -784,8 +791,8 @@ if ($phase -eq 'done') {
 }
 
 if (-not $Phases.Contains($phase)) {
-    Write-Log "Unknown phase '$phase' - resetting to windows-update" -Level WARN
-    $phase = 'windows-update'
+    Write-Log "Unknown phase '$phase' - resetting to join-wifi" -Level WARN
+    $phase = 'join-wifi'
 }
 
 $round = [int]($state.round) + 1
