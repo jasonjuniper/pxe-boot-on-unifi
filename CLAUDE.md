@@ -494,6 +494,39 @@ atomically moves into place, so the GUI never reads a half-written file.
 `progress.json` as `stepMessage` on the next transition. (Optional - phases work
 unchanged without it.)
 
+### Granular Windows Update progress (live, per-update, across reboots)
+
+The orchestrator only updates progress at phase TRANSITIONS, so the long, multi-reboot
+`windows-update` phase used to sit frozen (`overall_percent=25`, empty `step_message`,
+stale `updated_utc`). To fix this, the phase script now reports its OWN progress
+directly and frequently via a shared helper.
+
+- **`scripts/progress.ps1`** - dot-sourced shared helper. `Publish-Progress` writes
+  `progress.json` atomically (.tmp+move) AND best-effort POSTs `/ingest/deploy-progress`,
+  ALWAYS stamping `updatedUtc` (ISO-8601). It resolves device identity (serial -> mac ->
+  hostname) exactly like `orchestrator.ps1`'s `Get-MachineIdentity`, so phase posts key
+  the SAME `device_provisioning` row. `Get-ProgBandPercent` maps a fraction-within-phase
+  to an absolute overall percent using the SAME phase bands as the orchestrator (so the
+  bar stays monotonic across orchestrator + phase writes). `progress.ps1` is staged at
+  `C:\ProgramData\JuniperSetup\` by `deploy.ps1` and self-updated by the orchestrator's
+  share sync (both the early block and `Sync-Scripts`).
+- **`scripts/03-windows-update.ps1`** now reports (best-effort, never blocks the install):
+  searching -> "Found N update(s)" -> installs updates **one at a time** so each item
+  reports `"Round R - installing X of Y: <Title> (KB...)"` with a moving sub-percent ->
+  reboot-pending ("...restarting to continue...", state=rebooting) -> "Windows updates
+  complete". The **round** comes from `phase.json`; a per-round band floor keeps
+  `overallPercent` creeping forward (not snapping back) across the many reboots.
+- **Server/UI** (inventory repo): `/ingest/deploy-progress` already stored `step_message`
+  + `reported_utc` and `/api/deploy/progress` already returned them plus `age_s`/`stale`
+  (no `main.py` change needed). `deploy_status.html` now shows "updated Ns ago" and flips
+  it to red "no update Ns ago" when `stale` (>10 min), so a frozen `updated_utc` visibly
+  flags a possibly stuck machine. The kiosk `provision-status.ps1` already renders
+  `stepMessage` prominently, so the granular text shows on-screen too.
+- **Not end-to-end testable without imaging a real machine.** Validate on the next image:
+  during Windows Update the kiosk + `/deploy/status` card should show the per-update step
+  text changing, "Step 1 of 5", a creeping percent within the 5-45 band, the round number
+  rising across reboots, and "updated Ns ago" staying fresh.
+
 ### Break-glass recovery (stuck machine)
 Two escapes, so a tech is never permanently locked out:
 1. **Flag file**: create `C:\ProgramData\JuniperSetup\break-glass.txt` (e.g. over the

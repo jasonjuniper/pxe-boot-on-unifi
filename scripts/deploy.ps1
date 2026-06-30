@@ -897,7 +897,7 @@ Copy-Item "$DeployShare\scripts\SetupComplete.cmd" 'C:\Windows\Setup\Scripts\Set
 # Orchestration core (root of JuniperSetup, sourced by phase scripts).
 # provision-status.ps1 is the fullscreen lockout/status GUI; it lives at the root
 # because the junadmin kiosk Winlogon Shell points directly at this path.
-foreach ($f in @('Logging.ps1', 'orchestrator.ps1', 'provision-status.ps1')) {
+foreach ($f in @('Logging.ps1', 'progress.ps1', 'orchestrator.ps1', 'provision-status.ps1')) {
     $src = "$DeployShare\scripts\$f"
     if (Test-Path $src) { Copy-Item $src "$jsRoot\$f" -Force }
 }

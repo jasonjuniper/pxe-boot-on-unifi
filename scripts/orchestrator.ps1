@@ -148,6 +148,9 @@ if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
         if (Test-Path $psSrc) { Copy-Item $psSrc "$SetupRoot\provision-status.ps1" -Force -ErrorAction SilentlyContinue }
         $lgSrc = Join-Path $_shareScripts 'Logging.ps1'
         if (Test-Path $lgSrc) { Copy-Item $lgSrc "$SetupRoot\Logging.ps1" -Force -ErrorAction SilentlyContinue }
+        # progress.ps1 - shared granular-progress helper dot-sourced by phases.
+        $pgSrc = Join-Path $_shareScripts 'progress.ps1'
+        if (Test-Path $pgSrc) { Copy-Item $pgSrc "$SetupRoot\progress.ps1" -Force -ErrorAction SilentlyContinue }
         # Update this orchestrator for the NEXT run (safe - already parsed into memory)
         $orchSrc = Join-Path $_shareScripts 'orchestrator.ps1'
         if (Test-Path $orchSrc) { Copy-Item $orchSrc "$SetupRoot\orchestrator.ps1" -Force -ErrorAction SilentlyContinue }
@@ -633,6 +636,11 @@ function Sync-Scripts {
         $logSrc = Join-Path $shareScripts 'Logging.ps1'
         if (Test-Path $logSrc) {
             Copy-Item $logSrc "$SetupRoot\Logging.ps1" -Force -ErrorAction SilentlyContinue
+        }
+        # progress.ps1 - shared granular-progress helper dot-sourced by phases.
+        $progSrc = Join-Path $shareScripts 'progress.ps1'
+        if (Test-Path $progSrc) {
+            Copy-Item $progSrc "$SetupRoot\progress.ps1" -Force -ErrorAction SilentlyContinue
         }
     } catch {}
     # No Write-Log here - Logging.ps1 may have just been replaced
