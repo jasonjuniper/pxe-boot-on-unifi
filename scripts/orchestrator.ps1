@@ -137,6 +137,7 @@ $_shareScripts = '\\192.168.5.141\deploy$\scripts'
 if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
     try {
         foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
+                         '06-join-wifi.ps1',
                          '07-remove-bloatware.ps1','08-set-file-associations.ps1',
                          'provision-status.ps1')) {
             $s = Join-Path $_shareScripts $f
@@ -157,6 +158,7 @@ if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
 $Phases = [ordered]@{
     'windows-update'    = '03-windows-update.ps1'
     'install-packages'  = '04-install-packages.ps1'
+    'join-wifi'         = '06-join-wifi.ps1'
     'remove-bloatware'  = '07-remove-bloatware.ps1'
     'file-associations' = '08-set-file-associations.ps1'
 }
@@ -165,9 +167,10 @@ $Phases = [ordered]@{
 # Each phase owns a [start,end] slice of the 0-100 bar; "done" = 100.
 $PhaseMeta = [ordered]@{
     'windows-update'    = @{ Label = 'Installing Windows updates';        Start = 5;  End = 45 }
-    'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 80 }
-    'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 80; End = 92 }
-    'file-associations' = @{ Label = 'Configuring default applications';  Start = 92; End = 99 }
+    'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 72 }
+    'join-wifi'         = @{ Label = 'Connecting to office Wi-Fi';        Start = 72; End = 78 }
+    'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 78; End = 90 }
+    'file-associations' = @{ Label = 'Configuring default applications';  Start = 90; End = 99 }
 }
 
 . "$SetupRoot\Logging.ps1"

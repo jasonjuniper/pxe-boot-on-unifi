@@ -162,8 +162,10 @@ operator's final choices back so the next re-image remembers them.
   (or a keypress shows the menu), and after imaging the device record in inventory
   reflects the chosen name + OS. Brand-new hardware just prompts as before.
 
-**After first logon** (via `FirstLogonCommands` in unattend):
-`03` -> `03b` -> `04` -> `07` (05 and 06 can be added as needed)
+**After first logon** the `orchestrator.ps1` phase pipeline runs (driven by its
+`$Phases` ordered map): `windows-update` -> `install-packages` -> `join-wifi` ->
+`remove-bloatware` -> `file-associations`. (`03b` driver install + the inventory
+agent are invoked from within `04`.)
 
 - `03-windows-update.ps1` - all Windows updates
 - `03b-install-catalog-drivers.ps1` - post-boot online driver install from inventory
@@ -174,7 +176,31 @@ operator's final choices back so the next re-image remembers them.
 - `04-install-packages.ps1` - winget + MSI packages + inventory agent registration.
   The inventory agent also installs the Juniper root CA certificate automatically,
   so HTTPS to internal services works after this step.
+- `06-join-wifi.ps1` - joins the office Wi-Fi (orchestrator phase `join-wifi`,
+  band 72-78, runs AFTER `install-packages` so NICs/drivers are in). See
+  "Wi-Fi join during imaging" below.
 - `07-remove-bloatware.ps1` - removes unwanted Windows features and apps
+
+### Wi-Fi join during imaging
+Imaged PCs auto-join the corporate Wi-Fi during post-install.
+- **Source chain:** UniFi controller (read via the Inventory `X-API-Key`,
+  `GET /proxy/network/api/s/default/rest/wlanconf`) -> inventory `/api/management/wifi`
+  endpoint -> `06-join-wifi.ps1` phase. The PSK is **never** in the repo or in any
+  script - it lives only server-side in `C:\inventory\wifi.json` on pc-deploy
+  (`{"ssid","psk"}`, ACL'd to SYSTEM + Administrators), which the auth-exempt
+  `/api/management/wifi` endpoint reads at request time and returns to the imaging
+  client. SSID wired up: **Juniper** (WPA2-PSK; the `Juniper-Guest` SSID is NOT used).
+- **Orchestrator wiring:** `join-wifi` = `06-join-wifi.ps1` sits in `$Phases` right
+  after `install-packages`, with `$PhaseMeta` label "Connecting to office Wi-Fi"
+  (band 72-78). It's also in the orchestrator self-update list so it can be hotfixed
+  from the share. `06` is best-effort: it skips cleanly (exit 0) when there is no
+  wireless NIC, when the API is unreachable, or when the join doesn't confirm - a
+  desktop with no Wi-Fi adapter never fails the image. It builds a minimal
+  WPA2PSK/AES profile and runs `netsh wlan add profile ... user=all` (PSK cleared
+  from memory and removed from disk immediately after import).
+- **To change the office Wi-Fi creds:** re-run the UniFi pull and rewrite
+  `C:\inventory\wifi.json` on pc-deploy (no service restart needed; the endpoint
+  reads the file per request).
 
 `deploy.ps1` has a `Get-DriverManifest` helper that tries `/api/drivers/manifest.json`
 first and falls back to the on-disk `manifest.json` if the inventory server is unreachable.

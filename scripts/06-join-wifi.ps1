@@ -24,6 +24,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Wi-Fi join is BEST-EFFORT during imaging: a desktop with no wireless NIC, an
+# unreachable inventory API, or a failed association must NEVER abort the image.
+# The orchestrator treats any non-zero exit as a (logged) non-fatal error, but we
+# additionally trap here and exit 0 so this phase is always green when it is not a
+# real problem (no adapter / no creds / join didn't confirm).
+trap {
+    Write-Host "WARN: Wi-Fi join hit a non-fatal error: $_" -ForegroundColor Yellow
+    exit 0
+}
+
+# --- No wireless adapter? Skip cleanly (e.g. desktops) -----------------------
+$wifiNic = Get-NetAdapter -ErrorAction SilentlyContinue |
+           Where-Object { $_.PhysicalMediaType -match 'Native 802.11|Wireless' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11' }
+if (-not $wifiNic) {
+    Write-Host "No wireless adapter present - skipping Wi-Fi join (not an error)." -ForegroundColor Yellow
+    exit 0
+}
+
 # --- Check if already connected ----------------------------------------------
 $current = (Get-NetConnectionProfile -ErrorAction SilentlyContinue |
             Where-Object { $_.InterfaceAlias -match 'Wi-Fi|Wireless' } |
@@ -44,16 +62,16 @@ if ($ProfileXml -and (Test-Path $ProfileXml)) {
         try {
             $creds = Invoke-RestMethod "$InventoryUrl/api/management/wifi" -TimeoutSec 10 -ErrorAction Stop
         } catch {
-            Write-Host "ERROR: Could not reach inventory API ($InventoryUrl): $_" -ForegroundColor Red
+            Write-Host "WARN: Could not reach inventory Wi-Fi API ($InventoryUrl): $_" -ForegroundColor Yellow
             Write-Host "  Set C:\inventory\wifi.json on pc-deploy and ensure the server is reachable." -ForegroundColor Yellow
-            exit 1
+            exit 0   # best-effort: never abort imaging
         }
 
         $ssid = $creds.ssid
         $psk  = $creds.psk
         if (-not $ssid -or -not $psk) {
-            Write-Host "ERROR: Inventory API returned empty SSID or PSK. Check C:\inventory\wifi.json on pc-deploy." -ForegroundColor Red
-            exit 1
+            Write-Host "WARN: Inventory API returned empty SSID or PSK. Check C:\inventory\wifi.json on pc-deploy." -ForegroundColor Yellow
+            exit 0   # best-effort: never abort imaging
         }
 
         if ($current -eq $ssid) {
@@ -110,3 +128,6 @@ if (-not $DryRun) {
         Write-Host "  WARN: Connection attempted but not yet confirmed. Check Wi-Fi status manually." -ForegroundColor Yellow
     }
 }
+
+# Always succeed - Wi-Fi join is best-effort and must not block imaging.
+exit 0
