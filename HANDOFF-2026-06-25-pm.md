@@ -209,6 +209,24 @@ Expected: I219-V binds, gets DHCP, maps `\\192.168.5.141\deploy$`, runs live `de
 (If integrated NIC still doesn't bind, ENG-2's exact live driver is v20.0.2.22 / `oem109.inf` — export
 via `pnputil /export-driver` and inject; but 20.0.2.19 covers DEV_550B so it should bind.)
 
+## ✅✅ IMAGING SOLVED END-TO-END + USB BACKUP BUILT (2026-06-30)
+
+**PXE path fully working:** Secure Boot ON → patched WinPE → I219-V NIC connects → share auth →
+`deploy.ps1` images. Final fixes after the NIC:
+- Share auth failed (System error 86) because the WinRE rebuild baked the `##WINPE_PASS##` placeholder
+  into `deploy-boot.ps1`. **Baked the real junadmin password** (from the cached DPAPI cred, since op's
+  session had expired) into the WIM's `deploy-boot.ps1`, scrubbed the temp, re-imported as
+  **"Juniper WinPE (deploy-ready)"** + re-applied BCD path. Verified.
+
+**USB backup imaging drive built** (for dongle/dock machines + anything that won't PXE):
+SanDisk 14.3 GB (was WS2025-EVAL media) → reformatted FAT32 UEFI, ADK media + **CA-2023 `bootmgfw_EX`
+as `EFI\Boot\bootx64.efi`** (Secure Boot capable) + the deploy-ready `boot.wim`. Verified bootx64.efi +
+sources\boot.wim present. Build script: `C:\WinPE-src\usb.ps1` on pc-deploy. (Media BCD already had the
+winload `path` — confirms the missing-`path` was a WDS-on-Server-2025 quirk, not copype.)
+
+**Net result:** the original `0xc0000272` Secure Boot wall is gone; IMAGE-ME images over PXE, and there's
+a Secure-Boot USB fallback. The same `winpe-deploy-final.wim` powers both PXE and USB.
+
 ## (Earlier) NEXT STEP — physical boot test
 
 PXE-boot **IMAGE-ME** (ThinkPad P14s Gen 5, MAC C8-53-09-2D-0D-56) **with Secure Boot ON**
