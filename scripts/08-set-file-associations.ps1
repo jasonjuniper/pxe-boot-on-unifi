@@ -147,9 +147,14 @@ if (Test-Path $defaultHive) {
     $defKey = 'HKU\JFASSOC_DEFAULT'
     if (-not $DryRun) {
         reg load $defKey $defaultHive 2>$null | Out-Null
+        # Delete via the provider path with a Test-Path guard (mirrors the per-user
+        # block above) so a missing UserChoice key on a fresh Default hive is a clean
+        # no-op. A raw `reg delete` of an absent key writes to stderr, which under
+        # $ErrorActionPreference='Stop' becomes a terminating NativeCommandError and
+        # false-flags this phase as failed even though nothing actually went wrong.
         foreach ($ext in $Archives) {
-            reg delete "$defKey\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$ext\UserChoice" `
-                /f 2>$null | Out-Null
+            $uc = "Registry::HKEY_USERS\JFASSOC_DEFAULT\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$ext\UserChoice"
+            if (Test-Path $uc) { Remove-Item $uc -Recurse -Force -ErrorAction SilentlyContinue }
         }
         [GC]::Collect(); Start-Sleep -Milliseconds 300
         reg unload $defKey 2>$null | Out-Null
