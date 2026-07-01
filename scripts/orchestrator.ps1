@@ -586,6 +586,17 @@ function Invoke-Phase {
 
     $script = Join-Path $ScriptsDir $Phases[$PhaseName]
     if (-not (Test-Path $script)) {
+        # Not staged locally - pull it straight from the share on-demand before
+        # giving up, so a Sync-Scripts hiccup can't silently drop a whole phase
+        # (this is what skipped 10-setup-user.ps1 / the assigned-user account once).
+        $shareSrc = "\\192.168.5.141\deploy`$\scripts\$($Phases[$PhaseName])"
+        if (Test-Path $shareSrc -ErrorAction SilentlyContinue) {
+            try { Copy-Item $shareSrc $script -Force -ErrorAction Stop
+                  Write-Log "Phase '$PhaseName' script was missing locally - fetched from share on-demand" -Level WARN
+            } catch {}
+        }
+    }
+    if (-not (Test-Path $script)) {
         Write-Log "Script missing: $script - skipping phase '$PhaseName'" -Level WARN
         return 0   # treat as success so imaging continues
     }

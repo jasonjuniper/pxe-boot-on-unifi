@@ -934,13 +934,19 @@ foreach ($f in @('Logging.ps1', 'progress.ps1', 'orchestrator.ps1', 'provision-s
     if (Test-Path $src) { Copy-Item $src "$jsRoot\$f" -Force }
 }
 
-# Phase scripts (+ provision-status copy in scripts dir so it self-updates too)
-foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1','07-remove-bloatware.ps1','08-set-file-associations.ps1','provision-status.ps1')) {
+# Phase scripts (+ provision-status copy in scripts dir so it self-updates too).
+# Stage EVERY phase in $Phases so a phase is never skipped as "script missing" on
+# the first boot (the orchestrator's Sync-Scripts backfills from the share too, but
+# staging them all here removes any timing dependency - this is how 10-setup-user
+# got skipped before).
+foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1','06-join-wifi.ps1',
+                 '07-remove-bloatware.ps1','08-set-file-associations.ps1','10-setup-user.ps1',
+                 'provision-status.ps1')) {
     $src = "$DeployShare\scripts\$f"
     if (Test-Path $src) { Copy-Item $src "$jsScripts\$f" -Force }
 }
 
-Write-Host '  Post-install automation staged (SetupComplete + orchestrator + status GUI + 4 phase scripts).' -ForegroundColor Green
+Write-Host '  Post-install automation staged (SetupComplete + orchestrator + status GUI + 6 phase scripts).' -ForegroundColor Green
 
 # Set staging log paths so Write-DeployLog can write to them
 $Script:WpeMasterLog = "$jsRoot\imaging.log"
