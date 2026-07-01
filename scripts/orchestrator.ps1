@@ -793,7 +793,7 @@ if ($phase -eq 'done') {
     Write-Log "All phases complete - tearing down kiosk + removing scheduled task"
     Write-ProgressJson -OverallPercent 100 -PhaseKey 'done' `
         -PhaseLabel 'Setup complete' -PhaseIndex $Phases.Count -PhaseTotal $Phases.Count `
-        -StepMessage 'Almost finished - restarting' -State 'done'
+        -StepMessage 'Imaging completed successfully' -State 'done'
     Remove-KioskMode
     Restore-PowerSettings
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -860,7 +860,7 @@ while ($true) {
         Write-Log "All phases done. Tearing down kiosk + removing scheduled task."
         Write-ProgressJson -OverallPercent 100 -PhaseKey 'done' `
             -PhaseLabel 'Setup complete' -PhaseIndex $Phases.Count -PhaseTotal $Phases.Count `
-            -StepMessage 'Almost finished - restarting' -State 'done'
+            -StepMessage 'Imaging completed successfully' -State 'done'
         Remove-KioskMode
         Restore-PowerSettings
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
