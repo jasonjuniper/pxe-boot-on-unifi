@@ -797,37 +797,54 @@ if (-not $Phases.Contains($phase)) {
     $phase = 'join-wifi'
 }
 
-$round = [int]($state.round) + 1
-Save-PhaseState -Phase $phase -Round $round
-Write-Log "--- Phase: $phase (round $round) ---" -MasterOnly
-Write-Log "Starting phase '$phase' (round $round)"
+$round   = [int]($state.round) + 1
+$current = $phase
 
-# Publish progress at the START of the phase (low end of its band).
-Publish-PhaseProgress -PhaseKey $phase -Fraction 0.05 -State 'running'
+# Run phases in a LOOP within this single invocation. Consecutive phases that
+# exit 0 (no reboot) chain immediately; the orchestrator only stops to reboot when
+# a phase returns 3010, and tears down when it reaches 'done'.
+#
+# Previously this ran at most TWO phases per boot and then waited for the "next
+# scheduled trigger" (a reboot). Because an exit-0 phase never reboots and the
+# JuniperImaging task is AtStartup, nothing re-fired it and the machine stranded at
+# the pending phase - e.g. remove-bloatware succeeded, pointer advanced to
+# setup-user, and it sat there until the 8h kiosk timeout dropped it to the login
+# screen. The loop below chains the whole non-reboot tail in one session.
+while ($true) {
+    Save-PhaseState -Phase $current -Round $round
+    Write-Log "--- Phase: $current (round $round) ---" -MasterOnly
+    Write-Log "Starting phase '$current' (round $round)"
+    Publish-PhaseProgress -PhaseKey $current -Fraction 0.05 -State 'running'
+    Sync-Scripts
 
-Sync-Scripts
-$exitCode = Invoke-Phase -PhaseName $phase
+    $ec = Invoke-Phase -PhaseName $current
+    Write-Log "Phase '$current' exited: $ec"
 
-Write-Log "Phase '$phase' exited: $exitCode"
+    if ($ec -eq 3010) {
+        # Phase needs a reboot - keep the SAME phase; round increments next boot.
+        Publish-PhaseProgress -PhaseKey $current -Fraction 0.5 -State 'rebooting'
+        Send-PhaseLog -PhaseKey $current -Status 'ok'
+        Write-Log "Reboot required after '$current' round $round - rebooting now" -MasterOnly
+        Write-Log "Rebooting in 10 seconds..."
+        Start-Sleep 10
+        Restart-Computer -Force
+        break
+    }
 
-if ($exitCode -eq 3010) {
-    # Phase installed updates and needs a reboot - phase stays the same
-    Publish-PhaseProgress -PhaseKey $phase -Fraction 0.5 -State 'rebooting'
-    Write-Log "Reboot required after phase '$phase' round $round - rebooting now" -MasterOnly
-    Write-Log "Rebooting in 10 seconds..."
-    Start-Sleep 10
-    Restart-Computer -Force
+    # exit 0 (success) or other non-3010 (non-fatal): finish this phase and advance.
+    Publish-PhaseProgress -PhaseKey $current -Fraction 1.0 -State 'running'
+    if ($ec -eq 0) {
+        Send-PhaseLog -PhaseKey $current -Status 'ok'
+        Write-Log "Phase '$current' succeeded" -MasterOnly
+    } else {
+        Send-PhaseLog -PhaseKey $current -Status 'error'
+        Write-Log "Phase '$current' exited $ec (non-fatal error) - continuing" -Level WARN -MasterOnly
+    }
 
-} elseif ($exitCode -eq 0) {
-    # Phase complete - advance and immediately run next phase
-    Publish-PhaseProgress -PhaseKey $phase -Fraction 1.0 -State 'running'
-    Send-PhaseLog -PhaseKey $phase -Status 'ok'   # upload finished phase log
-    $nextPhase = Get-NextPhase -Current $phase
-    Write-Log "Phase '$phase' succeeded - advancing to '$nextPhase'" -MasterOnly
-    Write-Log "Advancing to '$nextPhase'"
-    Save-PhaseState -Phase $nextPhase -Round 0
+    $next = Get-NextPhase -Current $current
+    Save-PhaseState -Phase $next -Round 0
 
-    if ($nextPhase -eq 'done') {
+    if ($next -eq 'done') {
         Write-Log "=== Imaging complete on $env:COMPUTERNAME - all phases succeeded ===" -MasterOnly
         Write-Log "All phases done. Tearing down kiosk + removing scheduled task."
         Write-ProgressJson -OverallPercent 100 -PhaseKey 'done' `
@@ -838,57 +855,10 @@ if ($exitCode -eq 3010) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
         Start-Sleep 6
         Restart-Computer -Force
-    } else {
-        # Run next phase in this same session (no reboot needed)
-        $round2 = 1
-        Save-PhaseState -Phase $nextPhase -Round $round2
-        Write-Log "--- Phase: $nextPhase (round $round2) ---" -MasterOnly
-        Write-Log "Starting phase '$nextPhase' (round $round2)"
-        Publish-PhaseProgress -PhaseKey $nextPhase -Fraction 0.05 -State 'running'
-        Sync-Scripts
-        $exitCode2 = Invoke-Phase -PhaseName $nextPhase
-        Write-Log "Phase '$nextPhase' exited: $exitCode2" -MasterOnly
-
-        if ($exitCode2 -eq 3010) {
-            $next2 = Get-NextPhase -Current $nextPhase
-            Save-PhaseState -Phase $next2 -Round 0
-            Publish-PhaseProgress -PhaseKey $nextPhase -Fraction 0.5 -State 'rebooting'
-            Write-Log "Reboot required after '$nextPhase' - rebooting, will continue at '$next2'" -MasterOnly
-            Start-Sleep 10
-            Restart-Computer -Force
-        } elseif ($exitCode2 -eq 0) {
-            $next2 = Get-NextPhase -Current $nextPhase
-            Save-PhaseState -Phase $next2 -Round 0
-            Publish-PhaseProgress -PhaseKey $nextPhase -Fraction 1.0 -State 'running'
-            Send-PhaseLog -PhaseKey $nextPhase -Status 'ok'   # upload finished phase log
-            Write-Log "Phase '$nextPhase' succeeded - next phase '$next2' will run on next scheduled trigger" -MasterOnly
-            # If that was the final phase, tear down now rather than waiting for a reboot.
-            if ($next2 -eq 'done') {
-                Write-Log "=== Imaging complete on $env:COMPUTERNAME - all phases succeeded ===" -MasterOnly
-                Write-ProgressJson -OverallPercent 100 -PhaseKey 'done' `
-                    -PhaseLabel 'Setup complete' -PhaseIndex $Phases.Count -PhaseTotal $Phases.Count `
-                    -StepMessage 'Almost finished - restarting' -State 'done'
-                Remove-KioskMode
-                Restore-PowerSettings
-                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-                Start-Sleep 6
-                Restart-Computer -Force
-            }
-        } else {
-            $next2 = Get-NextPhase -Current $nextPhase
-            Save-PhaseState -Phase $next2 -Round 0
-            Publish-PhaseProgress -PhaseKey $nextPhase -Fraction 1.0 -State 'running'
-            Send-PhaseLog -PhaseKey $nextPhase -Status 'error'   # upload failed phase log
-            Write-Log "Phase '$nextPhase' exited $exitCode2 (non-fatal) - continuing to '$next2'" -Level WARN -MasterOnly
-        }
+        break
     }
 
-} else {
-    # Non-zero, non-3010: log the error but advance so imaging doesn't stall
-    $nextPhase = Get-NextPhase -Current $phase
-    Publish-PhaseProgress -PhaseKey $phase -Fraction 1.0 -State 'running'
-    Send-PhaseLog -PhaseKey $phase -Status 'error'   # upload failed phase log
-    Write-Log "Phase '$phase' exited $exitCode (non-fatal error) - advancing to '$nextPhase'" -Level WARN -MasterOnly
-    Write-Log "Phase '$phase' non-fatal error (exit=$exitCode) - continuing" -Level WARN
-    Save-PhaseState -Phase $nextPhase -Round 0
+    # Continue to the next phase in THIS SAME SESSION (exit-0 phases need no reboot).
+    $current = $next
+    $round   = 1
 }
