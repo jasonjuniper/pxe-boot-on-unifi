@@ -37,6 +37,15 @@ $PhaseLabel = 'Installing Windows updates'
 $PhaseIndex = 2   # join-wifi is now phase 1; windows-update is phase 2
 $PhaseTotal = 5
 try { . 'C:\ProgramData\JuniperSetup\progress.ps1' } catch {}
+# Safe no-op fallbacks so the append-only event timeline calls (Publish-Event /
+# Invoke-Step) can never break this phase if the helper failed to dot-source.
+if (-not (Get-Command Publish-Event -ErrorAction SilentlyContinue)) {
+    function Publish-Event { param([Parameter(ValueFromRemainingArguments)]$args) }
+}
+if (-not (Get-Command Invoke-Step -ErrorAction SilentlyContinue)) {
+    function Invoke-Step { param([string]$PhaseKey,[string]$Step,[scriptblock]$Script,[int]$Percent=-1,[switch]$Critical)
+        try { & $Script; return $true } catch { if ($Critical) { throw }; return $false } }
+}
 
 # Round number (1-based) from the orchestrator's phase state, so progress text
 # reflects the multi-reboot reality ("Round 2 ...") instead of looking like a loop.
@@ -202,6 +211,7 @@ function Send-WuFailureLog {
 }
 
 Report-WU -RoundFraction 0.02 -Step "Round $Round - preparing Windows Update..."
+Publish-Event -PhaseKey 'windows-update' -Step "round-$Round-start" -Status 'running' -Message "Windows Update round $Round starting"
 
 # ---- Register Microsoft Update + enable driver/optional updates -------------
 # Default Windows Update only delivers critical/security updates.
@@ -277,6 +287,7 @@ try {
 } catch {
     Write-Log "Failed to create Windows Update session: $_" -Level ERROR
     Report-WU -RoundFraction 0.05 -Step 'Windows Update search failed' -State 'error'
+    Publish-Event -PhaseKey 'windows-update' -Step "round-$Round-search" -Status 'error' -Message "WUA COM init/search failed: $($_.Exception.Message)"
     Write-PhaseSummary -ExitCode 1 -Notes 'WUA COM init failed'
     exit 1
 }
@@ -287,12 +298,14 @@ $count   = $updates.Count
 if ($count -eq 0) {
     Write-Log 'No pending updates - system is current'
     Report-WU -RoundFraction 1.0 -Step 'Windows updates complete'
+    Publish-Event -PhaseKey 'windows-update' -Step 'complete' -Status 'ok' -Message 'No pending updates - Windows Update complete'
     Write-PhaseSummary -ExitCode 0 -Notes '0 updates pending'
     exit 0
 }
 
 Write-Log "Found $count pending update(s):"
 Report-WU -RoundFraction 0.10 -Step "Round $Round - found $count update(s)"
+Publish-Event -PhaseKey 'windows-update' -Step "round-$Round-found" -Status 'info' -Message "Round $Round - found $count pending update(s)"
 for ($i = 0; $i -lt $count; $i++) {
     $u = $updates.Item($i)
     Write-Log "  [$($i+1)/$count] $($u.Title)" -PhaseOnly
@@ -376,16 +389,19 @@ if ($ssuItems.Count -gt 0) {
             if ($src -eq 2) {
                 $ssuOk++
                 Write-Log "       OK  $sKbBare ($sUrName)"
+                Publish-Event -PhaseKey 'windows-update' -Step 'ssu-install' -Status 'ok' -Message "SSU installed: $sKbBare ($sUrName)"
             } else {
                 $ssuFail++
                 $sFailed = $true; $sHr = $sHresultHex
                 Write-Log "       FAIL code=$src ($sUrName) $sKbBare HResult=$sHresultHex" -Level WARN
+                Publish-Event -PhaseKey 'windows-update' -Step 'ssu-install' -Status 'error' -Message "SSU failed: $sKbBare HResult=$sHresultHex ($sUrName)"
             }
             if ($sir.RebootRequired) { $ssuReboot = $true }
         } catch {
             $ssuFail++
             $sFailed = $true; $sHr = 'exception'
             Write-Log "       SSU install exception ($sKbBare): $_" -Level WARN
+            Publish-Event -PhaseKey 'windows-update' -Step 'ssu-install' -Status 'error' -Message "SSU install exception ($sKbBare): $($_.Exception.Message)"
         }
         if ($sFailed) {
             $ssuFailedThisRound[$sKey] = [pscustomobject]@{ kb = $sKbBare; title = $sTitle; hresult = $sHr }
@@ -449,6 +465,7 @@ foreach ($s in $skipNow) {
     $kbTxt = if ($s.Kb) { $s.Kb } else { $s.Key }
     Write-Log "  SKIPPING $kbTxt (failed $($s.FailCount)x in prior rounds) - excluded from install set" -Level WARN
     Report-WU -RoundFraction 0.12 -Step ("Skipping update {0} (failed {1}x) - continuing" -f $kbTxt, $s.FailCount) -State 'warning'
+    Publish-Event -PhaseKey 'windows-update' -Step 'skip-update' -Status 'warning' -Message ("Skipping update {0} (failed {1}x) - continuing" -f $kbTxt, $s.FailCount)
 }
 
 $installCount = $toInstall.Count
@@ -527,10 +544,12 @@ for ($i = 0; $i -lt $installCount; $i++) {
         if ($rc -eq 2) {
             $succeeded++
             Write-Log "       OK  $kbBare ($urName)"
+            Publish-Event -PhaseKey 'windows-update' -Step 'install-update' -Status 'ok' -Message ("Round {0} - installed {1} ({2})" -f $Round, $(if ($kbBare) { $kbBare } else { $short }), $urName)
         } else {
             $failed++
             $thisFailed = $true; $thisHr = $hresultHex
             Write-Log "       FAIL code=$rc ($urName) $kbBare HResult=$hresultHex" -Level WARN
+            Publish-Event -PhaseKey 'windows-update' -Step 'install-update' -Status 'error' -Message ("Round {0} - {1} FAILED HResult={2} ({3})" -f $Round, $(if ($kbBare) { $kbBare } else { $short }), $hresultHex, $urName)
             if ($rc -eq 5) { $anyAborted = $true }
         }
         if ($ir.RebootRequired) { $rebootNeeded = $true }
@@ -538,6 +557,7 @@ for ($i = 0; $i -lt $installCount; $i++) {
         $failed++
         $thisFailed = $true; $thisHr = 'exception'
         Write-Log "       install exception ($kbBare): $_" -Level WARN
+        Publish-Event -PhaseKey 'windows-update' -Step 'install-update' -Status 'error' -Message ("Round {0} - {1} install exception: {2}" -f $Round, $(if ($kbBare) { $kbBare } else { $short }), $_.Exception.Message)
     }
 
     if ($thisFailed) {
@@ -621,6 +641,7 @@ if ($cappedOut -and $pendingAfter -ne 0) {
     }
     Report-WU -RoundFraction 1.0 -Step $msg -State 'warning'
     Write-Log $msg -Level WARN
+    Publish-Event -PhaseKey 'windows-update' -Step 'complete' -Status 'warning' -Message $msg
     Send-WuFailureLog -Summary ((Get-FailureSummary) + " | ROUND CAP REACHED") -Status 'error'
     Write-PhaseSummary -ExitCode 0 -Notes "round cap ($MaxRounds) reached; $($skipped.Count) update(s) skipped"
     exit 0
@@ -640,6 +661,7 @@ if ($stall) {
     $msg = ("Windows Update finished with {0} failed update(s): {1} (see log)" -f $n, ($failedKbs -join ', '))
     Report-WU -RoundFraction 1.0 -Step $msg -State 'warning'
     Write-Log "$msg - no progress this round, stopping reboots so imaging completes" -Level WARN
+    Publish-Event -PhaseKey 'windows-update' -Step 'complete' -Status 'warning' -Message $msg
     Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
     Write-PhaseSummary -ExitCode 0 -Notes "stall: 0 installed, $n failing update(s) skipped"
     exit 0
@@ -649,6 +671,7 @@ if ($anyAborted -and $succeeded -eq 0) {
     # Everything aborted with nothing installed - truly fatal, no point rebooting.
     Report-WU -RoundFraction 0.98 -Step 'Windows Update install aborted' -State 'error'
     Write-Log "Update install aborted (0/$installCount succeeded)" -Level ERROR
+    Publish-Event -PhaseKey 'windows-update' -Step 'complete' -Status 'error' -Message "Windows Update install aborted (0/$installCount succeeded)"
     Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
     Write-PhaseSummary -ExitCode 1 -Notes 'Install aborted'
     exit 1
@@ -683,6 +706,7 @@ if ($everFailed) {
         $msg = ("Windows Update complete - {0} update(s) skipped after repeated failure: {1} (see log)" -f $skipped.Count, ($skipped -join ', '))
         Report-WU -RoundFraction 1.0 -Step $msg -State 'warning'
         Write-Log $msg -Level WARN
+        Publish-Event -PhaseKey 'windows-update' -Step 'complete' -Status 'warning' -Message $msg
         Send-WuFailureLog -Summary (Get-FailureSummary) -Status 'error'
         Write-PhaseSummary -ExitCode 0 -Notes "complete with $($skipped.Count) skipped update(s)"
         exit 0
@@ -691,5 +715,6 @@ if ($everFailed) {
 
 Report-WU -RoundFraction 1.0 -Step 'Windows updates complete'
 Write-Log "Windows updates complete ($succeeded installed this round)"
+Publish-Event -PhaseKey 'windows-update' -Step 'complete' -Status 'ok' -Message "Windows updates complete ($succeeded installed this round)"
 Write-PhaseSummary -ExitCode 0 -Notes "$succeeded updates installed"
 exit 0

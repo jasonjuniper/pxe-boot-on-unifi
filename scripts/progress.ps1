@@ -29,11 +29,12 @@ $Script:ProgIdentity    = $null
 # match $PhaseMeta in orchestrator.ps1 so the bar stays monotonic across the
 # orchestrator's transition writes and the phase script's in-band writes.
 $Script:ProgPhaseBands = @{
-    'windows-update'    = @{ Start = 5;  End = 45 }
-    'install-packages'  = @{ Start = 45; End = 72 }
-    'join-wifi'         = @{ Start = 72; End = 78 }
-    'remove-bloatware'  = @{ Start = 78; End = 90 }
-    'file-associations' = @{ Start = 90; End = 99 }
+    'join-wifi'         = @{ Start = 1;  End = 4  }
+    'windows-update'    = @{ Start = 4;  End = 45 }
+    'install-packages'  = @{ Start = 45; End = 76 }
+    'remove-bloatware'  = @{ Start = 76; End = 85 }
+    'setup-user'        = @{ Start = 85; End = 91 }
+    'file-associations' = @{ Start = 91; End = 99 }
 }
 
 # Cache machine identity once (serial + hostname + primary MAC). Mirrors
@@ -130,4 +131,70 @@ function Publish-Progress {
         Invoke-RestMethod -Uri "$Script:ProgInvApi/ingest/deploy-progress" -Method Post `
             -ContentType 'application/json' -Body $body -TimeoutSec 5 -ErrorAction Stop | Out-Null
     } catch {}
+}
+
+# ---------------------------------------------------------------------------
+# Append-only event timeline. Publish-Event posts ONE substep/failure row to the
+# server's /ingest/deploy-event so /deploy/status shows a live, remote, step-by-
+# step history of exactly what ran and where it broke. Best-effort (never throws).
+#
+#   Status: info | running | ok | warning | error
+#   -Reset : (WinPE only, first event) clears this device's prior events so each
+#            fresh image starts a clean timeline.
+# ---------------------------------------------------------------------------
+function Publish-Event {
+    param(
+        [Parameter(Mandatory)][string]$PhaseKey,
+        [string]$Step = '',
+        [ValidateSet('info','running','ok','warning','error')][string]$Status = 'info',
+        [string]$Message = '',
+        [int]$Percent = -1,
+        [switch]$Reset
+    )
+    try {
+        $id = Get-ProgIdentity
+        $body = @{
+            serial    = $id.serial
+            hostname  = $id.hostname
+            mac       = $id.mac
+            phase_key = $PhaseKey
+            step      = $Step
+            status    = $Status
+            message   = $Message
+            ts        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            reset     = [bool]$Reset
+        }
+        if ($Percent -ge 0) { $body['percent'] = $Percent }
+        $json = $body | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri "$Script:ProgInvApi/ingest/deploy-event" -Method Post `
+            -ContentType 'application/json' -Body $json -TimeoutSec 5 -ErrorAction Stop | Out-Null
+    } catch {}
+}
+
+# Invoke-Step: run a named substep with automatic timeline reporting. Posts a
+# 'running' event, runs the block, then 'ok'. On failure it posts an 'error' event
+# (with the exception message) and, by default, CONTINUES so a single failed step
+# never aborts the image - exactly the "report in with each failure, gracefully"
+# behaviour we want. Pass -Critical to rethrow (abort the phase) after reporting.
+# Returns $true on success, $false on a caught (non-critical) failure.
+function Invoke-Step {
+    param(
+        [Parameter(Mandatory)][string]$PhaseKey,
+        [Parameter(Mandatory)][string]$Step,
+        [Parameter(Mandatory)][scriptblock]$Script,
+        [int]$Percent = -1,
+        [switch]$Critical
+    )
+    Publish-Event -PhaseKey $PhaseKey -Step $Step -Status 'running' -Percent $Percent
+    try {
+        & $Script
+        Publish-Event -PhaseKey $PhaseKey -Step $Step -Status 'ok' -Percent $Percent
+        return $true
+    } catch {
+        $msg = "$($_.Exception.Message)"
+        Publish-Event -PhaseKey $PhaseKey -Step $Step -Status 'error' -Message $msg -Percent $Percent
+        Write-Host "  STEP FAILED [$PhaseKey/$Step]: $msg" -ForegroundColor Red
+        if ($Critical) { throw }
+        return $false
+    }
 }

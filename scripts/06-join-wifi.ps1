@@ -34,11 +34,24 @@ trap {
     exit 0
 }
 
+# ---- Append-only event timeline (best-effort) -------------------------------
+# progress.ps1 provides Publish-Event; load it with safe no-op fallbacks so the
+# timeline calls can never break this best-effort phase.
+try { . 'C:\ProgramData\JuniperSetup\progress.ps1' } catch {}
+if (-not (Get-Command Publish-Event -ErrorAction SilentlyContinue)) {
+    function Publish-Event { param([Parameter(ValueFromRemainingArguments)]$args) }
+}
+if (-not (Get-Command Invoke-Step -ErrorAction SilentlyContinue)) {
+    function Invoke-Step { param([string]$PhaseKey,[string]$Step,[scriptblock]$Script,[int]$Percent=-1,[switch]$Critical)
+        try { & $Script; return $true } catch { if ($Critical) { throw }; return $false } }
+}
+
 # --- No wireless adapter? Skip cleanly (e.g. desktops) -----------------------
 $wifiNic = Get-NetAdapter -ErrorAction SilentlyContinue |
            Where-Object { $_.PhysicalMediaType -match 'Native 802.11|Wireless' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11' }
 if (-not $wifiNic) {
     Write-Host "No wireless adapter present - skipping Wi-Fi join (not an error)." -ForegroundColor Yellow
+    Publish-Event -PhaseKey 'join-wifi' -Step 'detect-adapter' -Status 'info' -Message 'no Wi-Fi adapter - skipped'
     exit 0
 }
 
@@ -59,11 +72,13 @@ if ($ProfileXml -and (Test-Path $ProfileXml)) {
     Write-Host "==> Wi-Fi: fetching credentials from inventory server..." -ForegroundColor Cyan
 
     if (-not $DryRun) {
+        Publish-Event -PhaseKey 'join-wifi' -Step 'fetch-creds' -Status 'running' -Message 'Fetching Wi-Fi credentials from inventory server'
         try {
             $creds = Invoke-RestMethod "$InventoryUrl/api/management/wifi" -TimeoutSec 10 -ErrorAction Stop
         } catch {
             Write-Host "WARN: Could not reach inventory Wi-Fi API ($InventoryUrl): $_" -ForegroundColor Yellow
             Write-Host "  Set C:\inventory\wifi.json on pc-deploy and ensure the server is reachable." -ForegroundColor Yellow
+            Publish-Event -PhaseKey 'join-wifi' -Step 'fetch-creds' -Status 'warning' -Message "Could not reach inventory Wi-Fi API ($InventoryUrl): $($_.Exception.Message)"
             exit 0   # best-effort: never abort imaging
         }
 
@@ -71,8 +86,10 @@ if ($ProfileXml -and (Test-Path $ProfileXml)) {
         $psk  = $creds.psk
         if (-not $ssid -or -not $psk) {
             Write-Host "WARN: Inventory API returned empty SSID or PSK. Check C:\inventory\wifi.json on pc-deploy." -ForegroundColor Yellow
+            Publish-Event -PhaseKey 'join-wifi' -Step 'fetch-creds' -Status 'warning' -Message 'Inventory API returned empty SSID or PSK'
             exit 0   # best-effort: never abort imaging
         }
+        Publish-Event -PhaseKey 'join-wifi' -Step 'fetch-creds' -Status 'ok' -Message "Got credentials for SSID '$ssid'"
 
         if ($current -eq $ssid) {
             Write-Host "Already connected to '$ssid'." -ForegroundColor Green
@@ -105,11 +122,13 @@ if ($ProfileXml -and (Test-Path $ProfileXml)) {
 </WLANProfile>
 "@
         $psk = $null; $creds = $null   # clear from memory
+        Publish-Event -PhaseKey 'join-wifi' -Step 'build-profile' -Status 'ok' -Message "Built WPA2-Personal profile for '$ssid'"
 
         $tmpXml = [IO.Path]::GetTempFileName() -replace '\.tmp$', '.xml'
         $profileXmlContent | Out-File $tmpXml -Encoding UTF8
         netsh wlan add profile filename="$tmpXml" user=all
         Remove-Item $tmpXml -Force      # remove PSK from disk immediately
+        Publish-Event -PhaseKey 'join-wifi' -Step 'join-ssid' -Status 'running' -Message "Connecting to '$ssid'"
         netsh wlan connect name="$ssid"
     } else {
         Write-Host "(Dry run - would fetch from $InventoryUrl/api/management/wifi)" -ForegroundColor Yellow
@@ -124,8 +143,10 @@ if (-not $DryRun) {
               Select-Object -First 1).Name
     if ($after) {
         Write-Host "  Connected to '$after'." -ForegroundColor Green
+        Publish-Event -PhaseKey 'join-wifi' -Step 'join-ssid' -Status 'ok' -Message "Connected to '$after'"
     } else {
         Write-Host "  WARN: Connection attempted but not yet confirmed. Check Wi-Fi status manually." -ForegroundColor Yellow
+        Publish-Event -PhaseKey 'join-wifi' -Step 'join-ssid' -Status 'warning' -Message 'Connection attempted but not yet confirmed'
     }
 }
 

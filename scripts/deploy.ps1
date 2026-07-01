@@ -32,6 +32,22 @@ $DeployServer = '192.168.5.141'   # pc-deploy - use IP, DNS may not work in WinP
 $DeployShare  = "\\$DeployServer\deploy$"
 $InvApi       = "http://$DeployServer`:8080"
 
+# ---- Append-only event timeline (best-effort) -------------------------------
+# progress.ps1 provides Publish-Event / Invoke-Step, which POST substep+failure
+# rows to /ingest/deploy-event so the Imaging tab shows a live, remote, step-by-
+# step history of exactly what ran and where it broke. In WinPE the helper is
+# usually NOT staged at C:\ProgramData\JuniperSetup yet, so also try the script's
+# own dir. If neither loads, define safe no-ops so calls can never break imaging.
+try { . 'C:\ProgramData\JuniperSetup\progress.ps1' } catch {}
+try { . (Join-Path $PSScriptRoot 'progress.ps1') } catch {}
+if (-not (Get-Command Publish-Event -ErrorAction SilentlyContinue)) {
+    function Publish-Event { param([Parameter(ValueFromRemainingArguments)]$args) }
+}
+if (-not (Get-Command Invoke-Step -ErrorAction SilentlyContinue)) {
+    function Invoke-Step { param([string]$PhaseKey,[string]$Step,[scriptblock]$Script,[int]$Percent=-1,[switch]$Critical)
+        try { & $Script; return $true } catch { if ($Critical) { throw }; return $false } }
+}
+
 # Write-DeployLog: writes a line to both the target drive AND the remote inventory log.
 # Called during the WinPE phase so every step is visible on pc-deploy in real time.
 # $Script:WpeTargetName is set once the computer name is known (later in the script).
@@ -770,6 +786,12 @@ $Script:WpeTargetName = $computerName
 # post-install orchestrator will later continue through to 'done').
 Send-WinpeProgress -Percent 1 -Label 'Imaging Windows' -Step 'Starting imaging'
 
+# First event on the append-only timeline. -Reset clears this device's prior
+# events so each fresh image starts a clean history. Machine/name/OS are already
+# resolved above (inventory match + operator choices).
+Publish-Event -PhaseKey 'winpe' -Step 'start' -Status 'running' -Message "Imaging $computerName ($($os.Label))" -Percent 1 -Reset
+Publish-Event -PhaseKey 'winpe' -Step 'resolve-machine' -Status 'ok' -Message "$hwMfr $hwModel | serial $(if ($serialClean) { $hwSerial } else { '(none)' }) | $(if ($prior) { "inventory match via $priorVia" } else { 'new machine' })"
+
 # Send first remote log entry immediately so the machine appears on pc-deploy
 try {
     $ts0     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -806,6 +828,7 @@ Write-Host '  !! Disk 0 will be COMPLETELY WIPED !!' -ForegroundColor Red
 # --- Partition Disk 0 (GPT / UEFI) -----------------------------------------
 
 Write-DeployLog 'Step: Partitioning disk 0 (GPT/UEFI)'
+Publish-Event -PhaseKey 'winpe' -Step 'partition-disk' -Status 'running' -Message 'Partitioning disk 0 (GPT/UEFI)' -Percent 2
 Write-Host ''
 Write-Host '  Partitioning disk 0 (GPT/UEFI)...' -ForegroundColor Cyan
 $dpTxt = @'
@@ -827,16 +850,19 @@ $p = Start-Process diskpart -ArgumentList "/s `"$dpFile`"" -Wait -PassThru -NoNe
 Remove-Item $dpFile -Force -ErrorAction SilentlyContinue
 if ($p.ExitCode -ne 0) {
     Write-Host "  diskpart failed (exit $($p.ExitCode))" -ForegroundColor Red
+    Publish-Event -PhaseKey 'winpe' -Step 'partition-disk' -Status 'error' -Message "diskpart failed (exit $($p.ExitCode))" -Percent 2
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Partitioned: S: (EFI), C: (Windows).' -ForegroundColor Green
 Write-DeployLog 'Step: Partition complete'
+Publish-Event -PhaseKey 'winpe' -Step 'partition-disk' -Status 'ok' -Message 'Disk partitioned: S: (EFI), C: (Windows)' -Percent 2
 Send-WinpeProgress -Percent 2 -Label 'Imaging Windows' -Step 'Disk partitioned'
 
 # --- Apply WIM --------------------------------------------------------------
 
 Write-DeployLog "Step: Applying $($os.Label) (DISM - 10-20 min)"
 Send-WinpeProgress -Percent 3 -Label 'Applying Windows image' -Step "Applying $($os.Label)"
+Publish-Event -PhaseKey 'winpe' -Step 'apply-wim' -Status 'running' -Message "Applying $($os.Label) (DISM, 10-20 min)" -Percent 3
 Write-Host ''
 Write-Host "  Applying $($os.Label) (index $($os.WimIndex))..." -ForegroundColor Cyan
 Write-Host '  This takes 10-20 minutes depending on disk speed.'
@@ -845,19 +871,23 @@ $p = Start-Process dism -ArgumentList "/Apply-Image /ImageFile:`"$wimPath`" /Ind
 if ($p.ExitCode -ne 0) {
     Write-Host "  DISM apply failed (exit $($p.ExitCode))" -ForegroundColor Red
     Send-WinpeProgress -Percent 3 -Label 'Applying Windows image' -Step "DISM apply failed (exit $($p.ExitCode))" -State 'error'
+    Publish-Event -PhaseKey 'winpe' -Step 'apply-wim' -Status 'error' -Message "DISM apply failed (exit $($p.ExitCode))" -Percent 3
     Send-WinpeLog -Status 'error'
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Image applied.' -ForegroundColor Green
 Write-DeployLog 'Step: WIM applied'
+Publish-Event -PhaseKey 'winpe' -Step 'apply-wim' -Status 'ok' -Message "$($os.Label) image applied" -Percent 4
 Send-WinpeProgress -Percent 4 -Label 'Injecting drivers' -Step 'Windows image applied'
 
 # --- Inject Drivers (offline) -----------------------------------------------
 
 Write-DeployLog "Step: Injecting drivers for $hwModel"
+Publish-Event -PhaseKey 'winpe' -Step 'inject-drivers' -Status 'running' -Message "Injecting drivers for $hwModel" -Percent 4
 Write-Host ''
 Write-Host '  Injecting hardware drivers...' -ForegroundColor Cyan
 Invoke-DriverInjection -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
+Publish-Event -PhaseKey 'winpe' -Step 'inject-drivers' -Status 'ok' -Message "Driver injection complete for $hwModel" -Percent 4
 
 # --- Inject unattend.xml with computer name ---------------------------------
 
@@ -867,11 +897,13 @@ Write-Host '  Writing unattend.xml...' -ForegroundColor Cyan
 $unattendSrc = Join-Path $DeployShare $os.Unattend
 if (-not (Test-Path $unattendSrc)) {
     Write-Host "  WARN: Unattend not found at $unattendSrc - skipping." -ForegroundColor Yellow
+    Publish-Event -PhaseKey 'winpe' -Step 'inject-unattend' -Status 'warning' -Message "Unattend not found at $unattendSrc - skipped" -Percent 4
 } else {
     New-Item 'C:\Windows\Panther' -ItemType Directory -Force | Out-Null
     $xml = ([System.IO.File]::ReadAllText($unattendSrc)) -replace '<ComputerName>\*</ComputerName>', "<ComputerName>$computerName</ComputerName>"
     $xml | Set-Content 'C:\Windows\Panther\unattend.xml' -Encoding UTF8
     Write-Host "  unattend.xml written (ComputerName=$computerName)." -ForegroundColor Green
+    Publish-Event -PhaseKey 'winpe' -Step 'inject-unattend' -Status 'ok' -Message "unattend.xml written (ComputerName=$computerName)" -Percent 4
 }
 
 # --- Stage post-install automation ------------------------------------------
@@ -925,6 +957,7 @@ Write-DeployLog "Mfr: $hwMfr | Model: $hwModel | Serial: $hwSerial"
 # reports 'MINWINPC' for $env:COMPUTERNAME.
 
 Write-DeployLog 'Step: Registering in inventory'
+Publish-Event -PhaseKey 'winpe' -Step 'inventory-preregister' -Status 'running' -Message "Pre-registering $computerName in inventory" -Percent 4
 Write-Host ''
 Write-Host '  Registering in inventory...' -ForegroundColor DarkGray
 $invDeviceId = if ($prior) { $prior.device_id } else { $null }
@@ -954,21 +987,26 @@ try {
     } | ConvertTo-Json -Compress
     Invoke-RestMethod "$InvApi/ingest/endpoint" -Method Post -Body $osPatch `
         -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+    Publish-Event -PhaseKey 'winpe' -Step 'inventory-preregister' -Status 'ok' -Message "$computerName pre-registered ($osCaption)" -Percent 4
 } catch {
     Write-Host '  Inventory registration skipped (server unreachable - will register post-install).' -ForegroundColor DarkGray
+    Publish-Event -PhaseKey 'winpe' -Step 'inventory-preregister' -Status 'warning' -Message "Inventory registration skipped (server unreachable): $($_.Exception.Message)" -Percent 4
 }
 
 # --- Boot sector ------------------------------------------------------------
 
 Write-DeployLog 'Step: Configuring UEFI boot'
+Publish-Event -PhaseKey 'winpe' -Step 'bcdboot' -Status 'running' -Message 'Configuring UEFI boot sector (bcdboot)' -Percent 5
 Write-Host ''
 Write-Host '  Configuring UEFI boot...' -ForegroundColor Cyan
 $p = Start-Process bcdboot -ArgumentList 'C:\Windows /s S: /f UEFI' -Wait -PassThru -NoNewWindow
 if ($p.ExitCode -ne 0) {
     Write-Host "  bcdboot failed (exit $($p.ExitCode))" -ForegroundColor Red
+    Publish-Event -PhaseKey 'winpe' -Step 'bcdboot' -Status 'error' -Message "bcdboot failed (exit $($p.ExitCode))" -Percent 5
     Read-Host '  Press Enter to exit'; exit
 }
 Write-Host '  Boot sector configured.' -ForegroundColor Green
+Publish-Event -PhaseKey 'winpe' -Step 'bcdboot' -Status 'ok' -Message 'UEFI boot sector configured' -Percent 5
 
 # --- UEFI boot order: Windows first, PXE removed ----------------------------
 
@@ -1028,6 +1066,7 @@ Write-DeployLog "WinPE phase complete - rebooting into Windows"
 # Final WinPE milestone + upload of the WinPE log to the Imaging tab. The
 # post-install orchestrator takes over this same device record after first boot.
 Send-WinpeProgress -Percent 5 -Label 'Finalizing - rebooting to Windows' -Step 'Rebooting into Windows setup'
+Publish-Event -PhaseKey 'winpe' -Step 'reboot' -Status 'ok' -Message 'WinPE phase complete - rebooting into Windows setup' -Percent 5
 Send-WinpeLog -Status 'ok'
 
 # --- Cleanup and reboot -----------------------------------------------------

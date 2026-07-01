@@ -44,6 +44,18 @@ $invBase = 'http://192.168.5.141:8080'
 Initialize-ImagingLogging -PhaseName 'install-packages'
 Write-PhaseHeader -Description 'Install Packages'
 
+# ---- Append-only event timeline (best-effort) -------------------------------
+# progress.ps1 provides Publish-Event; load it with safe no-op fallbacks so the
+# timeline calls can never break this phase.
+try { . 'C:\ProgramData\JuniperSetup\progress.ps1' } catch {}
+if (-not (Get-Command Publish-Event -ErrorAction SilentlyContinue)) {
+    function Publish-Event { param([Parameter(ValueFromRemainingArguments)]$args) }
+}
+if (-not (Get-Command Invoke-Step -ErrorAction SilentlyContinue)) {
+    function Invoke-Step { param([string]$PhaseKey,[string]$Step,[scriptblock]$Script,[int]$Percent=-1,[switch]$Critical)
+        try { & $Script; return $true } catch { if ($Critical) { throw }; return $false } }
+}
+
 # Detect SYSTEM context (winget/interactive tools will not work)
 $runningAsSystem = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -match 'SYSTEM')
 if ($runningAsSystem) {
@@ -358,6 +370,7 @@ Write-Log "  MAC: $primaryMac   Disk free: ${diskFreePct}%"
 # Also installs the Juniper root CA cert (needed for any internal HTTPS).
 # ===========================================================================
 Write-Log '--- Step 2/8: Inventory Agent MSI ---'
+Publish-Event -PhaseKey 'install-packages' -Step 'inventory-agent' -Status 'running' -Message 'Installing inventory agent MSI (registers device, installs CA cert)'
 
 $msiOk = $false
 if (-not $DryRun) {
@@ -373,6 +386,7 @@ if (-not $DryRun) {
         if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) {
             Write-Log ('Inventory Agent MSI installed (exit={0}, {1:F1}s)' -f $p.ExitCode, $sw2.Elapsed.TotalSeconds)
             $msiOk = $true
+            Publish-Event -PhaseKey 'install-packages' -Step 'inventory-agent' -Status 'ok' -Message "Inventory agent MSI installed (exit=$($p.ExitCode))"
         } else {
             Write-Log "WARN: MSI install exit $($p.ExitCode) - falling back to one-liner" -Level WARN
         }
@@ -385,9 +399,11 @@ if (-not $DryRun) {
         try {
             Invoke-Expression (Invoke-RestMethod "$invBase/static/install_agent.ps1" -TimeoutSec 15)
             Write-Log 'Inventory agent registration complete (one-liner mode)'
+            Publish-Event -PhaseKey 'install-packages' -Step 'inventory-agent' -Status 'ok' -Message 'Inventory agent registered (one-liner fallback)'
         } catch {
             Write-Log "WARN: Inventory registration failed: $_" -Level WARN
             Write-Log "Retry manually: irm $invBase/static/install_agent.ps1 | iex" -Level WARN -PhaseOnly
+            Publish-Event -PhaseKey 'install-packages' -Step 'inventory-agent' -Status 'error' -Message "Inventory agent registration failed: $_"
         }
     }
 } else {
@@ -400,6 +416,7 @@ if (-not $DryRun) {
 # Server returns all enabled packages with skip logic pre-computed.
 # ===========================================================================
 Write-Log '--- Step 3/8: Inventory catalog packages ---'
+Publish-Event -PhaseKey 'install-packages' -Step 'catalog-install' -Status 'running' -Message 'Querying + installing inventory catalog packages'
 
 $catalogPackages = @()
 $catalogQueried  = $false
@@ -413,9 +430,11 @@ if ($primaryMac) {
         Write-Log "Inventory catalog: $($catalogPackages.Count) package(s) assigned to this machine"
     } catch {
         Write-Log "WARN: Catalog query failed: $_ - proceeding without catalog" -Level WARN
+        Publish-Event -PhaseKey 'install-packages' -Step 'catalog-install' -Status 'warning' -Message "Catalog query failed: $_ - proceeding without catalog"
     }
 } else {
     Write-Log 'WARN: No primary MAC found - cannot query catalog (proceeding with static lists)' -Level WARN
+    Publish-Event -PhaseKey 'install-packages' -Step 'catalog-install' -Status 'warning' -Message 'No primary MAC found - cannot query catalog'
 }
 
 if ($catalogQueried -and $catalogPackages.Count -gt 0) {
@@ -430,9 +449,11 @@ if ($catalogQueried -and $catalogPackages.Count -gt 0) {
 
     Write-Log ''
     Write-Log '--- Catalog install complete ---'
+    Publish-Event -PhaseKey 'install-packages' -Step 'catalog-install' -Status 'ok' -Message "Catalog install complete ($($catalogPackages.Count) package(s) processed)"
 
 } elseif ($catalogQueried) {
     Write-Log '  No packages assigned to this device in catalog'
+    Publish-Event -PhaseKey 'install-packages' -Step 'catalog-install' -Status 'ok' -Message 'No packages assigned to this device in catalog'
 }
 
 # ===========================================================================
@@ -440,9 +461,11 @@ if ($catalogQueried -and $catalogPackages.Count -gt 0) {
 # Skipped in SYSTEM context; catalog already covers MSI-managed tools.
 # ===========================================================================
 Write-Log '--- Step 4/8: Supplementary packages (winget + share MSI) ---'
+Publish-Event -PhaseKey 'install-packages' -Step 'supplementary' -Status 'running' -Message 'Installing supplementary packages (winget + share MSI)'
 
 if ($runningAsSystem) {
     Write-Log "Skipping $($WingetPackages.Count) winget package(s) - SYSTEM context" -Level WARN
+    Publish-Event -PhaseKey 'install-packages' -Step 'supplementary' -Status 'info' -Message "Skipping $($WingetPackages.Count) winget package(s) - SYSTEM context"
 } else {
     Write-Log 'Refreshing winget sources...'
     if (-not $DryRun) {
@@ -461,6 +484,7 @@ if ($MsiPackages.Count -gt 0) {
 } else {
     Write-Log 'No share MSI packages configured - skipping'
 }
+Publish-Event -PhaseKey 'install-packages' -Step 'supplementary' -Status 'ok' -Message 'Supplementary packages processed'
 
 # ===========================================================================
 # STEP 5 - WSL2 + Ubuntu
@@ -468,6 +492,7 @@ if ($MsiPackages.Count -gt 0) {
 # Ubuntu distro install via wsl.exe requires non-SYSTEM.
 # ===========================================================================
 Write-Log '--- Step 5/8: WSL2 + Ubuntu ---'
+Publish-Event -PhaseKey 'install-packages' -Step 'wsl2' -Status 'running' -Message 'Enabling WSL2 + installing Ubuntu'
 $wslReboot = $false
 
 if (-not $DryRun) {
@@ -510,7 +535,10 @@ if (-not $DryRun) {
 # ===========================================================================
 # STEP 6 - PowerShell 7 as default shell
 # ===========================================================================
+Publish-Event -PhaseKey 'install-packages' -Step 'wsl2' -Status 'ok' -Message 'WSL2 feature enablement processed'
+
 Write-Log '--- Step 6/8: PowerShell 7 configuration ---'
+Publish-Event -PhaseKey 'install-packages' -Step 'powershell7' -Status 'running' -Message 'Configuring PowerShell 7 as default shell'
 
 if (-not $DryRun) {
     $pwsh = 'C:\Program Files\PowerShell\7\pwsh.exe'
@@ -541,8 +569,10 @@ if (-not $DryRun) {
             }
         }
         Write-Log 'PowerShell 7 configured'
+        Publish-Event -PhaseKey 'install-packages' -Step 'powershell7' -Status 'ok' -Message 'PowerShell 7 configured as default shell'
     } else {
         Write-Log 'WARN: pwsh.exe not found - PS7 may need a reboot before it appears on PATH' -Level WARN
+        Publish-Event -PhaseKey 'install-packages' -Step 'powershell7' -Status 'warning' -Message 'pwsh.exe not found - PS7 may need a reboot before it appears on PATH'
     }
 }
 
@@ -550,6 +580,7 @@ if (-not $DryRun) {
 # STEP 7 - npm global packages
 # ===========================================================================
 Write-Log '--- Step 7/8: npm global packages ---'
+Publish-Event -PhaseKey 'install-packages' -Step 'npm-globals' -Status 'running' -Message 'Installing npm global packages'
 
 $NpmGlobalPackages = @(
     '@anthropic-ai/claude-code',
@@ -558,6 +589,7 @@ $NpmGlobalPackages = @(
 
 if ($runningAsSystem) {
     Write-Log "Skipping $($NpmGlobalPackages.Count) npm global packages - SYSTEM context" -Level WARN
+    Publish-Event -PhaseKey 'install-packages' -Step 'npm-globals' -Status 'info' -Message "Skipping $($NpmGlobalPackages.Count) npm global package(s) - SYSTEM context"
 } elseif (-not $DryRun) {
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('Path', 'User')
@@ -581,8 +613,10 @@ if ($runningAsSystem) {
                 Write-Log "  OK" -PhaseOnly
             }
         }
+        Publish-Event -PhaseKey 'install-packages' -Step 'npm-globals' -Status 'ok' -Message "npm global packages processed ($($NpmGlobalPackages.Count) requested)"
     } else {
         Write-Log 'WARN: npm not found - Node.js may need a reboot to appear on PATH' -Level WARN
+        Publish-Event -PhaseKey 'install-packages' -Step 'npm-globals' -Status 'warning' -Message 'npm not found - Node.js may need a reboot to appear on PATH'
     }
 }
 
@@ -593,6 +627,7 @@ Write-Log '--- Step 8/8: junadmin password + OEM activation ---'
 
 # junadmin password via inventory bootstrap API (no 1Password needed)
 Write-Log 'Setting junadmin password from inventory bootstrap API...'
+Publish-Event -PhaseKey 'install-packages' -Step 'set-junadmin-password' -Status 'running' -Message 'Setting junadmin password from inventory bootstrap API'
 if (-not $DryRun) {
     try {
         $resp = Invoke-RestMethod "$invBase/api/management/bootstrap" -TimeoutSec 10 -ErrorAction Stop
@@ -602,9 +637,11 @@ if (-not $DryRun) {
         Set-LocalUser -Name 'junadmin' -Password $secPass
         $secPass = $null; $bPass = $null; $resp = $null
         Write-Log 'junadmin password updated successfully'
+        Publish-Event -PhaseKey 'install-packages' -Step 'set-junadmin-password' -Status 'ok' -Message 'junadmin password updated successfully'
     } catch {
         Write-Log "Could not set junadmin password via bootstrap API: $_" -Level ERROR
         Write-Log 'Machine will remain with CHANGEME password - log in manually and re-run' -Level ERROR
+        Publish-Event -PhaseKey 'install-packages' -Step 'set-junadmin-password' -Status 'error' -Message "Could not set junadmin password via bootstrap API: $_"
     }
 }
 
@@ -613,6 +650,7 @@ if (-not $DryRun) {
 # mismatch - the Home key cannot be applied to a Pro install.  In that case we
 # skip activation here and let Windows auto-activate via digital license.
 Write-Log 'Activating Windows via OEM UEFI key...'
+Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'running' -Message 'Activating Windows via OEM UEFI key'
 if (-not $DryRun) {
     try {
         $sl = Get-WmiObject -Query `
@@ -623,6 +661,7 @@ if (-not $DryRun) {
 
         if (-not $oemKey -or $oemKey.Length -eq 0) {
             Write-Log 'No OEM UEFI key found (VM or no embedded key) - digital license or KMS will activate'
+            Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'info' -Message 'No OEM UEFI key found (VM or no embedded key) - digital license/KMS will activate'
         } else {
             # Detect edition mismatch before touching slmgr.
             # OA3xOriginalProductKeyDescription contains the key's intended edition.
@@ -635,4 +674,42 @@ if (-not $DryRun) {
 
             if ($mismatch) {
                 $keyEdition = if ($keyIsHome) { 'Home' } elseif ($keyIsPro) { 'Pro' } else { 'unknown' }
-                Write-Log "OEM key is for Windows $keyEdition but machine is imaged with a diff
+                Write-Log "OEM key is for Windows $keyEdition but machine is imaged with a different edition - skipping OEM key, Windows will activate via digital license" -Level WARN
+                Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'warning' -Message "OEM key edition mismatch (key=$keyEdition) - using digital license"
+            } else {
+                # Key value is never logged - only slmgr result text appears
+                $ipkText = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $oemKey 2>&1) -join ' '
+                Write-Log "Key install: $ipkText"
+
+                if ($ipkText -match '0xC004F069') {
+                    Write-Log 'Edition mismatch detected after key install - Windows will activate via digital license' -Level WARN
+                    Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'warning' -Message 'Edition mismatch after key install - digital license'
+                } elseif ($ipkText -match '0xC004') {
+                    Write-Log 'OEM key rejected by activation server - Windows will activate via digital license or needs manual activation' -Level WARN
+                    Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'warning' -Message 'OEM key rejected by activation server - digital license / manual'
+                } else {
+                    $ato = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1) -join ' '
+                    Write-Log "Activation: $ato"
+                    Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'ok' -Message 'Windows activated via OEM key'
+                }
+            }
+        }
+    } catch {
+        Write-Log "WARN: OEM key read failed: $_" -Level WARN
+    }
+}
+
+# ===========================================================================
+# Final summary
+# ===========================================================================
+$dryNote = if ($DryRun) { ' (dry run)' } else { '' }
+
+if ($wslReboot) {
+    Write-Log 'WSL feature enablement requires a reboot'
+    Write-PhaseSummary -ExitCode 3010 -Notes "WSL reboot pending$dryNote" -Reboot
+    exit 3010
+}
+
+Write-Log "Package installation complete$dryNote"
+Write-PhaseSummary -ExitCode 0 -Notes "catalog=$($catalogPackages.Count), winget=$(if ($runningAsSystem) { 'skipped' } else { $WingetPackages.Count }), msi=$($MsiPackages.Count)$dryNote"
+exit 0

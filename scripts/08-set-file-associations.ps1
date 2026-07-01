@@ -16,6 +16,18 @@
 param([switch]$DryRun)
 $ErrorActionPreference = 'Stop'
 
+# ---- Append-only event timeline (best-effort) -------------------------------
+# progress.ps1 provides Publish-Event; load it with safe no-op fallbacks so the
+# timeline calls can never break this phase.
+try { . 'C:\ProgramData\JuniperSetup\progress.ps1' } catch {}
+if (-not (Get-Command Publish-Event -ErrorAction SilentlyContinue)) {
+    function Publish-Event { param([Parameter(ValueFromRemainingArguments)]$args) }
+}
+if (-not (Get-Command Invoke-Step -ErrorAction SilentlyContinue)) {
+    function Invoke-Step { param([string]$PhaseKey,[string]$Step,[scriptblock]$Script,[int]$Percent=-1,[switch]$Critical)
+        try { & $Script; return $true } catch { if ($Critical) { throw }; return $false } }
+}
+
 # --- Extensions to assign to 7-Zip (ISO explicitly excluded) -----------------
 $Archives = @(
     '.7z', '.zip', '.rar', '.tar', '.gz', '.tgz', '.bz2', '.bz',
@@ -26,10 +38,12 @@ $Archives = @(
 Write-Host ''
 Write-Host '==> 7-Zip file associations' -ForegroundColor Cyan
 if ($DryRun) { Write-Host '    (Dry run -- no changes will be made)' -ForegroundColor Yellow }
+Publish-Event -PhaseKey 'file-associations' -Step 'start' -Status 'running' -Message "Setting 7-Zip as default for $($Archives.Count) archive type(s)"
 
 # 1. Verify 7-Zip is installed ------------------------------------------------
 $szFM = 'C:\Program Files\7-Zip\7zFM.exe'
 if (-not (Test-Path $szFM)) {
+    Publish-Event -PhaseKey 'file-associations' -Step 'verify-7zip' -Status 'error' -Message "7-Zip not found at $szFM - run 04-install-packages.ps1 first"
     Write-Error "7-Zip not found at $szFM. Run 04-install-packages.ps1 first."
     exit 1
 }
@@ -59,9 +73,11 @@ if (-not (Test-Path $progPath)) {
 } else {
     Write-Host "  ProgID $progId already registered." -ForegroundColor DarkGray
 }
+Publish-Event -PhaseKey 'file-associations' -Step 'register-progid' -Status 'ok' -Message "7-Zip ProgID '$progId' registered in HKCR"
 
 # 3. Set HKCR\.<ext> defaults -------------------------------------------------
 Write-Host "  Setting HKCR defaults for $($Archives.Count) extensions..." -ForegroundColor Cyan
+Publish-Event -PhaseKey 'file-associations' -Step 'set-hkcr-defaults' -Status 'running' -Message "Setting HKCR defaults for $($Archives.Count) extensions"
 foreach ($ext in $Archives) {
     $extPath = "HKCR:\$ext"
     if ($DryRun) { Write-Host "    [DryRun] $ext -> $progId"; continue }
@@ -73,10 +89,12 @@ foreach ($ext in $Archives) {
         -PropertyType Binary -Force | Out-Null
 }
 if (-not $DryRun) { Write-Host "  HKCR defaults set." -ForegroundColor Green }
+Publish-Event -PhaseKey 'file-associations' -Step 'set-hkcr-defaults' -Status 'ok' -Message "HKCR defaults set for $($Archives.Count) extensions"
 
 # 4. Clear UserChoice from every loaded and offline user profile --------------
 # UserChoice overrides HKCR; removing it causes Windows to fall back to HKCR.
 Write-Host "  Clearing UserChoice overrides from user profiles..." -ForegroundColor Cyan
+Publish-Event -PhaseKey 'file-associations' -Step 'clear-userchoice' -Status 'running' -Message 'Clearing UserChoice overrides from user profiles'
 
 $profileList = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*' |
     Where-Object { $_.ProfileImagePath -notmatch 'systemprofile|LocalService|NetworkService' }
@@ -119,8 +137,11 @@ foreach ($profile in $profileList) {
     Write-Host ("    {0,-20} cleared {1} UserChoice entries" -f $userName, $cleared) -ForegroundColor DarkGray
 }
 
+Publish-Event -PhaseKey 'file-associations' -Step 'clear-userchoice' -Status 'ok' -Message 'UserChoice overrides cleared from user profiles'
+
 # 5. Patch Default User hive for new accounts ---------------------------------
 Write-Host "  Patching Default User hive..." -ForegroundColor Cyan
+Publish-Event -PhaseKey 'file-associations' -Step 'patch-default-hive' -Status 'running' -Message 'Patching Default User hive for new accounts'
 $defaultHive = 'C:\Users\Default\NTUSER.DAT'
 if (Test-Path $defaultHive) {
     $defKey = 'HKU\JFASSOC_DEFAULT'
@@ -138,8 +159,11 @@ if (Test-Path $defaultHive) {
     }
 }
 
+Publish-Event -PhaseKey 'file-associations' -Step 'patch-default-hive' -Status 'ok' -Message 'Default User hive processed'
+
 # 6. Import DefaultAppAssociations XML via DISM (new-profile fallback) --------
 Write-Host "  Importing DefaultAppAssociations XML via DISM..." -ForegroundColor Cyan
+Publish-Event -PhaseKey 'file-associations' -Step 'dism-import' -Status 'running' -Message 'Importing DefaultAppAssociations XML via DISM'
 $xmlPath = "$env:TEMP\juniper-7zip-assoc.xml"
 $xml = @('<?xml version="1.0" encoding="UTF-8"?>', '<DefaultAssociations>')
 foreach ($ext in $Archives) {
@@ -157,14 +181,18 @@ if (-not $DryRun) {
     Remove-Item $o,$e,$xmlPath -ErrorAction SilentlyContinue
     if ($p.ExitCode -eq 0) {
         Write-Host "  DefaultAppAssociations imported." -ForegroundColor Green
+        Publish-Event -PhaseKey 'file-associations' -Step 'dism-import' -Status 'ok' -Message 'DefaultAppAssociations imported via DISM'
     } else {
         Write-Host "  WARN: DISM exit $($p.ExitCode) -- associations may not apply to new profiles." -ForegroundColor Yellow
         if ($err) { Write-Host "  $($err.Trim())" -ForegroundColor DarkGray }
+        Publish-Event -PhaseKey 'file-associations' -Step 'dism-import' -Status 'warning' -Message "DISM exit $($p.ExitCode) - associations may not apply to new profiles"
     }
 } else {
     Write-Host "  [DryRun] Would import $xmlPath"
     Remove-Item $xmlPath -ErrorAction SilentlyContinue
 }
+
+Publish-Event -PhaseKey 'file-associations' -Step 'complete' -Status 'ok' -Message "7-Zip file associations complete ($($Archives.Count) archive types)"
 
 Write-Host ''
 Write-Host '==> 7-Zip file associations complete.' -ForegroundColor Green
