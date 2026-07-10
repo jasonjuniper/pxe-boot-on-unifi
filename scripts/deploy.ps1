@@ -327,6 +327,34 @@ function Invoke-DriverInjection([string]$DeployShare, [string]$Manufacturer, [st
     }
 }
 
+function Invoke-UniversalDriverInjection([string]$DeployShare) {
+    # ALWAYS-injected drivers, independent of model match. Currently the USB-C
+    # Ethernet dongle + Baseus/USB dock NIC drivers (ASIX + Realtek RTL815x), so
+    # EVERY imaged machine - especially laptops with NO built-in RJ45 - has a
+    # guaranteed wired NIC in the installed OS at first boot. That wired path is
+    # what post-OOBE bootstrap uses to reach the inventory server (reset junadmin,
+    # pull Wi-Fi creds, install the rest of the drivers). WinPE already has these
+    # via inbox drivers; this makes sure the APPLIED OS does too. Best-effort:
+    # a missing folder or a DISM warning never blocks imaging.
+    $uni = "$DeployShare\drivers\_universal"
+    if (-not (Test-Path $uni)) {
+        Write-Host '  (no _universal driver folder - skipping universal injection)' -ForegroundColor DarkGray
+        return
+    }
+    $infCount = (Get-ChildItem $uni -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue).Count
+    if ($infCount -eq 0) {
+        Write-Host '  (_universal folder has no .inf - skipping)' -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "  Injecting UNIVERSAL drivers (USB-C/dock Ethernet, $infCount .inf)..." -ForegroundColor Cyan
+    $p = Start-Process dism -ArgumentList "/Image:C:\ /Add-Driver /Driver:`"$uni`" /Recurse /ForceUnsigned" -Wait -PassThru -NoNewWindow
+    if ($p.ExitCode -eq 0) {
+        Write-Host '  Universal drivers injected successfully.' -ForegroundColor Green
+    } else {
+        Write-Host "  WARN: universal DISM injection exit $($p.ExitCode) - dongle may need post-install." -ForegroundColor Yellow
+    }
+}
+
 function Invoke-DriverCoverageCheck {
     param([string]$DeployShare, [string]$Manufacturer, [string]$Model)
 
@@ -471,44 +499,68 @@ $hwWmiCS   = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyCont
 $hwWmiBios = Get-WmiObject -Class Win32_BIOS -ErrorAction SilentlyContinue
 $hwMfr     = if ($hwWmiCS)   { $hwWmiCS.Manufacturer.Trim()  } else { 'Unknown' }
 $hwModel   = if ($hwWmiCS)   { $hwWmiCS.Model.Trim()         } else { 'Unknown' }
-$hwSerial  = ''
-$_serSrc = @()
-if ($hwWmiBios) { $_serSrc += "$($hwWmiBios.SerialNumber)".Trim() }
-try { $_e = Get-WmiObject Win32_SystemEnclosure -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_e) { $_serSrc += "$($_e.SerialNumber)".Trim() } } catch {}
-try { $_p = Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_p) { $_serSrc += "$($_p.IdentifyingNumber)".Trim() } } catch {}
-# WinPE-reliable fallback: parse the raw SMBIOS table (Type 1 / Type 3). On Lenovo
-# ThinkPads the high-level WMI classes above return junk in WinPE, but the SMBIOS
-# Type 1 Serial Number is correct. Appended AFTER the WMI sources so a valid WMI
-# value still wins on Dell; the placeholder filter below drops bogus WMI values
-# and falls through to these. (Validated on ENG-2: Type 1 == Win32_BIOS serial.)
-try {
-    $_smb = Get-SmbiosHardwareSerial
-    if ($_smb.Type1) { $_serSrc += "$($_smb.Type1)".Trim() }
-    if ($_smb.Type3) { $_serSrc += "$($_smb.Type3)".Trim() }
-} catch {}
-$_bogusSer = @('to be filled','default string','system serial','tbd','0','00000000','na','n/a','not specified','none','chassis serial','ffffffffff')
-foreach ($_s in $_serSrc) { if ($_s -and $_s.Length -ge 3) { $_b=$false; foreach($_x in $_bogusSer){ if($_s -ilike "*$_x*"){ $_b=$true; break } }; if(-not $_b){ $hwSerial = $_s; break } } }
-
-# Filter placeholder serials that BIOSes ship with
-$_bogus = @('to be filled','default string','system serial','tbd','0','00000000',
-            'na','n/a','not specified','none','chassis serial','ffffffffff')
+# --- Serial number: multiple UEFI/SMBIOS methods, most-reliable first, each
+# strictly validated. The SYSTEM serial (SMBIOS Type 1 == Win32_BIOS on good
+# hardware) is what inventory keys on; the baseboard/Type 2 serial is DIFFERENT
+# and must NOT be used. MAC is never an identity source here - it is a guarded
+# last resort handled below, and only for BUILT-IN NICs (a portable USB ethernet
+# dongle carries its MAC between machines and must never establish identity).
+$_bogusSer = @('to be filled','default string','system serial','tbd',
+               'na','n/a','not specified','none','chassis serial','serial number',
+               'oem','o.e.m.','invalid','base board','not available','not applicable',
+               '00000000','0000000000','1234567890','0123456789','ffffffff','xxxxxxxx')
+function Test-ValidSerial {
+    param([string]$s)
+    if (-not $s) { return $false }
+    $s = $s.Trim()
+    if ($s.Length -lt 4 -or $s.Length -gt 64) { return $false }
+    if ($s -notmatch '[A-Za-z0-9]')  { return $false }   # must contain alphanumerics
+    if ($s -match '^(.)\1+$')        { return $false }   # all one repeated char (000000 / XXXXXX)
+    $lc = $s.ToLower()
+    foreach ($b in $script:_bogusSer) { if ($lc -like "*$b*") { return $false } }
+    return $true
+}
+# Gather candidate serials from every UEFI source, most-reliable first. In WinPE
+# the high-level Win32_* classes return junk on some Lenovo models, so the raw
+# SMBIOS Type 1 parse (firmware table via root\wmi, no Add-Type needed) leads.
+$_smb = $null; try { $_smb = Get-SmbiosHardwareSerial } catch {}
+$_serCand = New-Object System.Collections.Generic.List[object]
+if ($_smb -and $_smb.Type1) { $_serCand.Add(@{ src='smbios-type1';    val="$($_smb.Type1)".Trim() }) }
+if ($hwWmiBios)             { $_serCand.Add(@{ src='wmi-bios';        val="$($hwWmiBios.SerialNumber)".Trim() }) }
+try { $_p = Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_p) { $_serCand.Add(@{ src='wmi-csproduct'; val="$($_p.IdentifyingNumber)".Trim() }) } } catch {}
+try { $_e = Get-WmiObject Win32_SystemEnclosure     -ErrorAction SilentlyContinue | Select-Object -First 1; if ($_e) { $_serCand.Add(@{ src='wmi-enclosure'; val="$($_e.SerialNumber)".Trim() }) } } catch {}
+try { $_rb = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -ErrorAction SilentlyContinue).SystemSerialNumber; if ($_rb) { $_serCand.Add(@{ src='registry-firmware'; val="$_rb".Trim() }) } } catch {}
+if ($_smb -and $_smb.Type3) { $_serCand.Add(@{ src='smbios-type3';    val="$($_smb.Type3)".Trim() }) }
+$hwSerial = ''; $hwSerialSrc = ''
+foreach ($_c in $_serCand) { if (Test-ValidSerial $_c.val) { $hwSerial = $_c.val; $hwSerialSrc = $_c.src; break } }
 $serialClean = $hwSerial
-foreach ($b in $_bogus) { if ($serialClean -ilike "*$b*") { $serialClean = ''; break } }
 
-# Every physical NIC (Ethernet + Wi-Fi) - collected for inventory association
+# Every physical NIC (Ethernet + Wi-Fi) - collected for inventory association.
+# Each NIC is classified built-in vs removable by PNPDeviceID: a USB-attached NIC
+# (PNPDeviceID starts with 'USB\') is a portable dongle whose MAC travels between
+# machines, so it must NOT be used to establish machine identity. Built-in NICs
+# (PCI\... - Wi-Fi/Ethernet) are permanent to the machine and safe to match on.
 $allNics = @(
     Get-WmiObject Win32_NetworkAdapter -ErrorAction SilentlyContinue |
     Where-Object { $_.PhysicalAdapter -eq $true -and $_.MACAddress -ne $null } |
     ForEach-Object {
+        $_pnp = "$($_.PNPDeviceID)"
         @{
-            mac  = $_.MACAddress.Replace('-',':').ToLower()
-            name = $_.Name
-            type = if ($_.Name -imatch 'wi.fi|wifi|802\.11|wlan|wireless') { 'wifi' } else { 'ethernet' }
+            mac       = $_.MACAddress.Replace('-',':').ToLower()
+            name      = $_.Name
+            pnp       = $_pnp
+            removable = ($_pnp -like 'USB\*')
+            type      = if ($_.Name -imatch 'wi.fi|wifi|802\.11|wlan|wireless') { 'wifi' } else { 'ethernet' }
         }
     }
 )
-$allMacs    = @($allNics | ForEach-Object { $_['mac'] })
-$primaryNic = ($allNics | Where-Object { $_['type'] -eq 'ethernet' } | Select-Object -First 1)
+$allMacs      = @($allNics | ForEach-Object { $_['mac'] })                                            # all NICs - for inventory association + registration
+$identityMacs = @($allNics | Where-Object { -not $_['removable'] } | ForEach-Object { $_['mac'] })    # BUILT-IN only - for prior-device MATCHING
+# Primary/identity MAC (registration + WinPE progress reporting): prefer a BUILT-IN
+# wired NIC, then built-in Wi-Fi. NEVER a removable USB dongle unless the machine
+# has no built-in NIC at all (e.g. a NIC-less desktop imaging via a USB adapter).
+$primaryNic = ($allNics | Where-Object { -not $_['removable'] -and $_['type'] -eq 'ethernet' } | Select-Object -First 1)
+if (-not $primaryNic) { $primaryNic = ($allNics | Where-Object { -not $_['removable'] } | Select-Object -First 1) }
 if (-not $primaryNic) { $primaryNic = ($allNics | Select-Object -First 1) }
 $primaryMac = if ($primaryNic) { $primaryNic['mac'] } else { '' }
 
@@ -592,8 +644,9 @@ if (-not $oemOsDefault -and $oemLicensed) {
 Write-Host '  -- Hardware Detected ----------------------------------' -ForegroundColor DarkCyan
 Write-Host "    Manufacturer : $hwMfr"
 Write-Host "    Model        : $hwModel"
-Write-Host "    Serial       : $(if ($serialClean) { $hwSerial } else { '(no usable serial)' })"
-Write-Host "    NICs         : $($allNics.Count) physical ($(@($allNics | Where-Object { $_['type'] -eq 'ethernet' }).Count) wired)"
+Write-Host "    Serial       : $(if ($serialClean) { "$hwSerial  [via $hwSerialSrc]" } else { '(no usable serial - identity will use built-in NIC MAC)' })"
+Write-Host "    NICs         : $($allNics.Count) physical ($(@($allNics | Where-Object { -not $_['removable'] }).Count) built-in, $(@($allNics | Where-Object { $_['removable'] }).Count) removable/USB)"
+if (@($allNics | Where-Object { $_['removable'] }).Count) { Write-Host "                   removable (NOT used for identity): $((@($allNics | Where-Object { $_['removable'] } | ForEach-Object { $_['mac'] }) -join ', '))" -ForegroundColor DarkGray }
 if ($oemKeyDesc) {
     $oemHint = if ($oemOsDefault) { "  -> defaulting to [$oemOsDefault] $($OsOptions[$oemOsDefault].Label)" } else { '' }
     Write-Host "    UEFI License : $oemKeyDesc$oemHint" -ForegroundColor Green
@@ -631,20 +684,26 @@ function Resolve-PriorDevice {
 $match = $null
 if ($serialClean) {
     $match = Resolve-PriorDevice -Query $hwSerial -ExactField 'serial_number' -ExactValue $hwSerial
-    if ($match) { $priorVia = 'serial' }
+    if ($match) { $priorVia = "serial ($hwSerialSrc)" }
 }
-if (-not $match -and $primaryMac) {
-    # Fall back to MAC. The API stores mac_address normalized (lowercase, colons);
-    # $primaryMac is already normalized the same way above.
-    $match = Resolve-PriorDevice -Query $primaryMac -ExactField 'mac_address' -ExactValue $primaryMac
-    if (-not $match) {
-        # Try any of this machine's MACs (a re-image may match on wifi if ethernet changed)
-        foreach ($m in $allMacs) {
-            $match = Resolve-PriorDevice -Query $m -ExactField 'mac_address' -ExactValue $m
-            if ($match) { break }
-        }
+if (-not $match) {
+    # Serial did not resolve. Fall back to MAC - but ONLY built-in NIC MACs. A
+    # portable USB ethernet dongle carries its MAC between machines and would
+    # misidentify this box as whatever machine last used the dongle (the reason a
+    # dongle last used on JB-THINKPAD made a different laptop resolve to it). The
+    # built-in Wi-Fi/Ethernet MAC is permanent to this machine, so it is safe.
+    foreach ($m in $identityMacs) {
+        if (-not $m) { continue }
+        $match = Resolve-PriorDevice -Query $m -ExactField 'mac_address' -ExactValue $m
+        if ($match) { $priorVia = 'mac (built-in NIC)'; break }
     }
-    if ($match) { $priorVia = 'mac' }
+    if (-not $match -and $identityMacs.Count -eq 0 -and $primaryMac) {
+        # No built-in NIC exists at all (e.g. a desktop imaging via a USB NIC).
+        # Only then, as an absolute last resort, match on the removable adapter -
+        # flagged low-confidence so a wrong name/OS pre-fill is obvious to the tech.
+        $match = Resolve-PriorDevice -Query $primaryMac -ExactField 'mac_address' -ExactValue $primaryMac
+        if ($match) { $priorVia = 'mac (removable adapter - LOW CONFIDENCE)' }
+    }
 }
 if ($match) {
     # Prefer os_caption (the canonical OS string written at image time) then os.
@@ -656,11 +715,22 @@ if ($match) {
         '*10*'       { '3' }
         default      { '' }    # unknown - let UEFI or operator decide
     }
+    # oem_edition is the AUTHORITATIVE UEFI/MSDM licensed edition - the agent read it
+    # in the full OS (where SLS works; WinPE cannot) and stored it. This is the
+    # "never guess" source: it says what edition this machine is LICENSED for,
+    # regardless of what was last installed.
+    $oemKeyFromInv = switch -Wildcard ("$($match.oem_edition)") {
+        '*Pro*'   { '2' }
+        '*Home*'  { '1' }
+        default   { '' }
+    }
     $prior = [PSCustomObject]@{
         device_id = $match.id
         hostname  = $match.hostname
         os        = $invOs
         os_key    = $osKeyFromInv
+        oem_key   = $oemKeyFromInv
+        oem_edition = $match.oem_edition
         last_seen = $match.last_seen
     }
 }
@@ -687,10 +757,11 @@ $defaultName  = if ($prior -and $prior.hostname) { "$($prior.hostname)".ToUpper(
 #       license is present on a business laptop) applies for brand-new hardware.
 #   (d) Else no default -> operator menu.
 $defaultOsKey =
-    if ($slsEditionResolved -and $oemOsDefault) { $oemOsDefault }
-    elseif ($prior -and $prior.os_key)          { $prior.os_key }
-    elseif ($oemOsDefault)                       { $oemOsDefault }
-    else { '' }
+    if     ($prior -and $prior.oem_key)          { $prior.oem_key }     # (a) AUTHORITATIVE UEFI/MSDM license (agent read it in full OS) - never a guess
+    elseif ($slsEditionResolved -and $oemOsDefault) { $oemOsDefault }   # (b) live SLS edition (full-Windows deploy only)
+    elseif ($prior -and $prior.os_key)          { $prior.os_key }       # (c) last-installed edition from inventory
+    elseif ($oemOsDefault)                       { $oemOsDefault }       # (d) business-SKU OEM guess
+    else { '' }                                                          # (e) operator menu
 
 # Show what was found
 if ($prior) {
@@ -740,7 +811,8 @@ if ($defaultName) {
 
 # === Field 2: OS / edition ==================================================
 if ($defaultOsKey) {
-    $src = if ($oemOsDefault -eq $defaultOsKey) { 'UEFI license' } else { 'inventory' }
+    $src = if ($prior -and $prior.oem_key -eq $defaultOsKey -and $prior.oem_key) { 'UEFI license (OEM)' }
+           elseif ($oemOsDefault -eq $defaultOsKey) { 'UEFI license' } else { 'inventory' }
     $accept = Invoke-FieldCountdown -Prompt "OS edition [$($OsOptions[$defaultOsKey].Label)]  (from $src)" -Seconds 10
     if ($accept) {
         $osKey = $defaultOsKey
@@ -887,7 +959,25 @@ Publish-Event -PhaseKey 'winpe' -Step 'inject-drivers' -Status 'running' -Messag
 Write-Host ''
 Write-Host '  Injecting hardware drivers...' -ForegroundColor Cyan
 Invoke-DriverInjection -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel
-Publish-Event -PhaseKey 'winpe' -Step 'inject-drivers' -Status 'ok' -Message "Driver injection complete for $hwModel" -Percent 4
+# Always inject the USB-C / dock Ethernet drivers so a laptop with no built-in
+# RJ45 still comes up wired at first boot (post-OOBE bootstrap needs a NIC).
+Invoke-UniversalDriverInjection -DeployShare $DeployShare
+# ALSO stage the _universal tree onto the target OS so the first-boot
+# install-network-drivers phase can ACTIVELY install them (pnputil /add-driver
+# /install). Offline injection alone does not auto-bind a Class_FF USB NIC that is
+# present at first boot (e.g. Lenovo ThinkPad USB-C Ethernet) - it must be actively
+# installed. This local copy needs no network at first boot.
+try {
+    $uniSrc = "$DeployShare\drivers\_universal"
+    $uniDst = 'C:\ProgramData\JuniperSetup\universal-drivers'
+    if (Test-Path $uniSrc) {
+        New-Item $uniDst -ItemType Directory -Force | Out-Null
+        Copy-Item "$uniSrc\*" $uniDst -Recurse -Force -ErrorAction SilentlyContinue
+        $n = (Get-ChildItem $uniDst -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue).Count
+        Write-Host "  Staged $n universal USB-Ethernet .inf to target for first-boot active install." -ForegroundColor Green
+    }
+} catch { Write-Host "  WARN: staging universal drivers to target failed: $_" -ForegroundColor Yellow }
+Publish-Event -PhaseKey 'winpe' -Step 'inject-drivers' -Status 'ok' -Message "Driver injection complete for $hwModel (+ universal USB Ethernet)" -Percent 4
 
 # --- Inject unattend.xml with computer name ---------------------------------
 
@@ -939,14 +1029,41 @@ foreach ($f in @('Logging.ps1', 'progress.ps1', 'orchestrator.ps1', 'provision-s
 # the first boot (the orchestrator's Sync-Scripts backfills from the share too, but
 # staging them all here removes any timing dependency - this is how 10-setup-user
 # got skipped before).
-foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1','06-join-wifi.ps1',
+foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
+                 '05-install-network-drivers.ps1','06-join-wifi.ps1',
                  '07-remove-bloatware.ps1','08-set-file-associations.ps1','10-setup-user.ps1',
                  'provision-status.ps1')) {
     $src = "$DeployShare\scripts\$f"
     if (Test-Path $src) { Copy-Item $src "$jsScripts\$f" -Force }
 }
 
-Write-Host '  Post-install automation staged (SetupComplete + orchestrator + status GUI + 6 phase scripts).' -ForegroundColor Green
+Write-Host '  Post-install automation staged (SetupComplete + orchestrator + status GUI + 7 phase scripts).' -ForegroundColor Green
+
+# --- Stage bootstrap creds LOCALLY (dongle-independent first boot) -------------
+# We are in WinPE right now, where the USB-C dongle works reliably (it is how this
+# machine is imaging). Fetch the junadmin password + Wi-Fi creds NOW and write them
+# to an ACL'd local file on the target. First-boot bootstrap then reads this file
+# with NO network - it resets junadmin off CHANGEME, arms the kiosk, and joins the
+# stable built-in Wi-Fi - instead of waiting on the flaky dongle to re-enumerate in
+# the full OS. Secrets live ONLY in this SYSTEM/Administrators-ACL'd file (deleted at
+# provisioning teardown), never in the repo or any log. Best-effort: on failure,
+# bootstrap falls back to the (network-dependent) API.
+try {
+    $bootCredPath = "$jsRoot\boot-creds.json"
+    $bs = $null; $wf = $null
+    try { $bs = Invoke-RestMethod "$InvApi/api/management/bootstrap" -TimeoutSec 10 -ErrorAction Stop } catch {}
+    try { $wf = Invoke-RestMethod "$InvApi/api/management/wifi"      -TimeoutSec 10 -ErrorAction Stop } catch {}
+    if ($bs.password -or $wf.ssid) {
+        ([ordered]@{ junadminPassword = $bs.password; wifiSsid = $wf.ssid; wifiPsk = $wf.psk } |
+            ConvertTo-Json) | Set-Content $bootCredPath -Encoding UTF8
+        & icacls $bootCredPath /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' 2>&1 | Out-Null
+        $bs = $null; $wf = $null
+        Write-Host '  Staged local boot creds (junadmin + Wi-Fi) for dongle-independent bootstrap.' -ForegroundColor Green
+        Write-DeployLog 'Staged local boot-creds.json (junadmin + Wi-Fi) - first boot no longer needs the dongle'
+    } else {
+        Write-Host '  WARN: could not fetch junadmin/Wi-Fi creds in WinPE - bootstrap will fall back to API.' -ForegroundColor Yellow
+    }
+} catch { Write-Host "  WARN: staging local boot creds failed (non-fatal): $_" -ForegroundColor Yellow }
 
 # Set staging log paths so Write-DeployLog can write to them
 $Script:WpeMasterLog = "$jsRoot\imaging.log"
@@ -980,7 +1097,13 @@ try {
     # Must use bios_serial/chassis_serial (not serial_number) - that is what find_or_create_device reads.
     # Include MACs so find_or_create_device uses MAC identity rather than just serial+hostname,
     # which avoids creating ghost records when serial is not yet in the DB.
-    $osCaption     = "Microsoft $($os.Label)"
+    # NOTE: use $OsOptions[$osKey].Label, NOT $os.Label - the install_agent.ps1 run
+    # via Invoke-Expression above assigns its own `$os = Get-WmiObject
+    # Win32_OperatingSystem`, which clobbers our $os (the edition object) in this
+    # shared scope. $os.Label would then be blank -> we stored "Microsoft " with no
+    # edition, so re-image "default to last selection" had nothing to map. $osKey is
+    # untouched by the agent, so it is the safe source of the selected edition label.
+    $osCaption     = "Microsoft $($OsOptions[$osKey].Label)"
     $ethernetMacs  = @($allNics | Where-Object { $_['type'] -eq 'ethernet' } | ForEach-Object { $_['mac'] })
     $wirelessMacs  = @($allNics | Where-Object { $_['type'] -eq 'wifi'     } | ForEach-Object { $_['mac'] })
     $osPatch   = @{
@@ -1081,7 +1204,7 @@ try { net use $DeployShare /delete *>$null } catch {}
 
 Write-Host ''
 Write-Host '  ============================================' -ForegroundColor Green
-Write-Host "   Done: $($os.Label) -> $computerName" -ForegroundColor Green
+Write-Host "   Done: $($OsOptions[$osKey].Label) -> $computerName" -ForegroundColor Green
 Write-Host '   Rebooting in 15 seconds...               ' -ForegroundColor Green
 Write-Host '  ============================================' -ForegroundColor Green
 Write-Host ''

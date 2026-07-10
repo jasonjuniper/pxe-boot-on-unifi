@@ -40,24 +40,52 @@ All secrets are in 1Password and retrieved at runtime via `op read` or
 `op run`. The 1Password CLI (`op`) must be authenticated before running
 any script that calls it.
 
-## Imaging stack (pc-deploy is Windows 11, not Windows Server)
+## Imaging stack (pc-deploy is Windows Server 2025 + WDS)
 
-**WDS is NOT available on Windows 11** - it is a Windows Server-only role.
-**MDT was retired by Microsoft in 2025** - the download URL was removed.
+> **CORRECTED 2026-07-07.** pc-deploy was rebuilt on **Windows Server 2025 Standard**
+> (build 26100). Earlier notes in this file claiming "pc-deploy is Windows 11, WDS is
+> not available, use tftpd64" are **OBSOLETE** - do not act on them. The live PXE/TFTP
+> server is **WDS**, not tftpd64. `C:\tftpd64\` is empty (leftover); ignore it.
 
-The correct stack for a Windows 11 imaging server is:
-- **Windows ADK + WinPE Add-on** - provides DISM, WinPE build tools *(installed)*
-- **Custom WinPE image** - `winpe/startnet.cmd` + `winpe/deploy-boot.ps1` baked in at build time
-  - Main deploy logic lives on the share: `scripts/deploy.ps1` -> `deploy$\scripts\deploy.ps1`
-  - To update deploy.ps1: edit it, then copy to pc-deploy share (no WIM rebuild needed)
-- **tftpd64** - PXE + TFTP server (installed by `01c-build-winpe.ps1`)
+The current stack:
+- **WDS (Windows Deployment Services)** - the PXE + TFTP + proxyDHCP server. Runs as the
+  `WDSServer` service (svchost). Listens UDP **69** (TFTP), **67** (proxyDHCP), **4011**
+  (BINL). Standalone config, "Answer clients: Yes / known-only: No", `UseDhcpPorts: Yes`
+  (correct because DHCP lives on a *separate* box - the UniFi gateway).
+- **Boot files:** `C:\RemoteInstall\Boot\x64\` (UEFI NBP = `wdsmgfw.efi`, also
+  `bootmgfw.efi`, `pxeboot.n12`, `wdsnbp.com`). **Do NOT** confuse this with `C:\tftpd64`.
+- **Boot image:** `C:\RemoteInstall\Boot\x64\Images\winpe-deploy-final.wim`
+  (WDS image name "Juniper WinPE (deploy-ready)", x64). This is the WinPE the targets boot.
+- **DHCP:** served by the **UniFi gateway (192.168.0.1)**, not pc-deploy (the DHCP Server
+  role is NOT installed here). UEFI PXE needs the gateway's DHCP option **66** = TFTP
+  server `192.168.5.141` and option **67** = `Boot\x64\wdsmgfw.efi`. A stalled PXE that
+  hangs at "Start PXE over IPv4" is a **DHCP-offer** problem (gateway/scope), not a WDS or
+  TFTP problem - verify with a `pktmon` capture on pc-deploy filtered to UDP 67/68/69/4011.
+- **Windows ADK + WinPE Add-on** - still used at *build* time (DISM, WinPE authoring).
+- **Custom WinPE image** - `winpe/startnet.cmd` + `winpe/deploy-boot.ps1` baked in at build;
+  main deploy logic lives on the share `scripts/deploy.ps1` -> `deploy$\scripts\deploy.ps1`.
 
-`01b-configure-mdt.ps1` is archived/obsolete - do not run it.
+`01b-configure-mdt.ps1` is archived/obsolete - do not run it. (MDT was retired by Microsoft.)
+
+### CARDINAL RULE - pc-deploy is a LIVE PXE server, treat it as production
+- **Never run disk- or CPU-heavy jobs on pc-deploy while machines are (or might be)
+  imaging.** WDS streams the ~800 MB boot WIM over TFTP, which is timing-sensitive; heavy
+  I/O can make clients fail at PXE. The Lenovo **driver-library curation**
+  (`build-driver-library.ps1` / `curate-lenovo-model.ps1`) downloads and extracts many GB -
+  run it off-hours, or throttled, and confirm nothing is imaging first.
+- **Never run vendor driver/firmware SoftPaq installers on pc-deploy itself.** `curate`
+  executes `.exe` SoftPaqs (some are silent *installers*, and firmware flashers like
+  `Fwupdate.exe` can touch pc-deploy's own USB-C Ethernet NIC). Curation extracts drivers
+  for *target* machines - it must not mutate the imaging server.
+- **Do not restart WDS or reboot pc-deploy as a blind fix.** Diagnose with `pktmon` first;
+  the boot image and WDS config survive reboots, so a reboot rarely fixes a real PXE fault.
 
 ## Key paths (on pc-deploy)
 
 - WinPE workspace (build time): `C:\WinPE_amd64\`
-- TFTP root + boot media: `C:\tftpd64\`
+- PXE/TFTP root + boot media (**WDS**): `C:\RemoteInstall\` (boot NBPs in `Boot\x64\`,
+  boot image in `Boot\x64\Images\winpe-deploy-final.wim`). NOTE: `C:\tftpd64\` is an empty
+  leftover from the old Windows-11 plan and is NOT used.
 - Deploy share (WIM images, scripts, unattend): `C:\deploy\` -> `\\192.168.5.141\deploy$`
 - Post-install scripts + deploy.ps1: `\\192.168.5.141\deploy$\scripts\`
 - WIM images: `\\192.168.5.141\deploy$\images\` (`win11-home.wim`, `win11-pro.wim`, `win10.wim`)
@@ -134,14 +162,45 @@ Before applying the image, `deploy.ps1` looks this machine up in inventory and
 pre-fills the computer name and OS edition from its last record, then pushes the
 operator's final choices back so the next re-image remembers them.
 
-- **Resolution** (mirrors the server's own dedupe order): exact BIOS/chassis
-  serial first (`GET /api/devices?q=<serial>`, filtered to `serial_number` exact),
-  then primary/any MAC (`?q=<mac>`, filtered to `mac_address` exact). Junk serials
-  ("to be filled", etc.) are skipped so it falls straight to MAC. Helper:
-  `Resolve-PriorDevice`. Defaults: name = inventory `hostname`; OS edition = UEFI
-  MSDM license (preferred, since the firmware key is authoritative) else inventory
-  `os_caption`/`os` mapped to a WIM (`*11*Home*`->win11-home, `*11*Pro*`->win11-pro,
-  `*10*`->win10-pro).
+- **Resolution** (mirrors the server's own dedupe order): **serial first, via
+  multiple UEFI/SMBIOS methods**, then a **guarded** MAC fallback.
+  - *Serial* is gathered from several sources, most-reliable first, each run through
+    `Test-ValidSerial` (length 4-64, must contain alphanumerics, not all-one-char,
+    not a placeholder like "to be filled"/"default string"/all-zeros): **SMBIOS
+    Type 1** (raw `MSSmBios_RawSMBiosTables` parse - the WinPE-reliable one, since
+    the high-level Win32_* classes return junk on some Lenovo models in WinPE),
+    `Win32_BIOS`, `Win32_ComputerSystemProduct.IdentifyingNumber`,
+    `Win32_SystemEnclosure`, the `HARDWARE\DESCRIPTION\System\BIOS` firmware
+    registry, and SMBIOS Type 3 (chassis). First valid wins; the winning method is
+    logged (`serial (smbios-type1)`). **SMBIOS Type 2 / baseboard serial is NOT
+    used** - it differs from the system serial.
+  - *MAC fallback* only runs if NO serial method yields a valid serial, and it
+    matches **only on BUILT-IN NIC MACs** (`identityMacs` = adapters whose
+    `PNPDeviceID` is not `USB\*`). A portable USB/USB-C ethernet dongle carries its
+    MAC between machines, so its MAC is excluded from identity (this is the fix for
+    a dongle last used on JB-THINKPAD dragging a different laptop onto that record).
+    Built-in Wi-Fi/Ethernet MACs are permanent to the machine and safe. Only when a
+    machine has NO built-in NIC at all (e.g. a desktop imaging via a USB NIC) does it
+    match the removable adapter, flagged `mac (removable adapter - LOW CONFIDENCE)`.
+    All physical MACs are still recorded to inventory at registration; only
+    *matching* is restricted. Helper: `Resolve-PriorDevice`. Defaults: name = inventory
+  `hostname`; OS edition by precedence (`$defaultOsKey`): **(a) `oem_edition`** - the
+  AUTHORITATIVE UEFI/MSDM licensed edition (see below), the "never guess" source, wins
+  over all; (b) live SLS edition (full-Windows only); (c) inventory `os_caption`/`os`
+  mapped to a WIM (`*11*Home*`->win11-home, `*11*Pro*`->win11-pro, `*10*`->win10-pro);
+  (d) business-SKU OEM guess; (e) operator menu. The `$src` label shown at the countdown
+  says where the default came from (`UEFI license (OEM)` / `inventory` / etc).
+
+  **OEM/MSDM licensed edition (`oem_edition`) - "never guess from UEFI":** WinPE cannot
+  resolve the MSDM product key to an edition NAME (needs `SoftwareLicensingService` /
+  pkeyconfig, which only exist in the full OS). So instead of guessing in WinPE, the
+  **inventory agent** reads it in the full OS from
+  `(Get-CimInstance SoftwareLicensingService).OA3xOriginalProductKeyDescription`
+  (e.g. `"[4.0] Professional OEM:DM"` -> Pro, `"...Core..."` -> Home) and reports it as
+  `oem_edition`. The server stores `devices.oem_edition` (migration `db/30_oem_edition.sql`)
+  and returns it from `GET /api/devices`; `deploy.ps1` maps it to `$prior.oem_key` and uses
+  it as the top default. So the FIRST full-OS agent check-in records the licensed edition,
+  and every subsequent (re)image defaults to it with no guessing.
 - **10s per-field countdown** (two INDEPENDENT fields, helper `Invoke-FieldCountdown`,
   modeled on the `[Console]::KeyAvailable`/`ReadKey` loop proven in
   `winpe/deploy-boot.ps1`): the Name field shows `Computer name [<lastName>]` and
@@ -156,6 +215,14 @@ operator's final choices back so the next re-image remembers them.
   wrapped in try/catch - never blocks imaging if the server is down. No new endpoint
   was needed; `/ingest/endpoint` already resolves serial->MAC->hostname and upserts
   `hostname`/`os`/`os_caption`, so a re-image re-resolves to the same record.
+  - **BUG FIX (2026-07-10):** `os_caption` was being stored as `"Microsoft "` (blank
+    edition), so re-images had nothing to default to. Cause: the pre-register runs the
+    inventory agent via `Invoke-Expression` in the SAME scope, and the agent does
+    `$os = Get-WmiObject Win32_OperatingSystem`, which **clobbered** deploy.ps1's `$os`
+    (the edition object). `"Microsoft $($os.Label)"` then read the WMI object's
+    non-existent `.Label` -> blank. Fixed to use `$OsOptions[$osKey].Label` (`$osKey` is
+    untouched by the agent). Now it stores `"Microsoft Windows 11 Home"` correctly and the
+    "default to last selection" loop works from the next image on.
 - **Validate on next (re)image**: a known machine shows "Inventory match found"
   with the resolved-via source, the name default appears and auto-accepts at 10s
   (or a keypress lets you retype), the OS default appears and auto-accepts at 10s
@@ -163,18 +230,42 @@ operator's final choices back so the next re-image remembers them.
   reflects the chosen name + OS. Brand-new hardware just prompts as before.
 
 **After first logon** the `orchestrator.ps1` phase pipeline runs (driven by its
-`$Phases` ordered map): `join-wifi` -> `windows-update` -> `install-packages` ->
-`remove-bloatware` -> `setup-user` -> `file-associations`. (`03b` driver install +
-the inventory agent are invoked from within `04`.)
+`$Phases` ordered map): `install-network-drivers` -> `join-wifi` ->
+`windows-update` -> `install-packages` -> `remove-bloatware` -> `setup-user` ->
+`file-associations`. (`03b` driver install + the inventory agent are invoked from
+within `04`.)
 
-**Wi-Fi is now the FIRST phase** (ahead of `windows-update`): the machine joins
-office Wi-Fi before the long, multi-reboot update phase, so if someone unplugs
-ethernet mid-update the box stays online and provisioning keeps going. The Wi-Fi
-driver is injected offline in WinPE and ethernet is how the box imaged, so the join
-works at the first post-OOBE boot. `06-join-wifi.ps1` stays best-effort/non-fatal -
-a desktop with no Wi-Fi NIC exits 0 and the phase just advances. Progress bands
-(monotonic, 0-100): join-wifi 1-4, windows-update 4-45, install-packages 45-76,
-remove-bloatware 76-85, setup-user 85-91, file-associations 91-99, done=100.
+**`install-network-drivers` (`05-install-network-drivers.ps1`) is the FIRST phase,
+immediately ahead of `join-wifi`.** It runs on the first post-OOBE boot while the
+imaging Ethernet (the USB-C dongle) is still plugged in, so its online sources are
+reachable, and it makes sure a **wireless adapter actually exists before we try to
+join Wi-Fi**. It installs network drivers from, in order: (1) the inventory driver
+catalog - NETWORK-category rows (WiFi/Bluetooth/Ethernet) for this model, queried
+across **all statuses** (not only `confirmed_working`, because getting online is
+worth running any on-disk vendor SoftPaq; a `Test-Path` gate silently skips catalog
+rows whose file was never downloaded to the share); then (2) **Windows Update** -
+driver-class updates scoped to `net`/`bluetooth` (this is what covers **un-curated
+models** whose WiFi SoftPaqs were never downloaded/curated - e.g. the 21DC ThinkPad
+P1 Gen 5, whose catalog network rows are metadata-only, all `onDisk=False`); then
+(3) `pnputil /scan-devices` + a wait for the adapter to enumerate. Best-effort: any
+failure exits 0. If a WU network driver needs a reboot to activate it returns 3010,
+so the orchestrator reboots and re-runs this phase (adapter now present) before
+advancing to `join-wifi`. A desktop with no WLAN card just exits 0 and advances.
+
+Only AFTER the radio exists does **`join-wifi` (`06-join-wifi.ps1`)** run, so the
+machine is on wireless before the long, multi-reboot update phase - if someone
+unplugs ethernet mid-update the box stays online and provisioning keeps going.
+`06-join-wifi.ps1` stays best-effort/non-fatal - a desktop with no Wi-Fi NIC exits
+0 and the phase just advances. Progress bands (monotonic, 0-100):
+install-network-drivers 1-4, join-wifi 4-6, windows-update 6-45, install-packages
+45-76, remove-bloatware 76-85, setup-user 85-91, file-associations 91-99, done=100.
+
+> **Why this order exists (regression note):** join-wifi used to be first, before
+> any driver install. On models whose Wi-Fi driver was NOT injected offline in
+> WinPE (un-curated models like the 21DC P1 Gen 5), there was no wireless adapter
+> yet, so join-wifi silently skipped - and once the imaging dongle was pulled the
+> machine had NO network at all. Installing network drivers first fixes that. Do
+> NOT move join-wifi back ahead of install-network-drivers.
 
 ### Assigned-user local account (`setup-user` phase, `10-setup-user.ps1`)
 
@@ -220,10 +311,16 @@ kiosk still locks login until provisioning completes).
 - `04-install-packages.ps1` - winget + MSI packages + inventory agent registration.
   The inventory agent also installs the Juniper root CA certificate automatically,
   so HTTPS to internal services works after this step.
+- `05-install-network-drivers.ps1` - the FIRST phase (band 1-4). Installs WiFi/
+  Bluetooth/Ethernet drivers over the imaging ethernet BEFORE `join-wifi`, so a
+  wireless adapter exists to join with. Catalog network rows (any status, on-disk
+  only) then a Windows Update net/bluetooth driver pass (covers un-curated models),
+  then waits for the adapter (returns 3010 to reboot+re-run if a driver needs it).
+  Best-effort/non-fatal. See the phase-pipeline section above.
 - `06-join-wifi.ps1` - joins the office Wi-Fi (orchestrator phase `join-wifi`,
-  band 1-4, now the FIRST phase so Wi-Fi is up before the multi-reboot update pass
-  - ethernet-unplug fallback). Best-effort/non-fatal (exits 0 with no Wi-Fi NIC).
-  See "Wi-Fi join during imaging" below.
+  band 4-6, runs right after `05-install-network-drivers` so Wi-Fi is up before the
+  multi-reboot update pass - ethernet-unplug fallback). Best-effort/non-fatal (exits
+  0 with no Wi-Fi NIC). See "Wi-Fi join during imaging" below.
 - `07-remove-bloatware.ps1` - removes unwanted Windows features and apps
 
 ### Servicing Stack Updates (SSUs) install FIRST
@@ -450,6 +547,31 @@ GET /api/drivers/manifest.json
 This returns a file in exactly the format deploy.ps1 expects - lets the DB drive
 the manifest rather than editing the JSON by hand.
 
+#### Universal USB-C / dock Ethernet drivers (always injected)
+
+`deploy.ps1`'s `Invoke-UniversalDriverInjection` runs right after the model-specific
+`Invoke-DriverInjection` and DISM-injects **everything under
+`\\192.168.5.141\deploy$\drivers\_universal\` into every applied OS**, regardless of
+model. It currently holds the USB-C dongle + Baseus/USB-dock NIC drivers
+(`_universal\usb-ethernet\`: ASIX `axusbeth` + Realtek `rtu52/53/55/56cx` =
+RTL8152/8153/8155/8156), so a laptop with **no built-in RJ45** still comes up **wired
+at first boot**. That wired path is what post-OOBE bootstrap relies on to reach the
+inventory server (reset junadmin off `CHANGEME`, pull Wi-Fi creds, install remaining
+drivers). WinPE already had these via inbox drivers, and `01c-build-winpe.ps1` now
+also DISM-injects `_universal` into `boot.wim` at build time (Step 4b), so the boot
+image carries them explicitly too; this injection guarantees the **applied OS** does
+as well. Best-effort - a missing `_universal` folder or a DISM warning never blocks
+imaging. The `.inf` set was exported from ENG-2's driver store with
+`pnputil /export-driver`; to add another adapter, `pnputil /export-driver <oemNN.inf>
+<dir>` and drop it under `_universal\usb-ethernet\` (no code change needed - the whole
+tree is injected `/Recurse`).
+
+> **Why this exists:** a Yoga/ThinkPad with no built-in Ethernet imaged fine over the
+> USB-C dongle in WinPE, but the *installed* OS lacked a working NIC at first boot, so
+> post-OOBE bootstrap could never reach the server - junadmin stayed on the `CHANGEME`
+> placeholder and Wi-Fi never joined. Baking the dongle/dock NIC drivers into every
+> image removes that single point of failure.
+
 #### Driver warehouse audit
 
 Cross-references inventory device models, driver catalog status, and on-disk files:
@@ -542,6 +664,39 @@ During post-image setup the machine now shows a **fullscreen status screen** and
 **locks the user out** until all phases finish. This solves the old problem where
 a user could log in mid-install and see no indication that setup was still running.
 
+### Dongle-INDEPENDENT bootstrap networking (2026-07-10 - the big fix)
+
+Laptops with no built-in RJ45 (e.g. Lenovo Yoga 83JU) image over a **flaky USB-C
+Ethernet dongle** (Lenovo `USB\VID_17EF&PID_720C`) that reliably works in WinPE but
+often will NOT pull DHCP after a reboot in the full OS. Bootstrap (junadmin reset off
+CHANGEME + kiosk arm) needs network, so relying on that dongle caused endless
+"hollow completions" (machine at a login screen, junadmin stuck on CHANGEME, nothing
+provisioned). The fix **decouples first-boot bootstrap from the dongle**:
+
+- **Creds staged locally in WinPE** (where the dongle works): `deploy.ps1` fetches the
+  junadmin password (`/api/management/bootstrap`) + Wi-Fi creds (`/api/management/wifi`)
+  and writes an ACL'd (SYSTEM+Administrators) `C:\ProgramData\JuniperSetup\boot-creds.json`.
+  Deleted by `Remove-KioskMode` at teardown. PSK/password never in the repo or any log.
+- **Bootstrap reads it with NO network:** `orchestrator.ps1 -Bootstrap` resets junadmin +
+  arms the kiosk from `boot-creds.json` (falls back to the API only if the file is missing),
+  then **joins the built-in Wi-Fi from those local creds** (the stable path). It also still
+  actively installs the USB-Ethernet drivers + does a "simulated unplug"
+  (`pnputil /restart-device` + disable/enable) as a bonus wired path.
+- **Wi-Fi persists across reboots:** the EVERY-RUN section re-joins Wi-Fi from
+  `boot-creds.json` whenever there is no IPv4 gateway. Without this the machine stalled at
+  26% because the netsh-joined profile did not auto-reconnect after windows-update reboots.
+- **Never lands Public:** every run forces the connection profile to **Private**
+  (`Set-NetConnectionProfile`) and widens the WinRM firewall to any remote address, so the
+  machine is manageable throughout provisioning and when it lands (a managed PC must not be
+  on a Public profile).
+- **Universal USB-Ethernet drivers** live in `drivers\_universal\` (rtu52/53/55/56 + ASIX +
+  Lenovo `rtump64x64.inf`) - DISM-injected offline AND staged locally
+  (`C:\ProgramData\JuniperSetup\universal-drivers`) for the first-boot active install
+  (offline injection alone does NOT auto-bind a Class_FF USB NIC present at boot).
+
+> Validated 2026-07-10: the Yoga imaged end-to-end unattended (15 windows-update rounds ->
+> install-packages -> done/100%) with NO hot-plug, staying online on Wi-Fi the whole time.
+
 ### How it works
 - **`scripts/provision-status.ps1`** - a borderless, topmost, fullscreen **WPF**
   window (navy Juniper background, "Setting up this PC", determinate progress bar,
@@ -550,8 +705,9 @@ a user could log in mid-install and see no indication that setup was still runni
   are swallowed so it can't be dismissed. ASCII-safe, no BOM. Relaunched fresh on
   every provisioning reboot.
 - **Kiosk lockout**: `orchestrator.ps1 -Bootstrap` arms autologon for `junadmin`
-  (using the password it just pulled from the bootstrap API - never stored in the
-  repo) and sets the **Winlogon Shell** to launch `provision-status.ps1` INSTEAD of
+  (using the password from the locally-staged `boot-creds.json` - see "Dongle-
+  INDEPENDENT bootstrap networking" above - never stored in the repo) and sets the
+  **Winlogon Shell** to launch `provision-status.ps1` INSTEAD of
   `explorer.exe`. Auto-logged-in `junadmin` therefore sees ONLY the status screen -
   no desktop, no Start menu, no taskbar = locked out. Both the system-wide
   `HKLM\...\Winlogon\Shell` (reliable on first logon) and the per-user shell are set.

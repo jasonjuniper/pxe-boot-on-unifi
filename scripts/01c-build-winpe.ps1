@@ -28,7 +28,10 @@ param(
     # Defaults to the directory containing this script's parent (repo root)
     [string]$RepoRoot     = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
     # Juniper brand kit root - supplies the WinPE background generator and deploy HTA
-    [string]$BrandKitRoot = 'C:\dev\juniper-brand-kit'
+    [string]$BrandKitRoot = 'C:\dev\juniper-brand-kit',
+    # Universal drivers always injected into WinPE (USB-C dongle / dock Ethernet).
+    # Same tree deploy.ps1 injects into the applied OS.
+    [string]$DriverRoot   = 'C:\deploy\drivers\_universal'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -225,6 +228,28 @@ foreach ($oc in $ocs) {
     }
 }
 Write-Host '  Optional components added.' -ForegroundColor Green
+
+# --- Step 4b: Inject universal USB-C / dock Ethernet drivers ------------------
+# Belt-and-suspenders so WinPE always enumerates the USB-C dongle / dock NIC even
+# if a future ADK base image lacks the inbox driver. Same driver set deploy.ps1
+# injects into the applied OS (drivers\_universal). Best-effort - never aborts.
+Write-Host ''
+Write-Host '==> Step 4b: Inject universal USB Ethernet drivers' -ForegroundColor Cyan
+if (Test-Path $DriverRoot) {
+    $uInf = @(Get-ChildItem $DriverRoot -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue)
+    if ($uInf.Count -gt 0) {
+        try {
+            Add-WindowsDriver -Path $mountDir -Driver $DriverRoot -Recurse -ForceUnsigned -ErrorAction Stop | Out-Null
+            Write-Host "  Injected $($uInf.Count) universal .inf into WinPE." -ForegroundColor Green
+        } catch {
+            Write-Host "  WARN: universal driver inject into WinPE failed: $_" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  No .inf under $DriverRoot - skipping." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "  $DriverRoot not found - skipping universal WinPE driver inject." -ForegroundColor DarkGray
+}
 
 # --- Step 5: Inject startnet.cmd and deploy-boot.ps1 -------------------------
 # deploy-boot.ps1 is the minimal bootstrap baked into the WIM.

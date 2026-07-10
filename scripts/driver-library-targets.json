@@ -1,0 +1,8 @@
+[
+  { "mt": "83JU", "slug": "lenovo-yoga-7-16akp10",     "model": "Yoga 7 2-in-1 16AKP10" },
+  { "mt": "20Y3", "slug": "lenovo-thinkpad-p1-gen4",    "model": "ThinkPad P1 Gen 4" },
+  { "mt": "21DC", "slug": "lenovo-thinkpad-p1-gen5",    "model": "ThinkPad P1 Gen 5" },
+  { "mt": "20TQ", "slug": "lenovo-thinkpad-p15v-gen1",  "model": "ThinkPad P15v Gen 1" },
+  { "mt": "21M7", "slug": "lenovo-thinkpad-e14-gen6",   "model": "ThinkPad E14 Gen 6" },
+  { "mt": "82YN", "slug": "lenovo-ideapad-flex5",       "model": "IdeaPad Flex 5" }
+]

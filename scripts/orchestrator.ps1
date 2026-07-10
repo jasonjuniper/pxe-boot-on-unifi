@@ -137,7 +137,8 @@ $_shareScripts = '\\192.168.5.141\deploy$\scripts'
 if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
     try {
         foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
-                         '06-join-wifi.ps1','10-setup-user.ps1',
+                         '05-install-network-drivers.ps1','06-join-wifi.ps1',
+                         '10-setup-user.ps1',
                          '07-remove-bloatware.ps1','08-set-file-associations.ps1',
                          'provision-status.ps1')) {
             $s = Join-Path $_shareScripts $f
@@ -158,13 +159,15 @@ if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
 }
 
 # Phase order: key matches phase.json "phase", value is script filename in $ScriptsDir
-# Wi-Fi join runs FIRST so the machine is already on wireless before the long,
-# multi-reboot Windows Update phase - if someone unplugs ethernet mid-update the
-# machine stays online and provisioning continues.  (The Wi-Fi driver is injected
-# offline in WinPE and ethernet is how the box imaged, so the join works at first
-# post-OOBE boot.  join-wifi is best-effort/non-fatal - a desktop with no Wi-Fi NIC
-# exits 0 and the phase advances.)
+# install-network-drivers runs FIRST, then join-wifi.  The network-driver phase
+# installs the Wi-Fi / Ethernet / Bluetooth drivers (catalog for curated models,
+# Windows Update for un-curated ones) over the still-connected imaging Ethernet, so
+# a wireless adapter actually EXISTS before join-wifi tries to connect.  Both run
+# ahead of the long, multi-reboot Windows Update phase, so if someone unplugs
+# ethernet mid-update the machine has already joined Wi-Fi and stays online.  Both
+# are best-effort/non-fatal - a desktop with no Wi-Fi NIC exits 0 and advances.
 $Phases = [ordered]@{
+    'install-network-drivers' = '05-install-network-drivers.ps1'
     'join-wifi'         = '06-join-wifi.ps1'
     'windows-update'    = '03-windows-update.ps1'
     'install-packages'  = '04-install-packages.ps1'
@@ -175,10 +178,12 @@ $Phases = [ordered]@{
 
 # Friendly labels + weighted progress bands (overallPercent) per phase.
 # Each phase owns a [start,end] slice of the 0-100 bar; "done" = 100.
-# Bands are monotonic and cover 0-100 with join-wifi taking a small slice up front.
+# Bands are monotonic and cover 0-100, with the two network phases taking a small
+# slice up front.
 $PhaseMeta = [ordered]@{
-    'join-wifi'         = @{ Label = 'Connecting to office Wi-Fi';        Start = 1;  End = 4  }
-    'windows-update'    = @{ Label = 'Installing Windows updates';        Start = 4;  End = 45 }
+    'install-network-drivers' = @{ Label = 'Installing network drivers';     Start = 1;  End = 4  }
+    'join-wifi'         = @{ Label = 'Connecting to office Wi-Fi';        Start = 4;  End = 6  }
+    'windows-update'    = @{ Label = 'Installing Windows updates';        Start = 6;  End = 45 }
     'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 76 }
     'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 76; End = 85 }
     'setup-user'        = @{ Label = 'Setting up the assigned user';      Start = 85; End = 91 }
@@ -194,7 +199,7 @@ function Get-PhaseState {
     if (Test-Path $PhaseFile) {
         try { return Get-Content $PhaseFile -Raw | ConvertFrom-Json } catch {}
     }
-    return [pscustomobject]@{ phase = 'join-wifi'; round = 0 }
+    return [pscustomobject]@{ phase = 'install-network-drivers'; round = 0 }
 }
 
 function Save-PhaseState {
@@ -477,6 +482,9 @@ function Remove-KioskMode {
             Remove-ItemProperty -Path $polKey -Name 'HideFastUserSwitching' -ErrorAction SilentlyContinue
         }
     } catch {}
+    # Provisioning is done - remove the locally-staged bootstrap secrets (junadmin
+    # password + Wi-Fi PSK). They were only needed for the dongle-independent first boot.
+    try { Remove-Item 'C:\ProgramData\JuniperSetup\boot-creds.json' -Force -ErrorAction SilentlyContinue } catch {}
     Write-Log "Kiosk mode removed - explorer shell + normal logon restored" -MasterOnly
 }
 
@@ -725,8 +733,8 @@ if ($Bootstrap) {
 
     # Write initial phase state if not already present
     if (-not (Test-Path $PhaseFile)) {
-        Save-PhaseState -Phase 'join-wifi' -Round 0
-        Write-Log "Phase state initialized: join-wifi" -MasterOnly
+        Save-PhaseState -Phase 'install-network-drivers' -Round 0
+        Write-Log "Phase state initialized: install-network-drivers" -MasterOnly
     }
 
     # Seed progress.json so the status GUI has something to show on first launch.
@@ -734,26 +742,98 @@ if ($Bootstrap) {
         -PhaseLabel 'Preparing this PC' -PhaseIndex 0 -PhaseTotal $Phases.Count `
         -StepMessage 'Starting setup' -State 'running'
 
-    # Change junadmin password immediately so CHANGEME is not live during imaging,
-    # AND arm the kiosk/autologon using that same password (never stored in repo).
-    # The bootstrap API returns the same password that 04-install-packages.ps1 will set.
+    # --- Dongle-INDEPENDENT bootstrap ---------------------------------------------
+    # Prior hollow completions all had the same cause: first-boot bootstrap needed the
+    # network (junadmin reset off CHANGEME + kiosk arm), but a laptop with no built-in
+    # RJ45 depends on a USB-C dongle that does NOT reliably come up at first boot
+    # (Class_FF, flaky - link/DHCP often never establishes in the full OS even after an
+    # active driver install). So we DECOUPLE: deploy.ps1 staged the junadmin + Wi-Fi
+    # creds LOCALLY (in WinPE, where the dongle works) to boot-creds.json. We read them
+    # here with NO network, so junadmin reset + kiosk ALWAYS succeed, then join the
+    # stable built-in Wi-Fi for the network phases. We still try hard to bring the
+    # dongle up (active install + a real device down/up "simulated unplug") as a bonus
+    # wired path, but nothing critical depends on it anymore.
+    $bootCreds = $null
+    $bootCredPath = 'C:\ProgramData\JuniperSetup\boot-creds.json'
+    if (Test-Path $bootCredPath) {
+        try { $bootCreds = Get-Content $bootCredPath -Raw | ConvertFrom-Json } catch {}
+    }
+
+    # (a) Bonus wired path: install the USB-Ethernet drivers, then SIMULATE an
+    #     unplug/replug (a real hot-plug always binds the dongle, so mimic it by
+    #     restarting the device + disable/enable it) and rescan.
     try {
-        $invApi   = 'http://192.168.5.141:8080'
-        $resp     = Invoke-RestMethod "$invApi/api/management/bootstrap" -TimeoutSec 10 -ErrorAction Stop
-        $bPass    = $resp.password
+        $uniLocal = 'C:\ProgramData\JuniperSetup\universal-drivers'
+        if (Test-Path $uniLocal) {
+            foreach ($inf in (Get-ChildItem $uniLocal -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue)) {
+                try { Start-Process pnputil.exe -ArgumentList "/add-driver `"$($inf.FullName)`" /install" -Wait -NoNewWindow } catch {}
+            }
+        }
+        foreach ($n in (Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'USB\*' })) {
+            try { & pnputil.exe /restart-device "$($n.InstanceId)" 2>&1 | Out-Null } catch {}
+            try {
+                Disable-PnpDevice -InstanceId $n.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep 1
+                Enable-PnpDevice  -InstanceId $n.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
+            } catch {}
+        }
+        try { Start-Process pnputil.exe -ArgumentList '/scan-devices' -Wait -NoNewWindow } catch {}
+        Write-Log "Bootstrap: installed USB-Ethernet drivers + simulated dongle unplug/replug" -MasterOnly
+    } catch { Write-Log "Bootstrap dongle bring-up step: $_" -Level WARN -MasterOnly }
+
+    # (b) Join the STABLE built-in Wi-Fi from local creds so we have network WITHOUT
+    #     depending on the dongle at all. The PSK lives only in the ACL'd local file.
+    try {
+        if ($bootCreds -and $bootCreds.wifiSsid -and $bootCreds.wifiPsk) {
+            $ssid = "$($bootCreds.wifiSsid)"
+            $wpx = @"
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>$ssid</name>
+  <SSIDConfig><SSID><name>$ssid</name></SSID></SSIDConfig>
+  <connectionType>ESS</connectionType><connectionMode>auto</connectionMode>
+  <MSM><security><authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption>
+  <sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>$($bootCreds.wifiPsk)</keyMaterial></sharedKey></security></MSM>
+</WLANProfile>
+"@
+            $tmp = [IO.Path]::GetTempFileName() -replace '\.tmp$','.xml'
+            $wpx | Out-File $tmp -Encoding UTF8
+            & netsh wlan add profile filename="$tmp" user=all 2>&1 | Out-Null
+            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+            & netsh wlan connect name="$ssid" 2>&1 | Out-Null
+            $wpx = $null
+            Write-Log "Bootstrap: joined Wi-Fi '$ssid' from local creds (dongle-independent)" -MasterOnly
+        }
+    } catch { Write-Log "Bootstrap Wi-Fi join: $_" -Level WARN -MasterOnly }
+
+    # (c) Wait up to ~40s for ANY IPv4 gateway (Wi-Fi or dongle).
+    for ($i = 0; $i -lt 20; $i++) {
+        $gw = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
+              Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' }
+        if ($gw) { Write-Log "Bootstrap: network up (gateway present)" -MasterOnly; break }
+        Start-Sleep 2
+    }
+
+    # --- Reset junadmin off CHANGEME + arm the kiosk (LOCAL creds first, NO network) --
+    try {
+        $bPass = $null
+        if ($bootCreds -and $bootCreds.junadminPassword) { $bPass = "$($bootCreds.junadminPassword)" }
+        if (-not $bPass) {
+            # Fallback to the network-dependent API only if local creds are missing.
+            try { $bPass = (Invoke-RestMethod 'http://192.168.5.141:8080/api/management/bootstrap' -TimeoutSec 10 -ErrorAction Stop).password } catch {}
+        }
         if ($bPass) {
-            $secPass = ConvertTo-SecureString $bPass -AsPlainText -Force
-            Set-LocalUser -Name $KioskUser -Password $secPass -ErrorAction Stop
-            Write-Log "junadmin password updated from bootstrap API" -MasterOnly
-            # Arm the provisioning lockout with the live password.
+            Set-LocalUser -Name $KioskUser -Password (ConvertTo-SecureString $bPass -AsPlainText -Force) -ErrorAction Stop
             Set-KioskMode -Password $bPass
-            $secPass = $null; $bPass = $null; $resp = $null
+            $bPass = $null
+            Write-Log "junadmin password reset + kiosk armed (from local boot creds)" -MasterOnly
         } else {
-            Write-Log "Bootstrap API returned no password - kiosk NOT armed (CHANGEME active)" -Level WARN -MasterOnly
+            Write-Log "No junadmin password (local creds missing + API unreachable) - CHANGEME active, kiosk NOT armed" -Level WARN -MasterOnly
         }
     } catch {
-        Write-Log "Could not update junadmin password at bootstrap: $_ (CHANGEME still active, kiosk not armed)" -Level WARN -MasterOnly
+        Write-Log "Could not reset junadmin at bootstrap: $_ (CHANGEME still active)" -Level WARN -MasterOnly
     }
+    $bootCreds = $null
 
     Write-Log "Bootstrap complete - proceeding to first phase"
     # Fall through to main execution block below
@@ -773,6 +853,66 @@ Reassert-KioskArming
 # Re-assert no-sleep-on-AC each run (idempotent; capture is skipped if already
 # snapshotted at bootstrap) in case anything reset the power scheme.
 Disable-SleepOnAc
+
+# Every run: RE-ESTABLISH Wi-Fi from the local creds if there is no network. The
+# multi-reboot windows-update phase kept stalling because the Wi-Fi join happened
+# only ONCE at bootstrap - after a windows-update reboot the saved profile did not
+# reliably auto-reconnect (and the USB-C dongle is unreliable), so the machine came
+# back at the login screen with "No Network" and provisioning froze. Re-joining here
+# on EVERY boot (only when a gateway is missing) keeps the box online across all the
+# reboots so provisioning actually finishes. The PSK lives only in the ACL'd local
+# file. Best-effort; never blocks the run.
+try {
+    $gwNow = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
+             Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' }
+    if (-not $gwNow -and (Test-Path 'C:\ProgramData\JuniperSetup\boot-creds.json')) {
+        $bc = $null
+        try { $bc = Get-Content 'C:\ProgramData\JuniperSetup\boot-creds.json' -Raw | ConvertFrom-Json } catch {}
+        if ($bc -and $bc.wifiSsid -and $bc.wifiPsk) {
+            $ssid = "$($bc.wifiSsid)"
+            $wpx = @"
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>$ssid</name><SSIDConfig><SSID><name>$ssid</name></SSID></SSIDConfig>
+  <connectionType>ESS</connectionType><connectionMode>auto</connectionMode>
+  <MSM><security><authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption>
+  <sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>$($bc.wifiPsk)</keyMaterial></sharedKey></security></MSM>
+</WLANProfile>
+"@
+            $tmp = [IO.Path]::GetTempFileName() -replace '\.tmp$','.xml'
+            $wpx | Out-File $tmp -Encoding UTF8
+            & netsh wlan add profile filename="$tmp" user=all 2>&1 | Out-Null
+            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+            & netsh wlan connect name="$ssid" 2>&1 | Out-Null
+            $wpx = $null
+            for ($i = 0; $i -lt 15; $i++) {
+                if (Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' }) { break }
+                Start-Sleep 2
+            }
+            Write-Log "Every-run: re-joined Wi-Fi '$ssid' (no network after reboot)" -MasterOnly
+        }
+        $bc = $null
+    }
+} catch { Write-Log "Every-run Wi-Fi re-join: $_" -Level WARN -MasterOnly }
+
+# Every run: force the network profile to PRIVATE (never leave it Public). A
+# netsh-joined Wi-Fi (and some first-seen networks) default to 'Public', which
+# firewalls the machine off from cross-subnet remote management and is wrong for a
+# managed corporate PC. We re-assert Private every pass so the machine is manageable
+# throughout provisioning AND when it lands at the user. We also widen the WinRM
+# firewall rule to any remote address so WinRM works cross-subnet regardless of how
+# Windows happened to categorize the network. Best-effort; never blocks the run.
+try {
+    Get-NetConnectionProfile -ErrorAction SilentlyContinue |
+        Where-Object { $_.NetworkCategory -ne 'DomainAuthenticated' -and $_.NetworkCategory -ne 'Private' } |
+        ForEach-Object {
+            Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue
+            Write-Log "Every-run: set network '$($_.Name)' profile Public/Unknown -> Private" -MasterOnly
+        }
+    # Keep WinRM reachable across subnets no matter the profile.
+    Set-NetFirewallRule -Name 'WINRM-HTTP-In-TCP-PUBLIC' -RemoteAddress Any -ErrorAction SilentlyContinue
+    Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction SilentlyContinue
+} catch { Write-Log "Every-run network-profile assert: $_" -Level WARN -MasterOnly }
 
 # Break-glass / safety timeout: if a tech dropped the flag file or imaging has run
 # too long, tear down the kiosk so the machine isn't locked forever, then let the
@@ -804,8 +944,8 @@ if ($phase -eq 'done') {
 }
 
 if (-not $Phases.Contains($phase)) {
-    Write-Log "Unknown phase '$phase' - resetting to join-wifi" -Level WARN
-    $phase = 'join-wifi'
+    Write-Log "Unknown phase '$phase' - resetting to install-network-drivers" -Level WARN
+    $phase = 'install-network-drivers'
 }
 
 $round   = [int]($state.round) + 1
