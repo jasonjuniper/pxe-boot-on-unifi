@@ -909,8 +909,17 @@ try {
             Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue
             Write-Log "Every-run: set network '$($_.Name)' profile Public/Unknown -> Private" -MasterOnly
         }
-    # Keep WinRM reachable across subnets no matter the profile.
-    Set-NetFirewallRule -Name 'WINRM-HTTP-In-TCP-PUBLIC' -RemoteAddress Any -ErrorAction SilentlyContinue
+    # Set-NetConnectionProfile does not reliably PERSIST across the final teardown
+    # reboot (Windows can re-categorize the Wi-Fi Public on reconnect), so also write
+    # the durable NetworkList registry Category = 1 (Private) for every stored profile.
+    Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Profiles' -ErrorAction SilentlyContinue |
+        ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name 'Category' -Value 1 -Type DWord -ErrorAction SilentlyContinue }
+    # Keep WinRM reachable across subnets no matter the profile. The default Public
+    # WinRM rule ('WINRM-HTTP-In-TCP') is scoped to LocalSubnet, which blocks
+    # cross-subnet management if the machine ever lands Public - so widen EVERY WinRM
+    # rule (all profiles) to any remote address via the display group, not a single
+    # (mis-named) rule.
+    Set-NetFirewallRule -DisplayGroup 'Windows Remote Management' -RemoteAddress Any -ErrorAction SilentlyContinue
     Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction SilentlyContinue
 } catch { Write-Log "Every-run network-profile assert: $_" -Level WARN -MasterOnly }
 
