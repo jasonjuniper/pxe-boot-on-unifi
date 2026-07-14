@@ -309,8 +309,9 @@ kiosk still locks login until provisioning completes).
   msiexec /qn, `.exe` via /s /norestart; verifies SHA256 when present. Pass
   `--IncludeUnconfirmed` on first run for brand-new hardware.
 - `04-install-packages.ps1` - winget + MSI packages + inventory agent registration.
-  The inventory agent also installs the Juniper root CA certificate automatically,
-  so HTTPS to internal services works after this step.
+  (As of 2026-07-14 the inventory server uses a publicly-trusted Let's Encrypt cert
+  via Cloudflare DNS-01 at `https://inventory.juniperdesign.com`, so there is no
+  longer a Juniper internal CA to install - the old agent CA-trust step is retired.)
 - `05-install-network-drivers.ps1` - the FIRST phase (band 1-4). Installs WiFi/
   Bluetooth/Ethernet drivers over the imaging ethernet BEFORE `join-wifi`, so a
   wireless adapter exists to join with. Catalog network rows (any status, on-disk
