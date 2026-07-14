@@ -34,7 +34,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$InventoryApi   = 'https://inventory.juniperdesign.local',
+    [string]$InventoryApi   = 'https://inventory.juniperdesign.com',
     [string]$FallbackApi    = 'http://192.168.5.141:8080',
     [string]$CertServerBase = 'http://192.168.5.141',
     [string]$CertPath       = 'C:\tftpd64\juniper-pxe-ca.cer',
