@@ -1143,18 +1143,43 @@ Write-Host ''
 Write-Host '  Setting UEFI boot order...' -ForegroundColor Cyan
 
 # Move Windows Boot Manager to top of EFI boot order
+# NOTE (2026-07-20): this step used to be silent-on-failure, which cost a full
+# debug cycle on a ThinkPad E14 Gen 5 (21JK): the machine imaged perfectly, then
+# rebooted straight back into PXE because the firmware boot order was never
+# changed and NOTHING was logged. Always log the outcome AND verify it stuck.
 $p = Start-Process bcdedit -ArgumentList '/set "{fwbootmgr}" displayorder "{bootmgr}" /addfirst' `
     -Wait -PassThru -NoNewWindow `
     -RedirectStandardOutput "$env:TEMP\bcd1_o.txt" `
     -RedirectStandardError  "$env:TEMP\bcd1_e.txt"
 if ($p.ExitCode -eq 0) {
     Write-Host '  Windows Boot Manager: first in EFI order.' -ForegroundColor Green
+    Write-DeployLog 'Boot order: bcdedit /addfirst {bootmgr} succeeded'
 } else {
     $bcdErr = (Get-Content "$env:TEMP\bcd1_e.txt" -ErrorAction SilentlyContinue) -join ' '
     Write-Host "  WARN: Boot order update failed (exit $($p.ExitCode)): $bcdErr" -ForegroundColor Yellow
+    Write-DeployLog "WARN: boot order update FAILED (exit $($p.ExitCode)): $bcdErr"
+    Publish-Event -PhaseKey 'winpe' -Step 'bootorder' -Status 'warning' `
+        -Message "Firmware boot order NOT set to Windows-first (bcdedit exit $($p.ExitCode)). Machine will re-PXE after reboot - set Windows Boot Manager first in BIOS." -Percent 5
 }
 
-# Enumerate firmware entries and remove PXE / EFI Network boot options
+# --- (DISABLED 2026-07-20) Deleting firmware PXE/network boot entries ---------
+# We used to `bcdedit /delete` every firmware entry whose description matched
+# PXE/EFI Network/IPv4/IPv6. That is a DESTRUCTIVE write to UEFI NVRAM, and on a
+# ThinkPad E14 Gen 5 (21JK, factory BIOS from 2023/12) it left the machine unable
+# to boot EITHER path: Windows reboot-looped AND a subsequent PXE attempt failed
+# with a Secure Boot error. Both boot paths broken at once is the signature of
+# mangled NVRAM boot entries, not a driver or boot-order fault.
+#
+# The `/addfirst` reorder above ALREADY puts Windows Boot Manager ahead of PXE,
+# which is all we actually need - the network entry can stay, just lower priority.
+# Deleting it bought nothing and risked bricking the boot config. Do NOT re-enable
+# without testing on the exact firmware in question.
+#
+# Recovery for a machine already hit by this: BIOS -> F9 Load Setup Defaults, and
+# Secure Boot -> Restore Factory Keys, save+exit. That rebuilds the NVRAM entries.
+$pxeRemoved = 0
+Write-DeployLog 'Boot order: firmware PXE entries left intact (deletion disabled 2026-07-20 - it broke UEFI NVRAM on 21JK)'
+if ($false) {
 $fwOut = "$env:TEMP\bcd_fw.txt"
 Start-Process bcdedit -ArgumentList '/enum firmware' -Wait -NoNewWindow `
     -RedirectStandardOutput $fwOut `
@@ -1183,6 +1208,7 @@ foreach ($fwLine in $fwLines) {
     }
     if ($fwLine -match '^\s*$') { $pxeGuid = $null }
 }
+}   # end if($false) - firmware entry deletion disabled, see note above
 if ($pxeRemoved -gt 0) {
     Write-Host "  PXE: $pxeRemoved boot entr$(if ($pxeRemoved -eq 1){'y'}else{'ies'}) removed." -ForegroundColor Green
 } else {
