@@ -80,6 +80,64 @@ The current stack:
 - **Do not restart WDS or reboot pc-deploy as a blind fix.** Diagnose with `pktmon` first;
   the boot image and WDS config survive reboots, so a reboot rarely fixes a real PXE fault.
 
+### CARDINAL RULE - NEVER add a driver to the boot image without parsing the vendor catalog
+
+**Established 2026-07-20 after a real, costly misdiagnosis (ThinkPad E14 Gen 5 / 21JK).**
+Before injecting ANY driver into `winpe-deploy-final.wim`, you must resolve the machine
+**by serial number** against the **manufacturer's own driver catalog**, and then verify the
+candidate INF actually **lists the target device's hardware ID**. No exceptions.
+
+**NEVER do any of these:**
+- Infer a NIC/storage vendor from the product line ("E-series ThinkPads use Realtek").
+- Assume a driver already in the image covers a machine because the **vendor matches**.
+  `e1dn.inf` and `e1d.inf` are both Intel and both "I219" - but they cover *different*
+  device-ID ranges. Vendor match is NOT coverage.
+- Trust a model name, a spec sheet, a forum post, or a previous generation of the same model.
+
+**ALWAYS do this instead (takes ~2 minutes):**
+
+```powershell
+# 1. SERIAL -> exact machine type + model (authoritative, from the vendor)
+Invoke-RestMethod 'https://pcsupport.lenovo.com/us/en/api/v4/mse/getproducts?productId=<SERIAL>'
+#    e.g. PF4TXEGG -> .../THINKPAD-E14-GEN-5-TYPE-21JK-21JL/21JK/21JK0084US/PF4TXEGG
+
+# 2. MACHINE TYPE -> full driver catalog (NOTE: strip the BOM or the [xml] cast fails)
+$c=(Invoke-WebRequest "https://download.lenovo.com/catalog/<MT>_Win11.xml" -UseBasicParsing).Content -replace '^﻿',''
+$x=[xml]$c
+#    then fetch each $x.packages.package .location xml for Title / Category / installer file
+
+# 3. Extract the driver (EXTRACT ONLY, and NOT on pc-deploy - see cardinal rule above)
+Start-Process <softpaq>.exe -ArgumentList '/VERYSILENT','/EXTRACT=YES','/DIR=<dir>' -Wait
+
+# 4. PARSE the INF and PROVE it covers the target hardware ID before injecting
+([regex]::Matches((Get-Content <driver>.inf -Raw),'PCI\\VEN_[0-9A-F]{4}&DEV_([0-9A-F]{4})').Groups |
+   Where-Object Name -eq '1').Value.ToUpper() | Sort-Object -Unique
+#    Diff this against the INF already in boot.wim. If the target DEV ID is missing
+#    from the current INF but present in the new one, THAT is your gap.
+```
+
+**Why this rule exists:** the 21JK PXE-booted fine but never started deployment. It was
+*assumed* to be Realtek (true of older E14 gens); Realtek PCIe drivers were injected and
+changed nothing. The serial-based catalog pull showed 21JK ships **no Realtek wired LAN at
+all** - it is Intel. The boot image's `e1dn.inf` covered only **18** device IDs (`550x`/`57xx`),
+while the catalog's `e1d.inf` covered **58**, including the `15xx`/`1A1x` I219-V range this
+machine actually uses. A driver from the right *vendor* was already present and still did
+not match. Only the device-ID diff exposed the real gap.
+
+**Also verify AFTER injecting** - mount the image read-only and confirm both that the INF is
+present and that its parsed DEV IDs include the target:
+```powershell
+Mount-WindowsImage -ImagePath <wim> -Index 1 -Path <mnt> -ReadOnly
+Get-WindowsDriver -Path <mnt> | Where-Object ClassName -eq 'Net'
+Dismount-WindowsImage -Path <mnt> -Discard
+```
+
+> **Corollary - WinPE scripts must be ASCII, no BOM.** The diagnostic `toolkit.ps1` was
+> unusable for months because it contained 264 Unicode box-drawing chars (`-`); WinPE's
+> PowerShell reads them in a codepage that mangles the bytes and throws a ParserError, so
+> the toolkit died before printing anything. Check any WinPE-bound script with:
+> `[regex]::Matches([IO.File]::ReadAllText($f),'[^\x00-\x7F]').Count` - it must be 0.
+
 ## Key paths (on pc-deploy)
 
 - WinPE workspace (build time): `C:\WinPE_amd64\`
@@ -573,6 +631,68 @@ tree is injected `/Recurse`).
 > placeholder and Wi-Fi never joined. Baking the dongle/dock NIC drivers into every
 > image removes that single point of failure.
 
+#### Universal Realtek PCIe (onboard) Ethernet - `_universal\pcie-ethernet-realtek\`
+
+**Added 2026-07-20** after a ThinkPad **E14 Gen 5 (type 21JK)** PXE-booted fine but never
+started deployment. Symptom: WDS logs showed the client **completed** the TFTP download of
+`winpe-deploy-final.wim` (so WinPE loaded), yet the machine NEVER appeared in inventory and
+posted **zero** `/ingest/deploy-progress` records - not even deploy.ps1's first 1% "Imaging
+Windows" milestone.
+
+**Root cause:** PXE itself needs no Windows driver (the UEFI firmware has its own network
+stack), so the machine boots the NBP + boot image happily. Once **WinPE** starts, it needs a
+real Windows NIC driver. `boot.wim` did contain `e1dn.inf` (Intel), but **that INF only
+covers 18 device IDs** - the `550x`/`57xx` (Meteor Lake) range. The E14 Gen 5 is a 13th-gen
+(Raptor Lake) machine whose **Intel I219-V** sits in the `15xx`/`1A1x` range, which `e1dn.inf`
+does **not** cover. So WinPE came up with no network: it could not reach
+`\\192.168.5.141\deploy$` to get the WIM and could not post progress (best-effort, so it
+failed silently) - i.e. "PXE boots but deployment never starts", with no logs anywhere.
+
+> **MISDIAGNOSIS WARNING (learn from this one).** The E-series was first *assumed* to use a
+> Realtek onboard NIC (true of older E14 gens), and Realtek PCIe drivers were injected - which
+> changed nothing, because **the 21JK is Intel-wired**. Do NOT infer a model's NIC from its
+> product line. Pull the driver list **by serial** (below); it is authoritative and takes a
+> minute.
+
+**Authoritative serial-based driver pull (always do this first):**
+```powershell
+# serial -> exact machine type / model
+Invoke-RestMethod 'https://pcsupport.lenovo.com/us/en/api/v4/mse/getproducts?productId=<SERIAL>'
+# -> .../THINKPAD-E14-GEN-5-TYPE-21JK-21JL/21JK/21JK0084US/PF4TXEGG
+
+# machine type -> full driver catalog (strip the BOM before casting to [xml])
+$c=(Invoke-WebRequest "https://download.lenovo.com/catalog/<MT>_Win11.xml" -UseBasicParsing).Content -replace '^﻿',''
+# then fetch each package .xml for Title / Category / installer filename
+```
+For **21JK** this returns **no Realtek wired LAN at all**; the wired NIC package is
+**`nzarw03w.exe` "Intel PRO1000 LAN Adapter Software"**, which extracts to **`e1d.inf`**
+(58 device IDs, covering `15xx` + `1A1x` + `550x` + `57xx`).
+
+**Fix:** `e1d.inf` staged to **`C:\deploy\drivers\_universal\pcie-ethernet-intel\`** and
+DISM-injected into `winpe-deploy-final.wim`. Boot image now has **12** Net drivers (was 9).
+The Realtek PCIe INFs (`_universal\pcie-ethernet-realtek\`, `rt68cx21x64/rt68dcx21x64`,
+`VEN_10EC&DEV_8136/8161/8166/8168/8186`) were left in place - they are harmless and do cover
+genuinely-Realtek models - but they are **not** what fixed the E14.
+
+**Model registration:** 21JK was entirely absent from the inventory driver catalog (known
+types were only 087C/20Y3/21DC/21FE/21G2/82YN/83JU). `21jk-driver-manifest.json` (36 packages:
+10 Chipset, 9 Other, 7 Network, 4 Input, 3 Storage, 2 Video, 1 BIOS) is generated in the repo
+root for `sync-lenovo-drivers.ps1 -MachineType 21JK -Model "ThinkPad E14 Gen 5"`. The full
+SoftPaq download/curate is heavy - run it **off-hours** per the cardinal rule.
+
+Putting them in `_universal` makes the fix **durable and complete**:
+- `01c-build-winpe.ps1` Step 4b injects `_universal` into `boot.wim`, so a **WinPE rebuild
+  keeps** the driver (no regression).
+- `deploy.ps1`'s `Invoke-UniversalDriverInjection` injects `_universal` into **every applied
+  OS**, so the imaged machine also has working onboard Ethernet at first boot (same failure
+  class as the USB-dongle bug above).
+
+> **Diagnostic tell:** a machine that PXE-boots but produces NO `/deploy/status` record at all
+> is almost always a **WinPE NIC driver** gap, not a WDS/TFTP/DHCP fault - WDS's
+> Deployment-Services-Diagnostics/Operational log will show the boot WIM TFTP download
+> **completing**. Check the boot image's Net drivers against the model's actual NIC before
+> touching WDS or DHCP.
+
 #### Driver warehouse audit
 
 Cross-references inventory device models, driver catalog status, and on-disk files:
@@ -605,6 +725,12 @@ Curated models (offline DISM-injectable): ThinkPad P14s Gen 5 (21G2, 142 .inf),
 ThinkPad T14s Gen 4 (21FE, 99 .inf). Other Lenovo models still hold raw `.exe` only
 (unconfirmed) and rely on the post-boot online installer until curated.
 #### Adding a new driver
+
+> **If the driver is going into the BOOT IMAGE (WinPE), stop and read
+> "CARDINAL RULE - NEVER add a driver to the boot image without parsing the vendor catalog"
+> above first.** Resolve the machine by **serial**, pull the manufacturer's catalog, and
+> prove the INF lists the target hardware ID. Do not infer the vendor from the model line,
+> and do not assume an existing same-vendor INF already covers the machine.
 
 Use the web UI at `http://192.168.5.141:8080/drivers` (admin login required).
 Set `file_path` relative to `C:\deploy\drivers\` - e.g. `lenovo-thinkpad-t14s\network\Intel-NIC.exe`.
