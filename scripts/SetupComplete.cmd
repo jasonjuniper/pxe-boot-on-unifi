@@ -40,9 +40,15 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableSoftLa
 :: OneDrive: stop the personal-account first-run/auto-setup nag (does NOT uninstall OneDrive)
 reg add "HKLM\SOFTWARE\Policies\Microsoft\OneDrive" /v DisablePersonalSync /t REG_DWORD /d 1 /f >> "%LOG%" 2>&1
 
-:: Office / Microsoft 365: disable the first-launch "sign in" prompt (machine policy
-:: so Office installed later via the catalog does not force an M365 sign-in). 3 = sign-in disabled.
-reg add "HKLM\SOFTWARE\Policies\Microsoft\office\16.0\common\signin" /v SignInOptions /t REG_DWORD /d 3 /f >> "%LOG%" 2>&1
+:: Office / Microsoft 365 sign-in policy.
+::   0 = both org + personal allowed   1 = personal (MSA) only
+::   2 = ORGANIZATIONAL ID ONLY        3 = sign-in disabled entirely
+:: CORRECTED 2026-07-20: this was 3, which blocks ALL sign-in - including the work
+:: account. Microsoft 365 Apps for business is licensed PER USER and activates by
+:: signing in with the work account, so 3 meant Office installed but could never
+:: activate. 2 keeps the original intent (no personal Microsoft accounts) while
+:: still allowing the M365 work account needed for activation.
+reg add "HKLM\SOFTWARE\Policies\Microsoft\office\16.0\common\signin" /v SignInOptions /t REG_DWORD /d 2 /f >> "%LOG%" 2>&1
 
 echo %DATE% %TIME%  [INFO ]  [SetupComplete         ]  OOBE no-MSA / first-run nag suppression applied >> "%LOG%"
 
