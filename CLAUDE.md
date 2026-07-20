@@ -761,8 +761,24 @@ End-to-end flow for Lenovo models (run on pc-deploy, scripts in `C:\deploy\scrip
    `Invoke-DriverInjection` matches a real machine at image time.
 
 Curated models (offline DISM-injectable): ThinkPad P14s Gen 5 (21G2, 142 .inf),
-ThinkPad T14s Gen 4 (21FE, 99 .inf). Other Lenovo models still hold raw `.exe` only
+ThinkPad T14s Gen 4 (21FE, 99 .inf), ThinkPad E14 Gen 5 (21JK, 116 .inf / 5.85 GB,
+curated 2026-07-20). Other Lenovo models still hold raw `.exe` only
 (unconfirmed) and rely on the post-boot online installer until curated.
+
+> **SAFETY - `is_bios` really means "never execute this .exe on pc-deploy".**
+> `curate-lenovo-model.ps1` SKIPS packages flagged `is_bios`; everything else it
+> **runs** (to silently extract). So the flag is what stops pc-deploy flashing its
+> OWN hardware (see the cardinal rule above). `Test-IsBios` in
+> `build-lenovo-manifest.ps1` originally matched only the **category**
+> (`BIOS|UEFI|Embedded Controller`), which on 21JK caught just **1 of 9** flashers -
+> the rest hid in innocuous categories and only the **title** gave them away:
+> `"Lenovo NVMe Solid State Drive Firmware Update Utility"` -> category **Storage**,
+> `"Intel Management Engine Firmware"` -> category **Motherboard Devices...**,
+> `"Synaptics TrackPad Firmware"` -> category **Mouse Pen and Keyboard**.
+> Fixed 2026-07-20 to test **category OR title** (`Firmware|FW Package|Flash Utility`),
+> which correctly skips all 9 on 21JK. Note `"...Management Engine SOFTWARE"` is a real
+> driver and is deliberately NOT matched. **Older manifests generated before this fix
+> have the same gap - regenerate them before re-curating.**
 #### Adding a new driver
 
 > **If the driver is going into the BOOT IMAGE (WinPE), stop and read

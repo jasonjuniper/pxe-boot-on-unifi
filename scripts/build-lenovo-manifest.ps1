@@ -68,7 +68,23 @@ function Get-Subdir([string]$cat) {
         default                         { 'other' }
     }
 }
-function Test-IsBios([string]$cat) { return [bool]($cat -match 'BIOS|UEFI|Embedded Controller') }
+# is_bios really means "DO NOT EXECUTE THIS .exe ON pc-deploy" - curate-lenovo-model.ps1
+# skips these instead of running them. It must therefore catch every FIRMWARE FLASHER,
+# not just BIOS, because pc-deploy would otherwise flash its OWN hardware (cardinal rule:
+# never run vendor firmware SoftPaqs on the imaging server).
+#
+# Category alone is NOT enough. On 21JK (ThinkPad E14 Gen 5) the flashers hide in
+# innocuous-looking categories and only the TITLE gives them away:
+#   "Lenovo NVMe Solid State Drive Firmware Update Utility"  -> category "Storage"
+#   "Intel Management Engine Firmware"                       -> category "Motherboard Devices..."
+#   "Synaptics TrackPad Firmware"                            -> category "Mouse Pen and Keyboard"
+# So we test category OR title. Note "...Management Engine SOFTWARE" (a real driver) is
+# intentionally NOT matched - only 'Firmware'/'FW Package' are.
+function Test-IsBios([string]$cat, [string]$title = '') {
+    if ($cat   -match 'BIOS|UEFI|Embedded Controller|Firmware') { return $true }
+    if ($title -match 'BIOS|UEFI|Firmware|FW Package|Flash Utility') { return $true }
+    return $false
+}
 
 $catUrl = "https://download.lenovo.com/catalog/${MachineType}_${Os}.xml"
 Write-Host "Catalog: $catUrl" -ForegroundColor Cyan
@@ -125,7 +141,7 @@ foreach ($p in $pkgNodes) {
         sha256     = ''
         size_bytes = $size
         pnp_id     = $pnpArr
-        is_bios    = (Test-IsBios $cCat)
+        is_bios    = (Test-IsBios $cCat $title)
     })
     Start-Sleep -Milliseconds $ThrottleMs
 }
