@@ -132,6 +132,45 @@ Get-WindowsDriver -Path <mnt> | Where-Object ClassName -eq 'Net'
 Dismount-WindowsImage -Path <mnt> -Discard
 ```
 
+### CARDINAL RULE - NEVER destructively modify the target's UEFI NVRAM boot entries
+
+**Established 2026-07-20 after bricking both boot paths on a ThinkPad E14 Gen 5 (21JK).**
+
+`deploy.ps1` used to enumerate firmware boot entries after imaging and `bcdedit /delete`
+every one whose description matched `PXE|EFI Network|IPv4|IPv6|Network Boot`. That is a
+**destructive write to UEFI NVRAM**. On the 21JK (factory BIOS from 2023/12) it left the
+machine unable to boot **either** path:
+
+- Windows Boot Manager selected -> **immediate reboot loop, no readable BSOD**
+- Subsequent PXE attempt -> **Secure Boot error**
+
+**Diagnostic tell:** when BOTH boot paths break at the same time, it is **mangled NVRAM boot
+entries** - NOT drivers, NOT boot order, NOT a bugcheck. Do not go driver-hunting. A missing
+chipset/video/storage driver gives you a working-but-ugly desktop or a *readable* stop code;
+it does not break PXE too. Manually selecting Windows Boot Manager failing to help is the
+confirmation - the entry itself is damaged.
+
+**Recovery on an affected machine (~2 min, no download):**
+1. `F1` at power-on -> `F9` **Load Setup Defaults**
+2. **Security -> Secure Boot -> Restore Factory Keys**
+3. `F10` save + exit, then PXE boot and re-image
+
+**Prevention (in place):** the deletion block is disabled (`if ($false)`) in `deploy.ps1`.
+The `bcdedit /set {fwbootmgr} displayorder {bootmgr} /addfirst` reorder **already** puts
+Windows ahead of PXE, which is all that is needed - the network entry can remain, just at
+lower priority. Deleting it bought nothing. **Do NOT re-enable** without testing on the exact
+firmware involved. The boot-order step now also **logs its outcome** via `Write-DeployLog` and
+publishes a `warning` event on failure; it used to fail silently, which cost a debug cycle.
+
+> **Related - Secure Boot / PCA 2011 expiry (watch this).** Everything WDS serves is signed
+> under **Microsoft Windows Production PCA 2011**: as of 2026-07-20 `wdsmgfw.efi`'s leaf had
+> already **expired 2026-06-17**, and `bootmgfw.efi` expires **2026-10-17**. Microsoft's
+> CVE-2023-24932 / KB5025885 work moves boot binaries to the **Windows UEFI CA 2023** cert.
+> Firmware that never received the 2023 CA in its Secure Boot DB will refuse newer boot
+> managers. **Keep target UEFI current** - for 21JK, BIOS **1.43** (`r2auj68w.exe`) vs the
+> 2023/12 factory build. Expect fleet-wide Secure Boot pain around **October 2026** if BIOSes
+> are not updated.
+
 > **Corollary - WinPE scripts must be ASCII, no BOM.** The diagnostic `toolkit.ps1` was
 > unusable for months because it contained 264 Unicode box-drawing chars (`-`); WinPE's
 > PowerShell reads them in a codepage that mangles the bytes and throws a ParserError, so
