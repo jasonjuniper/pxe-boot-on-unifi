@@ -45,8 +45,13 @@ function Get-LenovoXml([string]$Url) {
 
 # Lenovo catalog category string -> local subdir slug.
 # Slugs line up with the category map in sync-lenovo-drivers.ps1.
-function Get-Subdir([string]$cat) {
-    switch -Regex ($cat) {
+# Some catalogs carry NO Category at all - the IdeaPad S740-15IRH (81NY) Win10
+# catalog has an empty Category on all 25 packages. Fall back to the Title so the
+# staged tree is still organised (same lesson as Test-IsBios: category alone is not
+# reliable across Lenovo's catalogs).
+function Get-Subdir([string]$cat, [string]$title = '') {
+    $probe = if ($cat -and $cat.Trim()) { $cat } else { $title }
+    switch -Regex ($probe) {
         # NB: order matters. Lenovo's motherboard/chipset category string literally
         # contains the word "video" ("...onboard video PCIe switches"), so Chipset
         # must be tested BEFORE Display/Video or AMD chipset/NPU/platform land in display.
@@ -135,7 +140,7 @@ foreach ($p in $pkgNodes) {
         title      = $title
         version    = $ver
         category   = $cCat
-        subdir     = (Get-Subdir $cCat)
+        subdir     = (Get-Subdir $cCat $title)
         filename   = $exe
         url        = $url
         sha256     = ''

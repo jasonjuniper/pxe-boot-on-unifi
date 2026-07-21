@@ -765,6 +765,49 @@ ThinkPad T14s Gen 4 (21FE, 99 .inf), ThinkPad E14 Gen 5 (21JK, 116 .inf / 5.85 G
 curated 2026-07-20). Other Lenovo models still hold raw `.exe` only
 (unconfirmed) and rely on the post-boot online installer until curated.
 
+#### IdeaPad S740-15IRH (81NY) - RST storage + dongle-only, curated 2026-07-21
+
+Two model-specific traps, both now handled in `_universal` so a WinPE rebuild keeps them:
+
+- **The machine is in Intel RST mode** (confirmed by hand; single drive, no RAID). WinPE
+  **cannot see the NVMe at all** without `iaStorAC.inf` - it would PXE fine, load WinPE,
+  then fail with no disk to partition. This is the storage twin of the E14 NIC bug. The
+  RST driver (v17.7.0.1006, covers `DEV_282A/A356/A357` = 300-series Coffee Lake) is
+  staged at **`_universal\storage-intel-rst\`** and injected into `winpe-deploy-final.wim`.
+- **No built-in Ethernet** - it images over a USB-C dongle only. The boot image now carries
+  **13** Net drivers including `rtump64x64.inf` (Lenovo dongle). Note the Lenovo INF covers
+  the same VID/PIDs as `rtu52`/`rtu53`, so the dongle was already largely covered.
+
+> **`_winpe-drivers\` is NOT injected by a rebuild - only `_universal\` is.**
+> `01c-build-winpe.ps1` injects `$DriverRoot = C:\deploy\drivers\_universal` and nothing
+> else. Anything dropped in `_winpe-drivers\` is inert (which is exactly why the Realtek
+> PCIe INFs sat there unused). **Always stage boot-image drivers in `_universal\`.**
+
+**Lenovo catalog gotchas this model exposed:**
+- **Win11 catalog is effectively empty** (1 package: "Lenovo Universal Device Client").
+  The real driver set is the **Win10** catalog (25 packages). Build with `-Os Win10`.
+- **Category is BLANK on every package** in this catalog. `Test-IsBios` and `Get-Subdir`
+  both had to fall back to the **Title** - without that, `BIOS Update` and
+  `Lenovo Battery Firmware Update Tool` would have been EXECUTED on pc-deploy, and all 25
+  packages would have landed in `other\`. Fixed 2026-07-21 (`Get-Subdir $cat $title`).
+
+Result: 22 packages confirmed_working, **301 .inf / 4.32 GB** at
+`C:\deploy\drivers\lenovo-ideapad-s740-15irh\`.
+
+#### manifest.json wmiModels must include the MACHINE TYPE
+
+**Fixed 2026-07-21.** `/api/drivers/manifest.json` built `wmiModels` from the catalog model
+name plus model strings harvested from **already-inventoried devices**. A newly curated model
+has no device rows yet, so nothing supplied its machine type - and Lenovo consumer hardware
+reports `Win32_ComputerSystem.Model` as the bare 4-char type (`81NY`). `Invoke-DriverInjection`
+therefore matched **nothing** on the first machine and injected no model drivers, silently.
+The generator now always includes the machine type, so a new model works on its first image.
+Verify after curating any model:
+```powershell
+(Invoke-RestMethod 'http://192.168.5.141:8080/api/drivers/manifest.json').models |
+  ForEach-Object { $_.PSObject.Properties } | ForEach-Object { $_.Value.wmiModels }
+```
+
 > **SAFETY - `is_bios` really means "never execute this .exe on pc-deploy".**
 > `curate-lenovo-model.ps1` SKIPS packages flagged `is_bios`; everything else it
 > **runs** (to silently extract). So the flag is what stops pc-deploy flashing its

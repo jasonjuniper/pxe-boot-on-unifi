@@ -1,0 +1,390 @@
+[
+    {
+        "name":  "nbys01af09wb_g_s740i",
+        "title":  "Finger Print Driver - 10 [64]",
+        "version":  "2.1.53.220",
+        "category":  "Fingerprint reader",
+        "subdir":  "fingerprint",
+        "filename":  "nbys01af09wb.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09wb.exe",
+        "sha256":  "",
+        "size_bytes":  2904448,
+        "pnp_id":  [
+                       "USB\\VID_27C6\u0026PID_55B4"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09wb_s_s740i",
+        "title":  "Finger Print Driver - 10 [64]",
+        "version":  "6.0.37.1107",
+        "category":  "Fingerprint reader",
+        "subdir":  "fingerprint",
+        "filename":  "nbys01af09wb.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09wb.exe",
+        "sha256":  "",
+        "size_bytes":  2904448,
+        "pnp_id":  [
+                       "USB\\VID_06CB\u0026PID_00BE"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09w5_b_s740i",
+        "title":  "Cardreader Driver - 10 [64]",
+        "version":  "1.1.101.1032",
+        "category":  "Camera and Card Reader",
+        "subdir":  "camera",
+        "filename":  "nbys01af09w5.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09w5.exe",
+        "sha256":  "",
+        "size_bytes":  2661256,
+        "pnp_id":  [
+                       "PCI\\VEN_1217\u0026DEV_8621\u0026SUBSYS_383E17AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09w5_r_s740i",
+        "title":  "Card Reader Driver - 10 [64]",
+        "version":  "10.0.18362.21318",
+        "category":  "Camera and Card Reader",
+        "subdir":  "camera",
+        "filename":  "nbys01af09w5.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09w5.exe",
+        "sha256":  "",
+        "size_bytes":  2661256,
+        "pnp_id":  [
+                       "PCI\\VEN_10EC\u0026DEV_522A\u0026SUBSYS_383C17AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09vx_s740ir",
+        "title":  "Intel Dynamic Platform and Thermal Framework - 10 [64]",
+        "version":  "8.6.10400.9366",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "nbys01af09vx.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09vx.exe",
+        "sha256":  "",
+        "size_bytes":  3526632,
+        "pnp_id":  [
+                       "ACPI\\VEN_INT\u0026DEV_3400",
+                       "ACPI\\VEN_INT\u0026DEV_3403"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09wd_s740ir",
+        "title":  "Intel Human Interface Device (HID) Driver - 10 [64]",
+        "version":  "2.2.1.377",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "nbys01af09wd.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09wd.exe",
+        "sha256":  "",
+        "size_bytes":  553760,
+        "pnp_id":  [
+                       "ACPI\\VEN_INT\u0026DEV_33D5"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09wc_s740ir",
+        "title":  "Intel SGX- 10 [64]",
+        "version":  "2.3.100.49813",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "nbys01af09wc.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09wc.exe",
+        "sha256":  "",
+        "size_bytes":  2977872,
+        "pnp_id":  [
+                       "ACPI\\VEN_INT\u0026DEV_0E0C"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09vq_s740ir",
+        "title":  "Intel Serial-IO Driver - 10 [64]",
+        "version":  "30.100.1915.1",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "nbys01af09vq.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09vq.exe",
+        "sha256":  "",
+        "size_bytes":  707856,
+        "pnp_id":  [
+                       "ACPI\\VEN_INT\u0026DEV_3450"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09wa_r_s740i",
+        "title":  "Camera Driver - 10 [64]",
+        "version":  "10.0.18362.20098",
+        "category":  "Camera and Card Reader",
+        "subdir":  "camera",
+        "filename":  "nbys01af09wa.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09wa.exe",
+        "sha256":  "",
+        "size_bytes":  7085536,
+        "pnp_id":  [
+                       "USB\\VID_5986\u0026PID_114E\u0026MI_00"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af09wa_s_s740i",
+        "title":  "Camera Driver - 10 [64]",
+        "version":  "10.13.18362.1",
+        "category":  "Camera and Card Reader",
+        "subdir":  "camera",
+        "filename":  "nbys01af09wa.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af09wa.exe",
+        "sha256":  "",
+        "size_bytes":  7085536,
+        "pnp_id":  [
+                       "USB\\VID_174F\u0026PID_2435\u0026MI_00",
+                       "USB\\VID_04F2\u0026PID_B67D\u0026MI_00"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys01af0a8y_s740ir",
+        "title":  "Lenovo Monitor INF Driver - 10 [64]",
+        "version":  "1.0.0.2",
+        "category":  "Software and Utilities",
+        "subdir":  "other",
+        "filename":  "nbys01af0a8y.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys01af0a8y.exe",
+        "sha256":  "",
+        "size_bytes":  822320,
+        "pnp_id":  [
+                       "Monitor\\LEN8C91",
+                       "Monitor\\LEN8C90",
+                       "Monitor\\LEN8991",
+                       "Monitor\\LEN8992"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "l18d4pf1_s740_15irh",
+        "title":  "Lenovo Battery Firmware Update Tool - 10 [64]",
+        "version":  "0007_00C5_0101_0001",
+        "category":  "Advanced Firmware",
+        "subdir":  "firmware",
+        "filename":  "lnvbfu.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/l18d4pf1_s740_15irh/lnvbfu.exe",
+        "sha256":  "",
+        "size_bytes":  863168,
+        "pnp_id":  [
+
+                   ],
+        "is_bios":  true
+    },
+    {
+        "name":  "h4ln040f08mu_c740",
+        "title":  "Intelligent Thermal Solution (ITS) Driver - 10 [64]",
+        "version":  "1.0.0.22",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "h4ln040f08mu.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/h4ln040f08mu.exe",
+        "sha256":  "",
+        "size_bytes":  1612160,
+        "pnp_id":  [
+                       "ACPI\\VEN_LIC\u0026DEV_0001"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys02afsv90_s740ir",
+        "title":  "Intel Chipset Driver - 10 [64]",
+        "version":  "10.1.16.7",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "nbys02afsv90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys02afsv90.exe",
+        "sha256":  "",
+        "size_bytes":  3658176,
+        "pnp_id":  [
+                       "PCI\\VEN_8086\u0026DEV_A30D\u0026SUBSYS_380417AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys02aftv90_s740ir",
+        "title":  "Intel Rapid Storage Technology Driver - 10 [64]",
+        "version":  "17.7.0.1006",
+        "category":  "Storage",
+        "subdir":  "storage",
+        "filename":  "nbys02aftv90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys02aftv90.exe",
+        "sha256":  "",
+        "size_bytes":  3922200,
+        "pnp_id":  [
+                       "PCI\\VEN_8086\u0026DEV_2822\u0026SUBSYS_383D17AA",
+                       "PCI\\VEN_8086\u0026DEV_282A\u0026SUBSYS_383D17AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys03af1w90_s740ir",
+        "title":  "Intel HD Graphics Driver - 10 [64]",
+        "version":  "26.20.100.7985",
+        "category":  "Display and Video Graphics",
+        "subdir":  "display",
+        "filename":  "nbys03af1w90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys03af1w90.exe",
+        "sha256":  "",
+        "size_bytes":  190817312,
+        "pnp_id":  [
+                       "PCI\\VEN_8086\u0026DEV_3E9B\u0026SUBSYS_3F1A17AA",
+                       "PCI\\VEN_8086\u0026DEV_3E9B\u0026SUBSYS_3F1817AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys03afvv90_s740ir",
+        "title":  "Intel management Engine - 10 [64]",
+        "version":  "2031.1.0.1743",
+        "category":  "Motherboard Devices Backplanes core chipset onboard video PCIe switches",
+        "subdir":  "chipset",
+        "filename":  "nbys03afvv90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys03afvv90.exe",
+        "sha256":  "",
+        "size_bytes":  12125312,
+        "pnp_id":  [
+                       "PCI\\VEN_8086\u0026DEV_A360\u0026SUBSYS_382C17AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys03afwv90_s740ir",
+        "title":  "Intel Thunderbolt - 10 [64]",
+        "version":  "1.41.914.0",
+        "category":  "USB Device FireWire IEEE 1394 Thunderbolt",
+        "subdir":  "other",
+        "filename":  "nbys03afwv90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys03afwv90.exe",
+        "sha256":  "",
+        "size_bytes":  56271280,
+        "pnp_id":  [
+                       "PCI\\VEN_8086\u0026DEV_15D2\u0026SUBSYS_380117AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys03afyv90_s740ir",
+        "title":  "Audio Driver - 10 [64]",
+        "version":  "6.0.8720.1",
+        "category":  "Audio",
+        "subdir":  "audio",
+        "filename":  "nbys03afyv90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys03afyv90.exe",
+        "sha256":  "",
+        "size_bytes":  108874256,
+        "pnp_id":  [
+                       "INTELAUDIO\\FUNC_01\u0026VEN_10EC\u0026DEV_0285\u0026SUBSYS_17AA383B",
+                       "INTELAUDIO\\FUNC_01\u0026VEN_10EC\u0026DEV_0285\u0026SUBSYS_17AA3803",
+                       "PCI\\VEN_8086\u0026DEV_A348\u0026SUBSYS_382717AA",
+                       "INTELAUDIO\\DSP_CTLR_DEV_A348\u0026VEN_8086\u0026DEV_0222\u0026SUBSYS_382717AA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys04af408w90_s740ir",
+        "title":  "Intel Bluetooth Driver - 10 [64]",
+        "version":  "22.0.0.2",
+        "category":  "Bluetooth and Modem",
+        "subdir":  "bluetooth",
+        "filename":  "nbys04af408w90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys04af408w90.exe",
+        "sha256":  "",
+        "size_bytes":  2199832,
+        "pnp_id":  [
+                       "USB\\VID_8087\u0026PID_0029",
+                       "USB\\VID_8087\u0026PID_0AAA"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys04af6w90_s740ir",
+        "title":  "Intel WLAN Driver - 10 [64]",
+        "version":  "22.0.1.1",
+        "category":  "Networking Wireless LAN",
+        "subdir":  "wifi",
+        "filename":  "nbys04af6w90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys04af6w90.exe",
+        "sha256":  "",
+        "size_bytes":  6277136,
+        "pnp_id":  [
+                       "PCI\\VEN_8086\u0026DEV_2723\u0026SUBSYS_00848086",
+                       "PCI\\VEN_8086\u0026DEV_A370\u0026SUBSYS_00348086"
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "lenovo_supportlink_tvsu0707",
+        "title":  "Lenovo Support Link – see readme - 10 [64]",
+        "version":  "1.0.0.0",
+        "category":  "Software and Utilities",
+        "subdir":  "other",
+        "filename":  "rusapplink0707.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/rusapplink0707.exe",
+        "sha256":  "",
+        "size_bytes":  1053256,
+        "pnp_id":  [
+
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "bkcn26ww",
+        "title":  "BIOS Update - 10 [64]",
+        "version":  "BKCN26WW",
+        "category":  "BIOS UEFI",
+        "subdir":  "bios",
+        "filename":  "bkcn26ww.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/bkcn26ww.exe",
+        "sha256":  "",
+        "size_bytes":  8725040,
+        "pnp_id":  [
+
+                   ],
+        "is_bios":  true
+    },
+    {
+        "name":  "nbys04af3w90_gfe_s740ir",
+        "title":  "Nvidia VGA GFExperience  Update - 10 [64]",
+        "version":  "3.20.4.14",
+        "category":  "Display and Video Graphics",
+        "subdir":  "display",
+        "filename":  "nbys04af3w90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys04af3w90.exe",
+        "sha256":  "",
+        "size_bytes":  577668944,
+        "pnp_id":  [
+
+                   ],
+        "is_bios":  false
+    },
+    {
+        "name":  "nbys04af3w90_s740ir",
+        "title":  "NVIDIA VGA Driver - 10 [64]",
+        "version":  "27.21.14.5256",
+        "category":  "Display and Video Graphics",
+        "subdir":  "display",
+        "filename":  "nbys04af3w90.exe",
+        "url":  "https://download.lenovo.com/consumer/mobiles/nbys04af3w90.exe",
+        "sha256":  "",
+        "size_bytes":  577668944,
+        "pnp_id":  [
+                       "PCI\\VEN_10DE\u0026DEV_1F92\u0026SUBSYS_3F1A17AA",
+                       "PCI\\VEN_10DE\u0026DEV_1F91\u0026SUBSYS_3F1A17AA"
+                   ],
+        "is_bios":  false
+    }
+]
