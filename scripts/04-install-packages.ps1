@@ -425,7 +425,9 @@ if ($primaryMac) {
     try {
         $macEnc = [uri]::EscapeDataString($primaryMac)
         $catalogUrl = "$invBase/api/deploy/assignments?mac=$macEnc&disk_free_pct=$diskFreePct"
-        $catalogPackages = @(Invoke-RestMethod $catalogUrl -TimeoutSec 15 -ErrorAction Stop)
+        # PS 5.1 fix: assign then wrap (@(Invoke-RestMethod) collapses a top-level JSON array to 1 elem)
+        $catalogPackages = Invoke-RestMethod $catalogUrl -TimeoutSec 15 -ErrorAction Stop
+        $catalogPackages = @($catalogPackages)
         $catalogQueried  = $true
         Write-Log "Inventory catalog: $($catalogPackages.Count) package(s) assigned to this machine"
     } catch {
@@ -660,8 +662,42 @@ if (-not $DryRun) {
         $oemDesc = $sl.OA3xOriginalProductKeyDescription
 
         if (-not $oemKey -or $oemKey.Length -eq 0) {
-            Write-Log 'No OEM UEFI key found (VM or no embedded key) - digital license or KMS will activate'
-            Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'info' -Message 'No OEM UEFI key found (VM or no embedded key) - digital license/KMS will activate'
+            Write-Log 'No OEM UEFI key found - trying inventory-assigned license key (whitebox / OEM:DM)'
+            # Whitebox / self-built PCs have no firmware MSDM key, so the block above
+            # finds nothing. If an admin has ARMED a one-time release
+            # (POST /admin/licenses/arm/{assignment_id}) the inventory server will hand
+            # this machine the key assigned to it. Matched by MAC first (the SMBIOS
+            # serial is a placeholder on these boards) with serial as a fallback. The
+            # key is one-shot and never logged - only slmgr's result text is written.
+            $assignedKey = $null
+            try {
+                $nic = Get-CimInstance Win32_NetworkAdapter |
+                    Where-Object { $_.PhysicalAdapter -and $_.MACAddress -and $_.Name -notmatch 'wi.?fi|wireless|802\.11' } |
+                    Select-Object -First 1
+                $macQ = if ($nic) { $nic.MACAddress.ToLower() } else { '' }
+                $serQ = "$((Get-CimInstance Win32_BIOS).SerialNumber)"
+                $luri = "$invBase/ingest/license-key?package=Windows" +
+                        "&mac=$([uri]::EscapeDataString($macQ))" +
+                        "&serial=$([uri]::EscapeDataString($serQ))"
+                $lres = Invoke-RestMethod $luri -TimeoutSec 15 -ErrorAction Stop
+                $assignedKey = $lres.license_key
+            } catch {
+                Write-Log "No inventory-assigned key collected (not armed / none assigned / unreachable) - digital license or KMS will activate: $_"
+                Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'info' -Message 'No inventory-assigned key (not armed / none) - digital license/KMS will activate'
+            }
+            if ($assignedKey) {
+                $ipkText = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ipk $assignedKey 2>&1) -join ' '
+                $assignedKey = $null
+                Write-Log "Assigned-key install: $ipkText"
+                if ($ipkText -match '0xC004') {
+                    Write-Log 'Inventory-assigned key rejected by activation server - may need a different key or manual activation' -Level WARN
+                    Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'warning' -Message 'Inventory-assigned key rejected by activation server'
+                } else {
+                    $ato = (cscript //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1) -join ' '
+                    Write-Log "Activation (inventory key): $ato"
+                    Publish-Event -PhaseKey 'install-packages' -Step 'oem-activation' -Status 'ok' -Message 'Windows activated via inventory-assigned key'
+                }
+            }
         } else {
             # Detect edition mismatch before touching slmgr.
             # OA3xOriginalProductKeyDescription contains the key's intended edition.
