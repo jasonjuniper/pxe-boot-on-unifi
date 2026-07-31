@@ -11,3 +11,9 @@
 # Windows build artifacts
 *.tmp
 *.log
+
+# Local scratch + backups (underscore-prefixed convention)
+_*
+
+# Push-pipeline output log (regenerated each push)
+push-out.txt
