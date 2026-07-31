@@ -355,6 +355,68 @@ function Invoke-UniversalDriverInjection([string]$DeployShare) {
     }
 }
 
+function Wait-ForModelDrivers {
+    # Driver auto-discovery HOLD/RESUME (Phase 3). If this model has no confirmed_working
+    # drivers in the catalog, POST a driver-request and hold here, polling /api/drivers/ready
+    # until the vendor download completes (server caps the hold at 30 min, then timed_out).
+    # Returns $true if drivers are ready. Best-effort + backward-compatible: any server error
+    # returns $false and imaging proceeds exactly as before (inbox drivers only).
+    param([string]$Manufacturer, [string]$Model, [string]$MachineType, [string]$Serial, [string]$Os)
+    $manifest = Get-DriverManifest -DeployShare $DeployShare
+    if ($manifest) {
+        $nk = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
+        foreach ($p in $manifest.models.PSObject.Properties) {
+            if ($p.Value.wmiModels -contains $Model -or $p.Name -eq $nk) {
+                $src = "$DeployShare\drivers\$($p.Value.driverPath)"
+                if ((Test-Path $src) -and @(Get-ChildItem $src -Recurse -Filter '*.inf' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+            }
+        }
+    }
+    Write-Host "  No catalog drivers for '$Model' - requesting driver discovery + holding deployment..." -ForegroundColor Yellow
+    $body = @{ manufacturer = $Manufacturer; model = $Model; machine_type = $MachineType; os = $Os; serial = $Serial } | ConvertTo-Json
+    try { $r = Invoke-RestMethod "$InvApi/ingest/driver-request" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 20 -ErrorAction Stop }
+    catch { Write-Host "  (driver-request failed - server unreachable? imaging with inbox drivers): $($_.Exception.Message)" -ForegroundColor DarkGray; return $false }
+    if ($r.ready) { return $true }
+    Publish-Event -PhaseKey 'winpe' -Step 'driver-discovery' -Status 'running' -Message "Preparing drivers for $Model..." -Percent 1
+    $deadline = (Get-Date).AddMinutes(31)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 15
+        try { $rd = Invoke-RestMethod "$InvApi/api/drivers/ready?manufacturer=$([uri]::EscapeDataString($Manufacturer))&model=$([uri]::EscapeDataString($Model))" -TimeoutSec 20 -ErrorAction Stop } catch { continue }
+        $msg = "Preparing drivers for $Model ($($rd.state))"; if ($rd.message) { $msg += " - $($rd.message)" }
+        Write-Host "    $msg" -ForegroundColor DarkGray
+        Publish-Event -PhaseKey 'winpe' -Step 'driver-discovery' -Status 'running' -Message $msg -Percent 1
+        if ($rd.ready)     { Write-Host "  Drivers ready ($($rd.drivers_found)) - resuming imaging." -ForegroundColor Green; return $true }
+        if ($rd.timed_out) { Write-Host "  Driver discovery timed out (30 min) - imaging with inbox drivers; flagged for follow-up." -ForegroundColor Yellow; return $false }
+    }
+    return $false
+}
+
+function Invoke-StorageDriverRescue {
+    # BOOT-CRITICAL storage rescue (Phase 3). If WinPE can't see Disk 0 (storage/RAID driver
+    # missing from boot.wim - e.g. Intel-RST mode), live-install the model's (now-downloaded)
+    # storage drivers into the RUNNING WinPE via pnputil + a device rescan, so the disk appears
+    # without a reboot. Best-effort: never blocks imaging.
+    param([string]$DeployShare, [string]$Manufacturer, [string]$Model)
+    if (Get-Disk | Where-Object { $_.Number -eq 0 }) { return }
+    Write-Host '  BOOT-CRITICAL: WinPE sees no Disk 0 - storage driver likely missing from boot image.' -ForegroundColor Yellow
+    Publish-Event -PhaseKey 'winpe' -Step 'storage-rescue' -Status 'running' -Message "No disk visible - live-installing storage driver for $Model into WinPE..." -Percent 1
+    $manifest = Get-DriverManifest -DeployShare $DeployShare
+    $nk = Get-NormalizedModelKey -Manufacturer $Manufacturer -Model $Model
+    $matched = $null
+    if ($manifest) { foreach ($p in $manifest.models.PSObject.Properties) { if ($p.Value.wmiModels -contains $Model -or $p.Name -eq $nk) { $matched = $p.Value; break } } }
+    if ($matched) {
+        $src = "$DeployShare\drivers\$($matched.driverPath)"
+        if (Test-Path $src) {
+            Write-Host "  pnputil: adding drivers from $src to running WinPE + rescanning..." -ForegroundColor Cyan
+            & pnputil.exe /add-driver "$src\*.inf" /subdirs /install *>&1 | Out-Null
+            & pnputil.exe /scan-devices *>&1 | Out-Null
+            Start-Sleep -Seconds 6
+        } else { Write-Host "  (no driver folder $src to live-install)" -ForegroundColor DarkGray }
+    } else { Write-Host "  (no catalog match for '$Model' - cannot live-install storage)" -ForegroundColor DarkGray }
+    if (Get-Disk | Where-Object { $_.Number -eq 0 }) { Write-Host '  Disk 0 now visible - continuing.' -ForegroundColor Green }
+    else { Write-Host '  Still no disk - needs a USB storage adapter or a boot.wim rebuild for this model.' -ForegroundColor Yellow }
+}
+
 function Invoke-DriverCoverageCheck {
     param([string]$DeployShare, [string]$Manufacturer, [string]$Model)
 
@@ -881,6 +943,19 @@ try {
         -ContentType 'application/json' -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
 } catch {}
 
+# --- Driver auto-discovery hold/resume + boot-critical storage rescue (Phase 3) -------------
+# If this model has no catalog drivers, request discovery and HOLD here until ready (server caps
+# at 30 min). Then, if WinPE still can't see the disk, live-install the storage driver into the
+# running WinPE. Both are best-effort + wrapped: an unreachable server images exactly as before.
+$osHint = try { "$($os.Label)" } catch { '' }
+$mtHint = if ($hwMfr -imatch 'lenovo') { if ($hwModel.Length -ge 4) { $hwModel.Substring(0,4) } else { $hwModel } }
+          elseif ($hwMfr -imatch 'hp|hewlett') { try { "$((Get-WmiObject Win32_BaseBoard -ErrorAction SilentlyContinue).Product)".Trim() } catch { '' } }
+          else { '' }
+try { $null = Wait-ForModelDrivers -Manufacturer $hwMfr -Model $hwModel -MachineType $mtHint -Serial $hwSerial -Os $osHint }
+catch { Write-Host "  (driver hold error - continuing: $($_.Exception.Message))" -ForegroundColor DarkGray }
+try { Invoke-StorageDriverRescue -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel }
+catch { Write-Host "  (storage rescue error - continuing: $($_.Exception.Message))" -ForegroundColor DarkGray }
+
 # --- Disk 0 Info + Confirmation ---------------------------------------------
 
 Write-Host ''
@@ -1032,12 +1107,13 @@ foreach ($f in @('Logging.ps1', 'progress.ps1', 'orchestrator.ps1', 'provision-s
 foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
                  '05-install-network-drivers.ps1','06-join-wifi.ps1',
                  '07-remove-bloatware.ps1','08-set-file-associations.ps1','10-setup-user.ps1',
+                 '11-secure-boot-ca2023.ps1',
                  'provision-status.ps1')) {
     $src = "$DeployShare\scripts\$f"
     if (Test-Path $src) { Copy-Item $src "$jsScripts\$f" -Force }
 }
 
-Write-Host '  Post-install automation staged (SetupComplete + orchestrator + status GUI + 7 phase scripts).' -ForegroundColor Green
+Write-Host '  Post-install automation staged (SetupComplete + orchestrator + status GUI + 8 phase scripts).' -ForegroundColor Green
 
 # --- Stage bootstrap creds LOCALLY (dongle-independent first boot) -------------
 # We are in WinPE right now, where the USB-C dongle works reliably (it is how this

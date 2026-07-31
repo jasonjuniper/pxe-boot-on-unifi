@@ -174,6 +174,7 @@ $Phases = [ordered]@{
     'remove-bloatware'  = '07-remove-bloatware.ps1'
     'setup-user'        = '10-setup-user.ps1'
     'file-associations' = '08-set-file-associations.ps1'
+    'secure-boot'       = '11-secure-boot-ca2023.ps1'
 }
 
 # Friendly labels + weighted progress bands (overallPercent) per phase.
@@ -187,7 +188,8 @@ $PhaseMeta = [ordered]@{
     'install-packages'  = @{ Label = 'Installing applications';           Start = 45; End = 76 }
     'remove-bloatware'  = @{ Label = 'Removing unwanted apps';            Start = 76; End = 85 }
     'setup-user'        = @{ Label = 'Setting up the assigned user';      Start = 85; End = 91 }
-    'file-associations' = @{ Label = 'Configuring default applications';  Start = 91; End = 99 }
+    'file-associations' = @{ Label = 'Configuring default applications';  Start = 91; End = 96 }
+    'secure-boot'       = @{ Label = 'Securing boot (Secure Boot / CA2023)'; Start = 96; End = 99 }
 }
 
 . "$SetupRoot\Logging.ps1"
