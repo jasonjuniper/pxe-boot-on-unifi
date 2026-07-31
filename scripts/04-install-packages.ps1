@@ -187,6 +187,26 @@ function Report-PkgStatus {
     }
 }
 
+# --- Per-package safety timeouts (added 2026-07) ---------------------------
+# A single hung installer or stalled download must never freeze the whole
+# deployment again (ENG-3 sat ~40 min on a per-user 'script' package that never
+# returned). Every install runs with a hard wall-clock cap; on expiry the
+# process tree is killed and the package is marked failed so the loop advances.
+$script:InstallTimeoutSec  = 900   # 15 min per installer (msi/exe/script)
+$script:DownloadTimeoutSec = 300   # 5 min per artifact download
+
+function Wait-ProcOrKill {
+    param([Parameter(Mandatory)]$Proc, [int]$TimeoutSec, [string]$What)
+    if (-not $Proc.WaitForExit($TimeoutSec * 1000)) {
+        try {
+            Get-CimInstance Win32_Process -Filter "ParentProcessId=$($Proc.Id)" -ErrorAction SilentlyContinue |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+        } catch {}
+        throw "$What exceeded ${TimeoutSec}s wall-clock - killed (hung installer)"
+    }
+}
+
 # Install-CatalogPackage: download, verify, install one catalog package
 function Install-CatalogPackage {
     param(
@@ -231,8 +251,22 @@ function Install-CatalogPackage {
 
     Write-Log "$label  downloading v$($Pkg.version)..." -PhaseOnly
     try {
-        Invoke-WebRequest $downloadUrl -OutFile $tempFile -UseBasicParsing `
-            -TimeoutSec 180 -ErrorAction Stop
+        # Bounded download: IWR -TimeoutSec does not abort a stalled-but-open
+        # stream, so run it in a job with a hard wall-clock cap and kill on stall.
+        $dlJob = Start-Job -ScriptBlock {
+            param($u, $f)
+            Invoke-WebRequest $u -OutFile $f -UseBasicParsing -TimeoutSec 180 -ErrorAction Stop
+        } -ArgumentList $downloadUrl, $tempFile
+        if (-not (Wait-Job $dlJob -Timeout $script:DownloadTimeoutSec)) {
+            Stop-Job  $dlJob -ErrorAction SilentlyContinue
+            Remove-Job $dlJob -Force -ErrorAction SilentlyContinue
+            throw "download exceeded $($script:DownloadTimeoutSec)s (stalled connection)"
+        }
+        $dlErr = Receive-Job $dlJob 2>&1
+        Remove-Job $dlJob -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $tempFile) -or (Get-Item $tempFile).Length -eq 0) {
+            throw "download produced no file: $dlErr"
+        }
 
         # SHA256 integrity check
         if ($Pkg.sha256) {
@@ -253,8 +287,9 @@ function Install-CatalogPackage {
                 $allArgs   = "/i `"$tempFile`"$quietFlag"
                 if ($installArgs) { $allArgs = "$allArgs $installArgs" }
                 $p = Start-Process msiexec -ArgumentList $allArgs.Trim() `
-                        -NoNewWindow -Wait -PassThru `
+                        -NoNewWindow -PassThru `
                         -RedirectStandardOutput $o -RedirectStandardError $e
+                Wait-ProcOrKill -Proc $p -TimeoutSec $script:InstallTimeoutSec -What "$label (msi)"
                 if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
                     throw "msiexec exit $($p.ExitCode)"
                 }
@@ -262,8 +297,9 @@ function Install-CatalogPackage {
             'exe' {
                 $p = Start-Process $tempFile `
                         -ArgumentList $installArgs `
-                        -NoNewWindow -Wait -PassThru `
+                        -NoNewWindow -PassThru `
                         -RedirectStandardOutput $o -RedirectStandardError $e
+                Wait-ProcOrKill -Proc $p -TimeoutSec $script:InstallTimeoutSec -What "$label (exe)"
                 if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
                     throw "installer exit $($p.ExitCode)"
                 }
@@ -271,8 +307,9 @@ function Install-CatalogPackage {
             'script' {
                 $p = Start-Process 'powershell.exe' `
                         -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$tempFile`"" `
-                        -NoNewWindow -Wait -PassThru `
+                        -NoNewWindow -PassThru `
                         -RedirectStandardOutput $o -RedirectStandardError $e
+                Wait-ProcOrKill -Proc $p -TimeoutSec $script:InstallTimeoutSec -What "$label (script)"
                 if ($p.ExitCode -ne 0) { throw "script exit $($p.ExitCode)" }
             }
             default { throw "Unknown package_type: $($Pkg.package_type)" }
