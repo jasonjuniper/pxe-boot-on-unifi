@@ -56,25 +56,41 @@ $deployShare = "\\$DeployServer\deploy$"
 try { net use $deployShare /persistent:no *>$null } catch {}
 
 if (-not (Test-Path $MediaSource)) {
-    # Fallback 1: winpemedia$ share (C:\WinPE_amd64\media on pc-deploy) - correct USB BCD
-    $winpeMediaShare = "\\$DeployServer\winpemedia$"
-    try { net use $winpeMediaShare /persistent:no *>$null } catch {}
-
-    # Fallback 2: tftpd64$ - NOTE: contains PXE BCD, not USB BCD; BCD will be fixed below
-    $tftpShare = "\\$DeployServer\tftpd64$"
-    try { net use $tftpShare /persistent:no *>$null } catch {}
-
-    if (Test-Path "$winpeMediaShare\EFI\Boot\bootx64.efi") {
-        $MediaSource = $winpeMediaShare
-        Write-Warn "deploy$\winpe-media not found; using winpemedia$ (C:\WinPE_amd64\media) as source."
-    } elseif (Test-Path "$tftpShare\EFI\Boot\bootx64.efi") {
-        $MediaSource = $tftpShare
-        Write-Warn "deploy$\winpe-media not found; falling back to tftpd64$ (BCD will be corrected for USB)."
+    # ---------------------------------------------------------------------------
+    # CORRECTED 2026-07-21 (Server 2025 / WDS migration fallout).
+    # This script predated the move from tftpd64 to WDS and still hunted for media
+    # on shares that no longer exist:
+    #     winpemedia$  -> C:\WinPE_amd64\media  (build workspace, gone after rebuild)
+    #     tftpd64$     -> the entire tftpd64 stack was replaced by WDS
+    # ALL THREE sources were missing, so this script failed for every machine - which
+    # is how a stale USB stick ended up unable to boot LT-CNC.
+    #
+    # The live boot image is now:
+    #     C:\RemoteInstall\Boot\x64\Images\winpe-deploy-final.wim   (served by WDS)
+    # and the USB media tree published from it is:
+    #     C:\deploy\winpe-media   ->   \\<server>\deploy$\winpe-media
+    #
+    # Refresh that tree with 01f-refresh-usb-media.ps1 whenever the boot image
+    # changes, otherwise USB and PXE drift apart again (USB will silently lack any
+    # newly injected storage/NIC drivers).
+    # ---------------------------------------------------------------------------
+    $legacy = @("\\$DeployServer\winpemedia$", "\\$DeployServer\tftpd64$")
+    $found  = $null
+    foreach ($l in $legacy) {
+        try { net use $l /persistent:no *>$null } catch {}
+        if (Test-Path "$l\EFI\Boot\bootx64.efi") { $found = $l; break }
+    }
+    if ($found) {
+        $MediaSource = $found
+        Write-Warn "Using LEGACY pre-WDS media source $found - this is stale tooling."
+        Write-Warn "Run 01f-refresh-usb-media.ps1 on pc-deploy to publish current media."
     } else {
-        Write-Err "Cannot find WinPE media on any share from $DeployServer"
+        Write-Err "Cannot find WinPE USB media at $MediaSource"
         Write-Host ''
-        Write-Host '  Run 01c-build-winpe.ps1 on pc-deploy first to build the WinPE image.' -ForegroundColor Yellow
-        Write-Host '  Then run 01d-setup-deploy-share.ps1 to expose the media tree on the share.' -ForegroundColor Yellow
+        Write-Host '  The USB media tree is missing. On pc-deploy run:' -ForegroundColor Yellow
+        Write-Host '      .\01f-refresh-usb-media.ps1' -ForegroundColor Cyan
+        Write-Host '  That republishes C:\deploy\winpe-media from the LIVE WDS boot image' -ForegroundColor Yellow
+        Write-Host '  (C:\RemoteInstall\Boot\x64\Images\winpe-deploy-final.wim).' -ForegroundColor Yellow
         exit 1
     }
 }

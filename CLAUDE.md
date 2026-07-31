@@ -399,6 +399,66 @@ kiosk still locks login until provisioning completes).
 - **Best-effort/non-fatal:** no assigned owner, an unreachable API, a reserved/blank
   derived name, or a missing password config all exit 0 - the image never aborts.
 
+> **PRE-IMAGE CHECK - assign the OWNER in inventory, or no account gets made.**
+> The single most common reason this phase silently does nothing is that the device
+> record has **no linked owner**, so it exits 0 at the "No assigned user" branch and
+> nobody notices until the user has no account. Confirmed 2026-07-21: **MACHINIST-0**
+> (E14 / PF4TXEGG) imaged with `owner = NULL`, which is exactly why Garrett's account
+> had to be created by hand afterwards.
+>
+> **Before imaging any machine, verify it has an owner:**
+> ```powershell
+> Invoke-RestMethod 'http://192.168.5.141:8080/api/devices?q=<hostname-or-serial>' |
+>   Select-Object id,hostname,serial_number,owner,owner_email
+> ```
+> A UniFi-discovered record (`last_source = unifi`) typically has **owner but no
+> serial**. Imaging normally fills that in by itself - `deploy.ps1`'s pre-register
+> resolves by MAC/hostname and writes the serial early in WinPE, long before
+> `setup-user` runs at 85-91% (verified on record 150, where imaging populated
+> `serial_number`, `model`, and `oem_edition` unattended). But that path depends on
+> the operator keeping the pre-filled **hostname**, so when the machine is reachable
+> it is better to **seed the serial ahead of time** and remove the dependency.
+>
+> **Seeding a serial by hand - the field is `bios_serial`, NOT `serial`.**
+> `POST /ingest/endpoint` silently ignores an unrecognized `serial` key: it will
+> happily update `model`/`vendor`/`os` and flip `last_source` to `endpoint-agent`
+> while leaving `serial_number` NULL, which looks like success. Confirmed
+> 2026-07-21 on LT-CNC. Use the same keys the agent sends (`install_agent.ps1`):
+> ```powershell
+> $b = @{ hostname='LT-CNC'; bios_serial='MP1MMSVL'; chassis_serial='MP1MMSVL'
+>         manufacturer='LENOVO'; model='81NY'; mac='50:E0:85:A5:E7:09' } | ConvertTo-Json
+> Invoke-RestMethod 'http://192.168.5.141:8080/ingest/endpoint' -Method POST -Body $b -ContentType 'application/json'
+> ```
+> Then verify with the query `setup-user` actually runs, and check for duplicates:
+> `GET /api/devices?q=<serial>` must return **exactly one** record with the right id.
+
+> **Do NOT infer which MAC is built-in vs. removable from the vendor OUI.**
+> On LT-CNC the guess was backwards, and it inverted the identity-matching analysis:
+> `50:E0:85:A5:E7:09` is the **built-in Intel Wireless-AC 9560**, while
+> `C8:A3:62:A2:9F:86` is the **ASIX AX88179 USB dongle**. Read `PNPDeviceID` instead -
+> `USB\*` means removable and is excluded from identity matching:
+> ```powershell
+> Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.MACAddress -and $_.PhysicalAdapter } |
+>   ForEach-Object { "$($_.Name)=$($_.MACAddress) $(if($_.PNPDeviceID -like 'USB\*'){'[USB]'}else{'[builtin]'})" }
+> ```
+
+> **Gotcha - a WireGuard route can make an office machine look dead.**
+> LT-CNC (192.168.2.156) was reachable the whole time, but every probe from ENG-2
+> failed. Cause: the office Wi-Fi leg is `192.168.13.94/20` (covering
+> 192.168.0.0-192.168.15.255, so .2.156 is on-link), while the `peer-vault2-wg0-3`
+> WireGuard tunnel to the HOME network claims the more-specific `192.168.2.0/24` and
+> wins the route lookup - so the traffic went down the tunnel. `Find-NetRoute
+> -RemoteIPAddress <ip>` shows which interface actually wins. Adding a /32 override
+> needs admin; the easy fix is to **probe from pc-deploy instead** (no tunnel).
+> Do not conclude a machine is offline from ENG-2 probes alone.
+
+> **Workgroup WinRM: qualify local usernames or you get 0x8009030d.**
+> `Invoke-Command -ComputerName <ip> -Credential Fabrication` fails with
+> "A specified logon session does not exist" because Negotiate tries Kerberos, which
+> rejects bare local names. Pass the username as **`<ip>\<user>`** (e.g.
+> `192.168.2.156\Fabrication`) to force NTLM against the machine's own SAM. pc-deploy
+> already has `TrustedHosts = *`, so no change is needed there.
+
 - `03-windows-update.ps1` - all Windows updates
 - `03b-install-catalog-drivers.ps1` - post-boot online driver install from inventory
   catalog. Auto-detects manufacturer/model/OS from WMI; queries
@@ -882,6 +942,95 @@ in `C:\ProgramData\JuniperSetup\imaging.log` ("Applying OOBE no-MSA / first-run 
 
 This works for any OEM PC shipped with Windows 8 or later (ACPI MSDM table).
 Non-OEM machines will activate via digital license or KMS automatically.
+
+## Package deployables - known behaviors & gotchas (established 2026-07-22)
+
+Hard-won lessons from pushing software to GS-CNC (Lenovo IdeaPad S740-15IRH,
+Win 11 **Home**). These apply to the inventory-catalog package installers under
+`\\192.168.5.141\deploy$` / the inventory server's `/static/pkgs/`.
+
+### winget cannot install headlessly during imaging - use direct installers
+`04-install-packages.ps1` runs as **SYSTEM** and the orchestrator phases run under a
+non-interactive `junadmin` task. **winget fails in both**:
+- As SYSTEM: winget resolves no user context; the App Installer / `WindowsApps` path
+  is not usable, so it is skipped entirely.
+- As junadmin via scheduled task (no interactive desktop): winget throws
+  **`0x8a15000f` "Data required by the source is missing"** and Access-denied on the
+  `WindowsApps` path.
+winget only works from a **real interactive desktop session** (verified: it worked
+once Garrett actually logged in). **Do not rely on winget for imaging.** For each app
+that was a winget package, use the vendor's **direct silent installer** instead
+(download the `.exe`/`.msi`, run `/S`/`/qn`). GS-CNC's set was delivered this way:
+Chrome, Firefox, Git, Node, Python 3.12.10, PowerShell 7, Remote Desktop, WSL, Ollama,
+Claude. (Python note: python.org ships **no Windows binary past 3.12.10**, so a hard-
+coded newer URL 404s - resolve versions descending and take the first that exists.)
+
+### BitLocker remediation SKIPS Windows Home (edition gate)
+Managed BitLocker (`Enable-BitLocker` / `Add-BitLockerKeyProtector`) **only exists on
+Pro/Enterprise/Education**; on **Home** it throws **`0x8031005A`** ("this version of
+Windows does not support this feature"). Home has only *Device Encryption*, which
+escrows to a Microsoft account - and Juniper is local-accounts/workgroup with no
+MSA/Entra, so a Home key has **nowhere to escrow**. Before the fix a Home machine
+(GS-CNC) threw at the encrypt stage and its self-registered `AtStartup` task re-ran it
+**forever** (silent failure loop). **Policy: encrypt Pro, skip Home.**
+`app/static/pkgs/bitlocker-remediate.ps1` now has an **edition gate** near the top: if
+`(Get-CimInstance Win32_OperatingSystem).Caption` does not match `Pro|Enterprise|
+Education`, it logs SKIP, **unregisters** the `JuniperBitLockerRemediate` retry task,
+writes state `skipped-home`, and `exit 0`. The inventory server surfaces Home-edition-
+unencrypted machines on its **Attention Needed** tab instead. (Home license count as of
+2026-07-22: **7** machines.) The MSA/Device-Encryption route was evaluated and is NOT
+viable - Automatic Device Encryption fails hardware prereqs on these machines (Secure
+Boot off -> no PCR7 binding, un-allowed DMA devices, WinRE not configured).
+
+### Mastercam 2026 - the deployable is NOT production-ready; read before touching
+Two independent problems, both learned the hard way on GS-CNC:
+
+1. **Startup crash `0xE06D7363` = the Intel-CPU + NVIDIA-GPU (Optimus) crash, NOT a
+   broken install.** On Optimus laptops Mastercam crashes on launch if it lands on the
+   wrong GPU. **FIX (confirmed working):** force `Mastercam.exe` onto the **NVIDIA GPU**
+   - Settings > System > Display > Graphics > add Mastercam.exe > *High performance*; or
+   set `HKU\<user-sid>\Software\Microsoft\DirectX\UserGpuPreferences` value =
+   `C:\Program Files\Mastercam 2026\Mastercam.exe`, data `GpuPreference=2;` (2=NVIDIA,
+   1=Intel). An **old NVIDIA driver** is the documented trigger (GS-CNC shipped a 2020
+   driver) - update it if forcing the GPU alone doesn't hold. **Do not go install-
+   hunting for this crash - check graphics first** (OpenGL loads, *then* crashes on GPU
+   context, so "it starts to open" is not evidence the GPU is fine).
+
+2. **The silent raw-MSI install itself is broken for imaging (separate issue).** Driving
+   the raw MSI with `-SkipPrereqs` to avoid setup.exe **omits**: Start-Menu/desktop
+   **shortcuts**; the **CodeMeter Runtime** + **MastercamLicensing** (ActivationWizard)
+   prereqs; and the **data folders** (`SharedDir` = `C:\Users\Public\Documents\Shared
+   Mastercam 2026` and per-user `My Mastercam 2026`) - the registry points at SharedDir
+   but the folder is never created, which alone will crash it. The supported installer is
+   **setup.exe** (needs the full ~2 GB media tree, `datapaths.ini`, `ProductCodes.dat`)
+   and per CNC has **no silent switch - it is interactive**. So the deployable must drive
+   setup.exe (attended) or capture a working image; the raw-MSI path **cannot** produce a
+   working Mastercam. `mastercam2026-install.ps1` has been extended with shortcut creation
+   and an `Invoke-MastercamActivation` step, but the raw-MSI core still needs the
+   setup.exe rework (open follow-up).
+
+**Headless activation (works):**
+`ActivationWizard.Console.exe -Operation:Activate -LicenseNumber:<n> -ActivationCode:<c>`
+(colon-attached args). It needs a **License Number + Activation Code** - NOT the
+CodeMeter *container ID* (that only names the container). Those two values live in
+**1Password** ("LT-CNC - Mastercam 2026 (CodeMeter software license)", concealed) and are
+to be served to the installer at image time via a planned
+`GET /api/management/mastercam-license` endpoint (like the Wi-Fi / user-init endpoints).
+`MastercamLicensingSetup.exe` is **InstallShield** -> silent = `/s /v"/qn /norestart"`
+(NOT NSIS `/S`, which hangs).
+
+### Electron / electron-builder NSIS apps default to PER-USER - use `/S /allusers`
+**Established 2026-07-23 validating xTool Studio on ENG-0.** An **electron-builder NSIS**
+installer (xTool Studio, and many modern Electron apps) with a bare **`/S`** installs
+**PER-USER into the running account's profile** - so when the imaging agent runs it as
+**SYSTEM/junadmin**, it lands in junadmin's profile and the END USER never gets it (same
+failure class as Claude Desktop's per-user install). Detect the framework first (scan the
+.exe for `Nullsoft`/`NSIS` = NSIS; electron-builder wraps NSIS), then use **`/S /allusers`**
+to force a **machine-wide** install to `C:\Program Files\<App>\`. Verified for xTool Studio:
+`/S /allusers` -> `C:\Program Files\xTool Studio\xTool Studio.exe` (exit 0, ~18s, HKLM
+uninstall). The catalog package therefore uses `install_args = '/S /allusers'`. **Rule:**
+for any Electron/electron-builder app, do NOT trust bare `/S` - confirm machine-wide with
+`/allusers` on a test machine before enabling the catalog package.
 
 ## Provisioning status screen + lockout (kiosk)
 
