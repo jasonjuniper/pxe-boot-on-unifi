@@ -42,6 +42,23 @@ function Test-WifiPresent {
 
 Publish-Event -PhaseKey 'install-network-drivers' -Step 'start' -Status 'running' -Message 'Installing network drivers before Wi-Fi join'
 
+# ---- Correct a wrong RTC clock BEFORE the Windows Update driver pass ---------
+# This phase runs the FIRST cert-dependent step in provisioning (the WU driver
+# search below uses Microsoft.Update.Session, which fails 0x800B0101 on a machine
+# whose RTC battery is dead and clock is wrong). Sync the clock now from the
+# inventory server's HTTP Date header (+ NTP) so every later phase inherits a
+# correct clock. Best-effort - the trap at top keeps any failure non-fatal.
+if (Get-Command Sync-SystemTime -ErrorAction SilentlyContinue) {
+    try {
+        $tsync = Sync-SystemTime
+        if ($tsync -and $tsync.DriftFixed) {
+            Write-Host ("  Clock was wrong - corrected: {0} -> {1}" -f $tsync.Before, $tsync.After) -ForegroundColor Yellow
+            Publish-Event -PhaseKey 'install-network-drivers' -Step 'time-sync' -Status 'warning' `
+                -Message ("Corrected wrong RTC clock {0} -> {1}" -f $tsync.Before.ToString('u'), $tsync.After.ToString('u'))
+        }
+    } catch {}
+}
+
 if (Test-WifiPresent) {
     Publish-Event -PhaseKey 'install-network-drivers' -Step 'detect' -Status 'info' -Message 'Wi-Fi adapter already present'
 }

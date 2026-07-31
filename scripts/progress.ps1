@@ -198,3 +198,53 @@ function Invoke-Step {
         return $false
     }
 }
+
+# ---------------------------------------------------------------------------
+# Sync-SystemTime - correct a wrong RTC/system clock BEFORE any certificate-
+# dependent step (Windows Update WUA, signed installers, TLS). A machine with a
+# dead/weak RTC battery boots with a bogus past date (seen: 2024-04-01), which
+# makes code-signing certs look "not yet valid" and fails Windows Update with
+# 0x800B0101 - and can even stall early boot when a freshly-installed driver's
+# cert is not valid at the fake date. (Root-caused on HI-POT-TEST / XPS 13 9380,
+# 2026-07-29.)
+#
+# Strategy (best-effort, NEVER throws - a failure must not break imaging):
+#   1. Authoritative LAN time from the inventory server's HTTP 'Date' response
+#      header. pc-deploy keeps correct time and is always reachable on the
+#      imaging LAN, so this works with NO internet. The clock is set only if it
+#      is off by more than 2 minutes (avoids needless jitter).
+#   2. Reinforce/anchor with w32tm NTP so the clock stays correct after hand-off.
+# Returns a small object for logging.
+# ---------------------------------------------------------------------------
+function Sync-SystemTime {
+    param([string]$HttpSource = "$Script:ProgInvApi/api/agent/latest")
+    $before = Get-Date
+    $corrected = $false; $src = $null
+    # 1) HTTP Date header from the inventory server (LAN, no internet required)
+    try {
+        $dateHdr = $null
+        try {
+            $req = [System.Net.HttpWebRequest]::Create($HttpSource)
+            $req.Method = 'HEAD'; $req.Timeout = 8000; $req.AllowAutoRedirect = $false
+            $resp = $req.GetResponse(); $dateHdr = $resp.Headers['Date']; $resp.Close()
+        } catch [System.Net.WebException] {
+            if ($_.Exception.Response) { $dateHdr = $_.Exception.Response.Headers['Date'] }
+        }
+        if ($dateHdr) {
+            $utc   = [DateTime]::ParseExact($dateHdr, 'r', [Globalization.CultureInfo]::InvariantCulture)
+            $utc   = [DateTime]::SpecifyKind($utc, [DateTimeKind]::Utc)
+            $local = $utc.ToLocalTime()
+            if ([math]::Abs(($local - (Get-Date)).TotalMinutes) -gt 2) {
+                Set-Date -Date $local -ErrorAction Stop | Out-Null
+                $corrected = $true; $src = 'inventory-http-date'
+            }
+        }
+    } catch {}
+    # 2) Anchor to NTP so the clock stays correct going forward
+    try {
+        Start-Service w32time -ErrorAction SilentlyContinue
+        & w32tm /config /manualpeerlist:"time.windows.com,0x9 time.nist.gov,0x9 pool.ntp.org,0x9" /syncfromflags:manual /update 2>&1 | Out-Null
+        & w32tm /resync /force 2>&1 | Out-Null
+    } catch {}
+    return [pscustomobject]@{ Before = $before; After = (Get-Date); DriftFixed = $corrected; CorrectedFrom = $src }
+}

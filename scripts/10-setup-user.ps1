@@ -131,6 +131,17 @@ if ($match) {
     $ownerName  = "$($match.owner)".Trim()
 }
 
+# --- 2b. Provisioning policy: skip the assigned-user account? ----------------
+# When the device is flagged 'skip_assigned_user_account' in inventory, this
+# machine uses ONLY the canned junadmin account - create no local_<owner>.
+# Set via POST /api/devices/<id>/assigned-user-account; returned by /api/devices.
+if ($match -and ($match.skip_assigned_user_account -eq $true -or
+                 "$($match.skip_assigned_user_account)" -match '^(?i:true|1)$')) {
+    Write-Host "Device flagged 'skip assigned-user account' in inventory - junadmin only, no local_<user> created (not an error)." -ForegroundColor Yellow
+    Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'info' -Message 'Assigned-user account disabled in inventory (junadmin-only) - skipped'
+    exit 0
+}
+
 # Fallback: device record has no linked owner -> use the auto-discovered
 # primary user from the last agent snapshot (system_info.primary_user_*).
 if ((-not $ownerEmail) -and $deviceId) {

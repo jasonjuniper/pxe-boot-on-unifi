@@ -47,6 +47,22 @@ if (-not (Get-Command Invoke-Step -ErrorAction SilentlyContinue)) {
         try { & $Script; return $true } catch { if ($Critical) { throw }; return $false } }
 }
 
+# ---- Correct a wrong RTC clock BEFORE any WUA/cert work ----------------------
+# A dead-RTC-battery machine boots with a bogus date, which fails Windows Update
+# with 0x800B0101 ("a required certificate is not within its validity period").
+# Sync from the inventory server's HTTP Date header (+ NTP) first. Best-effort -
+# never blocks the phase (missing helper or failure is swallowed).
+if (Get-Command Sync-SystemTime -ErrorAction SilentlyContinue) {
+    try {
+        $tsync = Sync-SystemTime
+        if ($tsync -and $tsync.DriftFixed) {
+            Write-Host ("  Clock was wrong - corrected before Windows Update: {0} -> {1}" -f $tsync.Before, $tsync.After) -ForegroundColor Yellow
+            Publish-Event -PhaseKey $PhaseKey -Step 'time-sync' -Status 'warning' `
+                -Message ("Corrected wrong RTC clock {0} -> {1} before Windows Update" -f $tsync.Before.ToString('u'), $tsync.After.ToString('u'))
+        }
+    } catch {}
+}
+
 # Round number (1-based) from the orchestrator's phase state, so progress text
 # reflects the multi-reboot reality ("Round 2 ...") instead of looking like a loop.
 $Round = 1
