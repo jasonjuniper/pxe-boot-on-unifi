@@ -305,3 +305,20 @@ change is gated so un-flagged machines are unaffected).
 
 *Juniper Design — internal infrastructure. Companion to the imaging (`PXE Boot on
 Unifi`) and inventory (`Computer Inventory`) repos.*
+
+## Build status — 2026-08-03
+
+Implemented, deployed live, and validated on ASSEMBLY2 (device 66):
+- **Phase 1** — backup store + schema + `/api/management/backup-writer` (`backup$` share, low-priv `junbackup` writer, ACL'd key file).
+- **Phase 2** — agent `user_data_footprint` reporting + device-page readout.
+- **Phase 3** — live capture pipeline (request → pending → writer-cred mount → robocopy `/B` to `backup$` → manifest → start/finish) + device-page panel (status, enable/scope, "Back up now").
+- **Phase 5** — restore browse + download over the manifest (admin-gated, path-traversal-guarded).
+- **Phase 6** — capacity guard (`/api/backup/request` refuses over-capacity vs footprint) + nightly retention task (`JuniperBackupRetention`, prunes complete/unpinned runs older than N days; `pinned` exempts).
+- **Phase 4 server contract** — `GET /ingest/backup/for-device` (RFC-1918) returns config + last completed live run for WinPE.
+
+Pending (needs real-hardware validation before touching the wipe path):
+- **Phase 4 WinPE hook** in `winpe\deploy.ps1` immediately before `diskpart clean` — deliberately NOT wired yet. It sits right before an irreversible wipe, and WinPE's reduced PowerShell must first be verified on a real PXE boot to support the capture (`Invoke-RestMethod` / `New-PSDrive` / offline `ProfileList` hive reads may be absent). Open item: WinPE carries no token, so it needs an RFC-1918 `/ingest/backup/writer` variant (mirroring the bootstrap-cred model) to fetch the `backup$` writer credential.
+
+Refinements: VSS-consistent capture (currently robocopy `/B`); honor `exclude_paths` in the agent; per-file SHA-256 + manifest chunking; agent-driven restore-to-machine (5b); add mutating `/ingest/backup/*` to `ENFORCE_INGEST`; `junbackup` 1Password record.
+
+Note: agent **0.5.20** (footprint + capture) serves on the deferred agent deploy (bundled with Option A, at stuck-agent sweep convergence).
