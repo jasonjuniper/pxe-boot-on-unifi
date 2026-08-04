@@ -322,3 +322,15 @@ Pending (needs real-hardware validation before touching the wipe path):
 Refinements: VSS-consistent capture (currently robocopy `/B`); honor `exclude_paths` in the agent; per-file SHA-256 + manifest chunking; agent-driven restore-to-machine (5b); add mutating `/ingest/backup/*` to `ENFORCE_INGEST`; `junbackup` 1Password record.
 
 Note: agent **0.5.20** (footprint + capture) serves on the deferred agent deploy (bundled with Option A, at stuck-agent sweep convergence).
+
+## Finalized capture scope (2026-08-03, validated on ASSEMBLY2)
+
+Baked into `endpoint_agent.ps1` (0.5.20). Per user profile:
+- Known folders: Desktop, Documents, Downloads, Pictures, Videos (full).
+- Favorites folder (.url shortcuts).
+- Browser **Bookmarks file only** (Edge/Chrome, per profile) — NOT the profile tree.
+- Outlook data **minus `*.ost`** (the .ost re-downloads from M365 after reimage; `.pst` kept).
+
+Machine-level: **`C:\dev`** (standing fleet default) + any `device_backup_config.include_paths`.
+
+Explicitly excluded: browser cache/storage/extensions, Outlook `.ost`. Result on ASSEMBLY2 (device 66, run 6): **121 files / 25 MB / 18 s** — versus 15+ minutes and hundreds of MB when cache/OST were swept in. The sanity check confirmed the genuinely-needed data is ~25 MB (C:\dev 12 MB + profile 13 MB).
