@@ -334,3 +334,10 @@ Baked into `endpoint_agent.ps1` (0.5.20). Per user profile:
 Machine-level: **`C:\dev`** (standing fleet default) + any `device_backup_config.include_paths`.
 
 Explicitly excluded: browser cache/storage/extensions, Outlook `.ost`. Result on ASSEMBLY2 (device 66, run 6): **121 files / 25 MB / 18 s** — versus 15+ minutes and hundreds of MB when cache/OST were swept in. The sanity check confirmed the genuinely-needed data is ~25 MB (C:\dev 12 MB + profile 13 MB).
+
+## Update — restore-to-machine + WinPE writer (2026-08-03)
+
+- **Phase 5b restore-to-machine** implemented + validated on ASSEMBLY2 (run 6 pulled back: 121 files / 24.5 MB): `POST /api/backup/restore`, `GET /api/backup/restore/pending`, `POST /ingest/backup/restore-finish`; agent stages the run to `C:\JuniperRestore\<run>` (non-destructive); device panel gains a "restore to machine" link per run. **Restore-into-place** (remap into the current profile / `C:\dev`) is the remaining follow-up and should be validated on a freshly-reimaged machine, not a live one.
+- **Phase 4 WinPE writer cred**: `GET /ingest/backup/writer` (RFC-1918, token-less) added so the offline hook can mount `backup$` without a token. The Phase-4 **server side (for-device + writer) is now complete**; the `winpe\deploy.ps1` hook itself still needs the supervised real-boot test.
+- **Design note:** `/ingest/backup/*` intentionally stays OPEN (RFC-1918, no token) rather than joining `ENFORCE_INGEST`, because the WinPE offline path carries no token pre-OS — this matches the existing wifi/bootstrap imaging model. `writer` and `for-device` are additionally RFC-1918-gated.
+- **Pending (needs a human at the machine):** the `junbackup` 1Password record — `op` on ENG-1 requires interactive Windows Hello, so it can't be created from a headless session.
