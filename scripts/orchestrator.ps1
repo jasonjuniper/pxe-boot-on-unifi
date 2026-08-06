@@ -944,9 +944,23 @@ Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction Si
 '@ | Set-Content -Path $npScript -Encoding UTF8
     $npAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$npScript`""
     $npTrig   = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn))
+    # CRITICAL trigger: fire whenever a network CONNECTS (NetworkProfile/Operational
+    # event 10000). AtStartup fires before Wi-Fi associates (nothing to re-categorize
+    # yet) and AtLogOn never fires when no local user has been created to log in as - so
+    # a Wi-Fi that connects a few seconds into boot lands Public and stays there. The
+    # connect event catches exactly that (and every reconnect at the user's desk). 5s
+    # delay lets NLA finish categorizing before we flip it Private.
+    try {
+        $evtCls  = Get-CimClass -Namespace Root/Microsoft/Windows/TaskScheduler -ClassName MSFT_TaskEventTrigger -ErrorAction Stop
+        $evtTrig = New-CimInstance -CimClass $evtCls -ClientOnly
+        $evtTrig.Enabled      = $true
+        $evtTrig.Delay        = 'PT5S'
+        $evtTrig.Subscription = '<QueryList><Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"><Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[(EventID=10000)]]</Select></Query></QueryList>'
+        $npTrig += $evtTrig
+    } catch { Write-Log "net-private: network-connect event trigger unavailable ($_)" -Level WARN -MasterOnly }
     $npPrin   = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
     Register-ScheduledTask -TaskName 'JuniperNetworkPrivate' -Action $npAction -Trigger $npTrig -Principal $npPrin -Force -ErrorAction SilentlyContinue | Out-Null
-    Write-Log "Installed self-healing JuniperNetworkPrivate task (startup+logon)" -MasterOnly
+    Write-Log "Installed self-healing JuniperNetworkPrivate task (startup+logon+network-connect)" -MasterOnly
 } catch { Write-Log "Every-run network-profile assert: $_" -Level WARN -MasterOnly }
 
 # Break-glass / safety timeout: if a tech dropped the flag file or imaging has run
