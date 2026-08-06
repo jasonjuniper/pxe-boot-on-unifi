@@ -155,6 +155,15 @@ if ((-not $ownerEmail) -and $deviceId) {
     } catch {}
 }
 
+# Fallback: operator-entered name from the WinPE pre-wipe no-user prompt
+# (devices.imaging_assigned_name), surfaced token-free via /ingest/deploy/assigned-user.
+if ((-not $ownerEmail) -and (-not $ownerName)) {
+    try {
+        $au = Invoke-RestMethod ("$InventoryUrl/ingest/deploy/assigned-user?serial=" + [uri]::EscapeDataString($serial)) -TimeoutSec 10 -ErrorAction Stop
+        if ($au.name) { $ownerName = "$($au.name)".Trim(); Write-Host "  Using WinPE-entered assigned user '$ownerName'." -ForegroundColor Cyan }
+    } catch {}
+}
+
 if (-not $ownerEmail -and -not $ownerName) {
     Write-Host "No assigned user on this device record - skipping local-account setup (not an error)." -ForegroundColor Yellow
     Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'info' -Message 'No assigned user on device record - local-account setup skipped'
