@@ -24,15 +24,15 @@ function Slug($mfr, $mdl) {
   $k = ($k -replace '[^A-Za-z0-9]', '-'); $k = ($k -replace '-{2,}', '-').Trim('-')
   return $k.ToLower()
 }
-function Register-OnDisk($mdl, $mfr, $slug) {
+function Register-OnDisk($mdl, $mfr, $slug, $os = $null) {
   $py = 'C:\inventory\venv\Scripts\python.exe'
-  $env:REG_MODEL = $mdl; $env:REG_MFR = $mfr; $env:REG_SLUG = $slug
+  $env:REG_MODEL = $mdl; $env:REG_MFR = $mfr; $env:REG_SLUG = $slug; $env:REG_OS = "$os"
   $p = 'HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Parameters'
   $env:INV_DBURL = (((Get-ItemProperty $p).AppEnvironmentExtra | Where-Object { $_ -like 'DATABASE_URL=*' }) -replace '^DATABASE_URL=','')
   $code = @'
 import os,psycopg
 u=os.environ["INV_DBURL"].replace("postgresql+psycopg://","postgresql://")
-mdl=os.environ["REG_MODEL"];mfr=os.environ["REG_MFR"] or None;slug=os.environ["REG_SLUG"]
+mdl=os.environ["REG_MODEL"];mfr=os.environ["REG_MFR"] or None;slug=os.environ["REG_SLUG"];dos=os.environ.get("REG_OS") or None
 root=r"C:\deploy\drivers";mdir=os.path.join(root,slug)
 CAT={"net":"Network","network":"Network","wifi":"WiFi","wireless":"WiFi","bt":"Bluetooth","bluetooth":"Bluetooth","audio":"Audio","audio-realtek":"Audio","video":"Display","display":"Display","graphics":"Display","chipset":"Chipset","heci":"Chipset","serial-io":"Chipset","thunderbolt":"Chipset","storage":"Storage","rst":"Storage","fingerprint":"Fingerprint","camera":"Camera","input":"Keyboard"}
 c=psycopg.connect(u);cur=c.cursor();ins=0
@@ -41,10 +41,14 @@ for dp,_,files in os.walk(mdir):
         if not f.lower().endswith(".inf"):continue
         full=os.path.join(dp,f);rel=full[len(root)+1:];parts=rel.split("\\");sub=parts[1] if len(parts)>2 else "misc"
         cat=CAT.get(sub.lower(),"Other")
-        cur.execute("select 1 from driver_packages where file_path=%s",(rel,))
-        if cur.fetchone():continue
-        cur.execute("insert into driver_packages (model,manufacturer,category,driver_name,os,file_path,file_size,status,status_set_by,status_set_at,added_by,created_at,updated_at) values (%s,%s,%s,%s,NULL,%s,%s,'confirmed_working','discover-drivers',now(),'discover-drivers',now(),now())",(mdl,mfr,cat,f,rel,os.path.getsize(full)))
+        cur.execute("select id,os from driver_packages where file_path=%s",(rel,))
+        _row=cur.fetchone()
+        if _row:
+            if dos and _row[1] is None: cur.execute("update driver_packages set os=%s,updated_at=now() where id=%s and os is null",(dos,_row[0]))
+            continue
+        cur.execute("insert into driver_packages (model,manufacturer,category,driver_name,os,file_path,file_size,status,status_set_by,status_set_at,added_by,created_at,updated_at) values (%s,%s,%s,%s,%s,%s,%s,'confirmed_working','discover-drivers',now(),'discover-drivers',now(),now())",(mdl,mfr,cat,f,dos,rel,os.path.getsize(full)))
         ins+=1
+if dos: cur.execute("delete from driver_packages where lower(model)=lower(%s) and os=%s and added_by='discover-drivers' and driver_name like 'No manufacturer-supported%%'",(mdl,dos))
 c.commit()
 cur.execute("select count(*) from driver_packages where lower(model)=lower(%s) and status='confirmed_working'",(mdl,))
 print(cur.fetchone()[0])
@@ -54,6 +58,29 @@ c.close()
   $out = & $py "$env:TEMP\reg_$JobId.py" 2>&1
   Remove-Item "$env:TEMP\reg_$JobId.py" -Force -ErrorAction SilentlyContinue
   return ($out | Select-Object -Last 1)
+}
+
+function Mark-OsUnavailable($mdl, $mfr, $osFull, $note) {
+  # Record in the driver catalog that this vendor publishes NO injectable driver packages
+  # for the given Windows generation (e.g. Lenovo has no Win11 pack for ideapad 81AC).
+  # Shows under that OS filter as an explicit marker instead of a silent empty list.
+  # status='unconfirmed' so it is never counted as a real driver or injected at image time.
+  $py = 'C:\inventory\venv\Scripts\python.exe'
+  $env:MK_MODEL = $mdl; $env:MK_MFR = $mfr; $env:MK_OS = $osFull; $env:MK_NOTE = "$note"
+  $p = 'HKLM:\SYSTEM\CurrentControlSet\Services\JuniperInventory\Parameters'
+  $env:INV_DBURL = (((Get-ItemProperty $p).AppEnvironmentExtra | Where-Object { $_ -like 'DATABASE_URL=*' }) -replace '^DATABASE_URL=','')
+  $code = @'
+import os,psycopg
+u=os.environ["INV_DBURL"].replace("postgresql+psycopg://","postgresql://")
+mdl=os.environ["MK_MODEL"];mfr=os.environ["MK_MFR"] or None;dos=os.environ["MK_OS"];note=os.environ.get("MK_NOTE") or None
+c=psycopg.connect(u);cur=c.cursor()
+cur.execute("delete from driver_packages where lower(model)=lower(%s) and os=%s and added_by='discover-drivers' and driver_name like 'No manufacturer-supported%%'",(mdl,dos))
+cur.execute("insert into driver_packages (model,manufacturer,category,driver_name,os,status,added_by,status_notes,created_at,updated_at) values (%s,%s,'Other',%s,%s,'unconfirmed','discover-drivers',%s,now(),now())",(mdl,mfr,"No manufacturer-supported "+dos+" drivers published",dos,note))
+c.commit();c.close()
+'@
+  Set-Content "$env:TEMP\mk_$JobId.py" $code -Encoding UTF8
+  & $py "$env:TEMP\mk_$JobId.py" 2>&1 | Out-Null
+  Remove-Item "$env:TEMP\mk_$JobId.py" -Force -ErrorAction SilentlyContinue
 }
 
 function Resolve-DellPack($model, $osHint) {
@@ -135,21 +162,42 @@ try {
       } catch {}
     }
     if (-not $mt) { Report 'failed' "Lenovo: could not resolve machine type (serial='$Serial')." 0; return }
-    $osTag = if ($Os -match '10') { 'Win10' } else { 'Win11' }
-    Report 'downloading' "Lenovo: building driver manifest for $mt ($osTag)..." $null
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\deploy\scripts\build-lenovo-manifest.ps1' -MachineType $mt -Os $osTag *> $null
-    $mf = "C:\deploy\scripts\$mt-driver-manifest.json"; if (-not (Test-Path $mf)) { $mf = "C:\deploy\scripts\$($mt.ToLower())-driver-manifest.json" }
-    if (-not (Test-Path $mf)) { Report 'failed' "Lenovo: manifest build failed for $mt." 0; return }
-    Report 'downloading' "Lenovo: downloading + extracting SoftPaqs for $mt (BIOS/firmware skipped)..." $null
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\deploy\scripts\curate-lenovo-model.ps1' -MachineType $mt -Slug $slug *> $null
+    # Evaluate BOTH Windows generations and curate every one Lenovo publishes injectable
+    # drivers for. A machine that shipped with Windows 10 (older consumer models like the
+    # ideapad 720S-15IKB / type 81AC) MUST always get its Win10 pack - Lenovo's Win11
+    # catalog for these lists only the Universal Device Client and ZERO injectable .inf,
+    # while the real audio/WiFi/chipset drivers live under Win10 and inject fine on Win11.
+    # We tag each driver's OS in the catalog and, for any generation with no manufacturer
+    # drivers, record a visible "none published" marker.
+    $osFull  = @{ 'Win10' = 'Windows 10'; 'Win11' = 'Windows 11' }
     $curated = "C:\deploy\drivers\$slug-curated"
-    if ((Test-Path $curated) -and (Get-ChildItem $curated -Recurse -Filter *.inf -ErrorAction SilentlyContinue)) {
-      New-Item -ItemType Directory -Force "C:\deploy\drivers\$slug" | Out-Null
-      Copy-Item "$curated\*" "C:\deploy\drivers\$slug" -Recurse -Force
-      $cnt = Register-OnDisk $Model $Manufacturer $slug
-      if ([int]$cnt -gt 0) { Report 'ready' "Lenovo $mt curated + registered ($cnt drivers)" ([int]$cnt); return }
+    $total   = 0
+    foreach ($osTag in @('Win10','Win11')) {
+      Report 'downloading' "Lenovo: building $osTag driver manifest for $mt..." $null
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\deploy\scripts\build-lenovo-manifest.ps1' -MachineType $mt -Os $osTag *> $null
+      $mf = "C:\deploy\scripts\$mt-driver-manifest.json"; if (-not (Test-Path $mf)) { $mf = "C:\deploy\scripts\$($mt.ToLower())-driver-manifest.json" }
+      if (-not (Test-Path $mf)) {
+        Write-Host "  Lenovo: no $osTag catalog for $mt"
+        Mark-OsUnavailable $Model $Manufacturer $osFull[$osTag] "Lenovo publishes no $($osFull[$osTag]) driver catalog for machine type $mt."
+        continue
+      }
+      $before = @(Get-ChildItem $curated -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
+      Report 'downloading' "Lenovo: extracting $osTag SoftPaqs for $mt (BIOS/firmware skipped)..." $null
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\deploy\scripts\curate-lenovo-model.ps1' -MachineType $mt -Slug $slug *> $null
+      $after = @(Get-ChildItem $curated -Recurse -Filter *.inf -ErrorAction SilentlyContinue).Count
+      if ($after -gt $before) {
+        New-Item -ItemType Directory -Force "C:\deploy\drivers\$slug" | Out-Null
+        Copy-Item "$curated\*" "C:\deploy\drivers\$slug" -Recurse -Force
+        $cnt = Register-OnDisk $Model $Manufacturer $slug $osFull[$osTag]
+        if ([int]$cnt -gt 0) { $total = [int]$cnt }
+        Write-Host "  Lenovo: $osTag added $($after-$before) .inf; catalog now $total"
+      } else {
+        Write-Host "  Lenovo: $osTag catalog for $mt has no injectable .inf (software/utility only)"
+        Mark-OsUnavailable $Model $Manufacturer $osFull[$osTag] "Lenovo's $($osFull[$osTag]) catalog for machine type $mt lists no injectable driver packages (software/utility only)."
+      }
     }
-    Report 'failed' "Lenovo: no .inf drivers curated for $mt." 0; return
+    if ($total -gt 0) { Report 'ready' "Lenovo $mt curated + registered ($total drivers; per-OS availability recorded)" $total; return }
+    Report 'failed' "Lenovo: no injectable .inf drivers curated for $mt (Windows 10 or Windows 11)." 0; return
   }
   elseif ($mfrL -match 'hp|hewlett') {
     $plat = ("$MachineType").Trim().ToUpper()   # HP platform id = Win32_BaseBoard.Product; deploy.ps1 sends it as machine_type
