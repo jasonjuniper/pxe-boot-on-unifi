@@ -224,50 +224,6 @@ while ($true) {
     Write-Host '    Invalid. Use letters, numbers, hyphens. Max 15 chars.' -ForegroundColor Yellow
 }
 
-# --- No-assigned-user sanity check (10s interrupt before wipe) ---------------
-# If inventory has no user assigned to this serial, give the operator 10 seconds
-# to enter one before the wipe. On timeout, proceed (junadmin-only account). The
-# name is recorded to inventory so the post-install setup phase creates the local
-# account. BEST-EFFORT: any error (no connectivity, reduced WinPE PowerShell) just
-# proceeds - this must never block imaging. Uses .NET WebClient (present in WinPE
-# even when Invoke-RestMethod is not).
-try {
-    if ($hwSerial -and $hwSerial -ne 'Unknown') {
-        $srv = ($DeployShare -replace '^\\\\','' -split '\\')[0]     # host from \\host\deploy$
-        $apiBase = "http://$srv" + ":8080"
-        $assigned = $true                                            # default: assume assigned -> don't nag
-        try {
-            $wc = New-Object System.Net.WebClient
-            $j = ($wc.DownloadString("$apiBase/ingest/deploy/assigned-user?serial=" + [Uri]::EscapeDataString($hwSerial))) | ConvertFrom-Json
-            $assigned = [bool]$j.assigned
-        } catch { $assigned = $true }                                # can't check -> proceed silently
-        if (-not $assigned) {
-            Write-Host ''
-            Write-Host '  !! No user is assigned to this machine in inventory !!' -ForegroundColor Yellow
-            Write-Host '     Press any key within 10s to enter one now, or imaging continues (no local account).' -ForegroundColor Yellow
-            $deadline = (Get-Date).AddSeconds(10); $pressed = $false
-            while ((Get-Date) -lt $deadline) {
-                if ($host.UI.RawUI.KeyAvailable) { [void]$host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); $pressed = $true; break }
-                Start-Sleep -Milliseconds 200; Write-Host '.' -NoNewline
-            }
-            Write-Host ''
-            if ($pressed) {
-                $who = (Read-Host '  Assigned user (full name or email)').Trim()
-                if ($who) {
-                    try {
-                        $body = (@{ serial = $hwSerial; name = $who } | ConvertTo-Json -Compress)
-                        $wc2 = New-Object System.Net.WebClient; $wc2.Headers['Content-Type'] = 'application/json'
-                        [void]$wc2.UploadString("$apiBase/ingest/deploy/assign-user", 'POST', $body)
-                        Write-Host "  Recorded '$who' - the setup phase will create their local account." -ForegroundColor Green
-                    } catch { Write-Host "  WARN: could not record assigned user (continuing): $_" -ForegroundColor Yellow }
-                }
-            } else {
-                Write-Host '  No input - continuing without an assigned user.' -ForegroundColor DarkGray
-            }
-        }
-    }
-} catch {}
-
 # --- Disk 0 Info + Confirmation ----------------------------------------------
 
 Write-Host ''

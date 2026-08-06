@@ -956,6 +956,43 @@ catch { Write-Host "  (driver hold error - continuing: $($_.Exception.Message))"
 try { Invoke-StorageDriverRescue -DeployShare $DeployShare -Manufacturer $hwMfr -Model $hwModel }
 catch { Write-Host "  (storage rescue error - continuing: $($_.Exception.Message))" -ForegroundColor DarkGray }
 
+# --- No-assigned-user sanity check (10s interrupt before wipe) --------------
+# If inventory has no user assigned to this serial, give the operator 10 seconds
+# to enter one before the wipe; recorded so the post-install setup phase creates
+# the local account. Timeout / any error -> proceed (best-effort, never blocks).
+try {
+    if ($serialClean) {
+        $assignedOk = $true
+        try {
+            $au = Invoke-RestMethod "$InvApi/ingest/deploy/assigned-user?serial=$([uri]::EscapeDataString($hwSerial))" -TimeoutSec 8 -ErrorAction Stop
+            $assignedOk = [bool]$au.assigned
+        } catch { $assignedOk = $true }   # cannot check -> do not nag, proceed
+        if (-not $assignedOk) {
+            Write-Host ''
+            Write-Host '  !! No user is assigned to this machine in inventory !!' -ForegroundColor Yellow
+            Write-Host '     Press any key within 10s to enter one, or imaging continues (no local account).' -ForegroundColor Yellow
+            $swU = [System.Diagnostics.Stopwatch]::StartNew(); $pressedU = $false; $lastU = -1
+            while ($swU.ElapsedMilliseconds -lt 10000) {
+                if ([Console]::KeyAvailable) { [void][Console]::ReadKey($true); $pressedU = $true; break }
+                $s = [int](((10000 - $swU.ElapsedMilliseconds) / 1000))
+                if ($s -ne $lastU) { $lastU = $s; Write-Host "`r  Continuing in $s s ...   " -NoNewline }
+                Start-Sleep -Milliseconds 150
+            }
+            $swU.Stop(); Write-Host ''
+            if ($pressedU) {
+                $whoU = (Read-Host '  Assigned user (full name or email)').Trim()
+                if ($whoU) {
+                    try {
+                        $bodyU = @{ serial = $hwSerial; name = $whoU } | ConvertTo-Json -Compress
+                        Invoke-RestMethod "$InvApi/ingest/deploy/assign-user" -Method Post -Body $bodyU -ContentType 'application/json' -TimeoutSec 8 -ErrorAction Stop | Out-Null
+                        Write-Host "  Recorded '$whoU' - the setup phase will create their local account." -ForegroundColor Green
+                    } catch { Write-Host "  WARN: could not record assigned user (continuing): $($_.Exception.Message)" -ForegroundColor Yellow }
+                }
+            } else { Write-Host '  No input - continuing without an assigned user.' -ForegroundColor DarkGray }
+        }
+    }
+} catch {}
+
 # --- Disk 0 Info + Confirmation ---------------------------------------------
 
 Write-Host ''
