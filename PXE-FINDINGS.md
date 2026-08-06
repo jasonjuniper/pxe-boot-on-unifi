@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-08-06 — Lenovo 720S-15IKB (81AC) imaging quirks + fleet self-heal fixes
+
+- **Secure Boot must be re-enabled AFTER imaging.** The 720S-15IKB (type 81AC) only boots the imaging
+  USB with Secure Boot **OFF**, but leaving it off in Windows breaks the Lenovo UEFI firmware capsule
+  update (Windows Update; Device Manager → Firmware → "Lenovo UEFI System Firmware …" shows **Code 10,
+  "Firmware update failed due to system authentication error"**) and makes the `secure-boot` (CA-2023
+  enrollment) orchestrator phase spin its full 6 rounds and give up. The orchestrator cannot flip Secure
+  Boot (physical BIOS setting) — re-enable it in BIOS once Windows is installed (the MS-signed Windows
+  Boot Manager boots fine with SB on; only the imaging media needed it off).
+- **Driver discovery is Win10-aware for 81AC.** `discover-drivers.ps1` now evaluates both Win10 + Win11
+  catalogs; 81AC's real drivers only exist under Win10. See `docs/driver-library.md`.
+- **Network self-heal on connect.** `orchestrator.ps1`'s `JuniperNetworkPrivate` task now also triggers on
+  NetworkProfile/Operational **event 10000** (network connected, 5 s delay), not just startup/logon — so
+  Wi-Fi that associates a few seconds into boot, reconnects at the user's desk, or comes up before any user
+  logs in gets re-asserted **Private**. (Public left WinRM/SMB firewalled off cross-subnet — the recurring
+  "imaged machine lands Public" defect.)
+
+---
+
 ## ⚠️ CURRENT BLOCKER: MS UEFI CA 2011 is expiring / removed from ThinkPad db
 
 **Microsoft Corporation UEFI CA 2011** — the certificate used to sign ALL third-party UEFI boot

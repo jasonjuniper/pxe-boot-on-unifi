@@ -7,6 +7,26 @@ catalog. Replaces the old hand-assembled `<MT>-driver-manifest.json` files.
 All scripts live in `scripts/` (this repo) and run on **pc-deploy**
 (`C:\deploy\scripts`), which has outbound HTTPS to `download.lenovo.com`.
 
+## On-demand discovery during imaging (`discover-drivers.ps1`)
+
+WinPE `deploy.ps1` holds imaging and POSTs `/ingest/driver-request` when a model has no catalog
+drivers; the inventory server kicks `discover-drivers.ps1` (detached, on pc-deploy) to run the
+pipeline below for that machine type. Lenovo specifics:
+
+- **Evaluates BOTH `Win10` and `Win11` catalogs** and curates every generation that yields injectable
+  `.inf`. Older consumer models (e.g. ideapad 720S-15IKB / type **81AC**) were never qualified for Win11
+  — `81AC_Win11.xml` lists only the Universal Device Client (0 `.inf`) while the real audio/Wi-Fi/chipset
+  drivers live in `81AC_Win10.xml` and inject fine under Win11. A machine that shipped with Win10 always
+  gets its Win10 pack; Win11 too when Lenovo actually publishes injectable drivers for it.
+- **Tags each driver's OS** in `driver_packages.os` (`Register-OnDisk -Os`; backfills NULLs on re-run), and
+  for any generation with no injectable pack writes a visible `driver_packages` marker row ("No
+  manufacturer-supported <OS> drivers published", status `unconfirmed` so it never counts as a real driver
+  or injects) — so the catalog shows the gap instead of a silent empty list.
+- **Hold/resume auth:** WinPE polls `GET /api/drivers/ready` (and `GET /api/drivers/manifest.json`), which
+  are **auth-exempt** (`AGENT_AUTH_OPEN` in the inventory app). Before that fix they 403'd under agent-auth
+  enforcement, and `Wait-ForModelDrivers` swallowed the error → every uncatalogued model silently burned
+  the full 30-minute hold.
+
 ## Pipeline
 
 ```
