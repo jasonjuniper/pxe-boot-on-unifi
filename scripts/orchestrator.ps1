@@ -923,6 +923,30 @@ try {
     # (mis-named) rule.
     Set-NetFirewallRule -DisplayGroup 'Windows Remote Management' -RemoteAddress Any -ErrorAction SilentlyContinue
     Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction SilentlyContinue
+
+    # PERSIST past provisioning: NLA re-categorizes Wi-Fi to Public when the machine
+    # RECONNECTS at the user's desk AFTER imaging ends (confirmed: machines land Public
+    # + WinRM firewalled off cross-subnet even though the join succeeded). The one-shot
+    # assertion above can't cover a reconnect that happens after the orchestrator is
+    # gone, so install a tiny self-healing task that re-asserts Private + widens WinRM
+    # on every startup and logon. Idempotent (-Force); best-effort.
+    $jsDir = 'C:\ProgramData\JuniperSetup'
+    New-Item -ItemType Directory -Force $jsDir | Out-Null
+    $npScript = Join-Path $jsDir 'net-private.ps1'
+    @'
+Get-NetConnectionProfile -ErrorAction SilentlyContinue |
+    Where-Object { $_.NetworkCategory -ne 'DomainAuthenticated' -and $_.NetworkCategory -ne 'Private' } |
+    ForEach-Object { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue }
+Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Profiles' -ErrorAction SilentlyContinue |
+    ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name 'Category' -Value 1 -Type DWord -ErrorAction SilentlyContinue }
+Set-NetFirewallRule -DisplayGroup 'Windows Remote Management' -RemoteAddress Any -ErrorAction SilentlyContinue
+Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management' -ErrorAction SilentlyContinue
+'@ | Set-Content -Path $npScript -Encoding UTF8
+    $npAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$npScript`""
+    $npTrig   = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn))
+    $npPrin   = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+    Register-ScheduledTask -TaskName 'JuniperNetworkPrivate' -Action $npAction -Trigger $npTrig -Principal $npPrin -Force -ErrorAction SilentlyContinue | Out-Null
+    Write-Log "Installed self-healing JuniperNetworkPrivate task (startup+logon)" -MasterOnly
 } catch { Write-Log "Every-run network-profile assert: $_" -Level WARN -MasterOnly }
 
 # Break-glass / safety timeout: if a tech dropped the flag file or imaging has run
