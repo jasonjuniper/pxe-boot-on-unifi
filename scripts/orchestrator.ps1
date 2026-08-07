@@ -138,7 +138,7 @@ if (Test-Path $_shareScripts -ErrorAction SilentlyContinue) {
     try {
         foreach ($f in @('03-windows-update.ps1','04-install-packages.ps1',
                          '05-install-network-drivers.ps1','06-join-wifi.ps1',
-                         '10-setup-user.ps1',
+                         '10-setup-user.ps1','ensure-critical.ps1',
                          '07-remove-bloatware.ps1','08-set-file-associations.ps1',
                          'provision-status.ps1')) {
             $s = Join-Path $_shareScripts $f
@@ -708,6 +708,38 @@ if ($Bootstrap) {
         -Description 'Juniper IT post-imaging automated setup' -Force | Out-Null
 
     Write-Log "Scheduled task '$TaskName' registered (AtStartup, SYSTEM)"
+
+    # --- CRITICAL-phase safety net: JuniperEnsureCritical -------------------
+    # Independent task (survives JuniperImaging teardown) that guarantees the two
+    # user-facing critical steps (join-wifi, setup-user) still fire even if the
+    # main orchestrator collapses/strands before reaching them. Fires AtStartup
+    # (short delay for the network to settle) and repeats every 5 min for 1h so a
+    # late-arriving network on the final boot is still caught; it self-unregisters
+    # once both criticals are satisfied-or-given-up. Deferring logic + sanity
+    # checks live in ensure-critical.ps1 (staged by the Sync-Scripts step above).
+    try {
+        $ecName    = 'JuniperEnsureCritical'
+        $ecAction  = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptsDir\ensure-critical.ps1`""
+        $ecTrigger = New-ScheduledTaskTrigger -AtStartup
+        try { $ecTrigger.Delay = 'PT45S' } catch {}
+        # Graft a 5-min / 1-hour repetition pattern onto the AtStartup trigger.
+        try {
+            $ecRep = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+                        -RepetitionInterval (New-TimeSpan -Minutes 5) `
+                        -RepetitionDuration (New-TimeSpan -Hours 1)
+            $ecTrigger.Repetition = $ecRep.Repetition
+        } catch {}
+        $ecPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest -LogonType ServiceAccount
+        $ecSettings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                        -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew -RestartCount 0
+        Register-ScheduledTask -TaskName $ecName `
+            -Action $ecAction -Trigger $ecTrigger -Principal $ecPrincipal -Settings $ecSettings `
+            -Description 'Juniper imaging safety net: guarantees Wi-Fi join + assigned-user account even if the main run fails' -Force | Out-Null
+        Write-Log "Scheduled task '$ecName' registered (AtStartup +5min/1h repeat, SYSTEM) - critical-phase safety net"
+    } catch {
+        Write-Log "WARN: could not register JuniperEnsureCritical safety-net task: $_" -Level WARN -MasterOnly
+    }
 
     # Set all network connections to Private so WinRM cross-subnet access works.
     # Without this, Windows leaves new connections as Public, which restricts

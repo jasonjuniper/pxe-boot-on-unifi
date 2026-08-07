@@ -490,6 +490,38 @@ kiosk still locks login until provisioning completes).
   0 with no Wi-Fi NIC). See "Wi-Fi join during imaging" below.
 - `07-remove-bloatware.ps1` - removes unwanted Windows features and apps
 
+### Critical-phase safety net (`JuniperEnsureCritical` / `ensure-critical.ps1`, added 2026-08-07)
+
+The two user-facing critical steps — **join-wifi** and **setup-user** — must fire
+even if the main orchestrator collapses, strands, or times out before reaching them
+(they sit at ~5% and ~88% of the phase order, so an early crash or the 8h kiosk
+timeout used to leave a machine with no office Wi-Fi and no assigned-user account).
+Bootstrap now registers a SECOND scheduled task, **`JuniperEnsureCritical`** (SYSTEM,
+AtStartup + a 5-min/1-h repetition), whose lifecycle is INDEPENDENT of `JuniperImaging`
+— the completion teardown removes `JuniperImaging` but leaves this, so it still runs on
+the final clean boot.
+
+`ensure-critical.ps1` on each fire:
+- **Defers** if `JuniperImaging` is currently `Running` (the normal path will do these
+  phases itself — no double-run). Otherwise the orchestrator is done, removed, crashed,
+  or stranded, and it proceeds.
+- **Sanity-checks live state**, and only acts on what's missing:
+  - *Wi-Fi:* no wireless adapter → N/A (satisfied); already connected → satisfied (and
+    sets the profile **Private**); else re-runs `06-join-wifi.ps1`.
+  - *User:* a `local_*` account already exists → satisfied; device flagged
+    `skip_assigned_user_account` → N/A (satisfied); owner resolves → re-runs
+    `10-setup-user.ps1`; **owner does NOT resolve → retries, and after the attempt
+    budget logs a breadcrumb + inventory event and stops — it NEVER fabricates a generic
+    account** (serial-authoritative identity preserved; junadmin still gives access).
+- Writes an `.ok` marker per critical (`C:\ProgramData\JuniperSetup\state\{join-wifi,setup-user}.ok`)
+  — the "triggered" flag — and **unregisters itself** once both are satisfied-or-given-up,
+  so it never lingers on a healthy machine.
+
+It reuses the SAME phase scripts (one source of truth), is best-effort (never throws,
+never blocks, never resets an already-good account), and posts `ensure-critical` steps to
+the provisioning timeline so a safety-net fire is visible. Registration + the script are
+synced from `\\pc-deploy\deploy$\scripts\` like the other phase scripts.
+
 ### Servicing Stack Updates (SSUs) install FIRST
 
 `03-windows-update.ps1` now runs an **SSU-first pass** at the top of every round,
