@@ -602,10 +602,19 @@ Imaged PCs auto-join the corporate Wi-Fi during post-install.
 > Wi-Fi looked "already handled," `06`'s `already-connected` early-exit also skipped
 > re-asserting anything. Two-part fix: (1) `06` and the safety net set
 > `HKLM\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy\fMinimizeConnections=0`
-> (+ `netsh wlan set autoconfig enabled=yes`) so Wi-Fi may coexist with wired; (2)
-> `JuniperEnsureCritical` issues an **explicit `netsh wlan connect`** on the final boot —
-> an operator-style connect associates Wi-Fi even with the dongle up, which Windows
-> auto-connect will not do. This is the "first-boot connect" the fleet was missing.
+> (+ `netsh wlan set autoconfig enabled=yes`) so Wi-Fi may coexist with wired — this
+> alone lets WLAN AutoConfig bring the saved auto profile up; (2) `JuniperEnsureCritical`
+> on the final boot re-asserts that policy and **nudges AutoConfig by bouncing the Wi-Fi
+> adapter** (`Restart-NetAdapter`) so it associates immediately. This is the "first-boot
+> connect" the fleet was missing.
+>
+> **Win11 caveat (learned the hard way):** do NOT rely on `netsh wlan connect` /
+> `netsh wlan show networks` in the imaging scripts — on Win11 those WLAN scan/connect
+> APIs require **Location services**, which are OFF on a fresh image, so they return
+> `WlanGetAvailableNetworkList error 5: Access is denied`. The `fMinimizeConnections=0`
+> + AutoConfig + adapter-bounce path needs no Location permission and is what actually
+> connects (verified live on FINANC-01: policy flip → Wi-Fi associated within ~10s while
+> the explicit `netsh wlan connect` was denied). `netsh wlan add profile` is fine (no scan).
 - **Source chain:** UniFi controller (read via the Inventory `X-API-Key`,
   `GET /proxy/network/api/s/default/rest/wlanconf`) -> inventory `/api/management/wifi`
   endpoint -> `06-join-wifi.ps1` phase. The PSK is **never** in the repo or in any

@@ -145,13 +145,18 @@ function Ensure-Wifi {
         return $false
     }
 
-    # EXPLICIT connect - this is the key: an operator-style `netsh wlan connect`
-    # associates Wi-Fi even while the wired dongle is up (Windows auto-connect will
-    # not). This is what was missing on the final boot.
-    Log "Wi-Fi: not connected - issuing explicit connect to '$ssid'."
-    Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'running' -Message "Safety-net forcing Wi-Fi connect to '$ssid'."
+    # Trigger the association. NOTE (Win11): `netsh wlan connect` and any WLAN scan
+    # require Location services, which are OFF on a fresh image -> it returns
+    # "Access is denied / WlanGetAvailableNetworkList error 5". So we do NOT rely on
+    # it. The reliable lever is fMinimizeConnections=0 (Set-WifiCoexist above), which
+    # lets WLAN AutoConfig auto-connect the saved auto profile even with the wired
+    # dongle up. We NUDGE AutoConfig by bouncing the adapter (needs no Location perm),
+    # and still fire netsh connect best-effort in case Location happens to be on.
+    Log "Wi-Fi: not connected - nudging AutoConfig to associate '$ssid' (coexist policy set)."
+    Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'running' -Message "Safety-net connecting Wi-Fi to '$ssid' (AutoConfig, coexist-with-wired)."
     try { netsh wlan connect name="$ssid" 2>&1 | Out-Null } catch {}
-    Start-Sleep 7
+    try { Restart-NetAdapter -Name $nic.Name -ErrorAction SilentlyContinue } catch {}
+    Start-Sleep 12
 
     $now = Get-WifiConnection
     if ($now) {
