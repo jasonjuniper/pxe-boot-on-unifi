@@ -1308,3 +1308,36 @@ existing 4s auto-refresh. The `/deploy/status` HTML page stays behind login
 > `/deploy/status` during WinPE (purple "winpe" state, 1-5%), see it continue
 > through the 4 post-install phases to done/100% in the SAME card, then open the
 > Logs drawer and confirm each phase's log is present (error phases flagged red).
+
+---
+
+## WinPE build & USB — post-WDS-migration (updated 2026-08-07)
+
+**Authoritative process + findings: `docs/WINPE-USB-RUNBOOK.md`.** Reference
+copies of the build scripts: `scripts/winpe-src/`. Critical facts:
+
+- **PXE is served by WDS**, not TFTP. The old tftpd64 stack, `C:\WinPE_amd64`,
+  `01c-build-winpe.ps1`, and the `WimUpdate4` task are **retired/dead** (slated
+  for cleanup). Live build workshop = **`C:\WinPE-src\` on pc-deploy**.
+- **Live boot image:** `C:\RemoteInstall\Boot\x64\Images\winpe-deploy-final.wim`
+  (served by WDS). USB is written by `C:\WinPE-src\usb.ps1` from
+  `C:\WinPE-src\winpe-deploy-final.wim`. These two copies (+ the legacy
+  `C:\deploy\winpe-media` tree) must be kept **byte-identical** — always deploy
+  the same verified WIM to all and hash-check.
+- **`build.ps1` injects NO drivers** — it rebuilds from pristine `winre-base.wim`.
+  NIC/storage `.inf`s are injected afterward by `nic-only.ps1`/`intel`/`realtek`.
+  Patch the known-good live WIM (driver-safe) or re-inject after a fresh build.
+  Baseline live driver count = **7** `[Net]` drivers.
+- **Modern UI:** WinPE now shows a full-screen **Edge kiosk** imaging screen
+  (`X:\imaging-screen.html`, tails `X:\deploy_log.txt`); falls back to the
+  console `deploy.ps1` if Edge can't start. Edge is staged from the installed,
+  code-signed copy on pc-deploy — never a downloaded binary. Bundling Edge makes
+  the WIM ~1.38 GB (slower WDS/PXE transfer; fine for USB).
+- **OpenSSH** is baked in (host keys from `C:\WinPE-src\ssh\`, `sshd` auto-start
+  in `startnet.cmd`) for remote WinPE access.
+- **Credentials:** `deploy-boot.ps1` ships with `$DeployPass='##WINPE_PASS##'`;
+  the real junadmin password is substituted only into `deploy-boot-cred.ps1` and
+  baked into the WIM. Never commit a real password; scrub the cred file after.
+- **Always hash-verify a freshly written stick** (flush volume cache first) — a
+  pre-flush pull once produced a correct-size but silently corrupt image.
+
