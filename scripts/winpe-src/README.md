@@ -22,3 +22,6 @@ Full process and findings: [`../../docs/WINPE-USB-RUNBOOK.md`](../../docs/WINPE-
 
 The three **bold** scripts are the reproducible modern-UI (Edge kiosk + SSH)
 update authored 2026-08-07; run them in order, then `usb.ps1`, then `usb-verify.ps1`.
+
+## Current pipeline (2026-08-07): native WPF, no browser
+The imaging screen is winpe\deploy-screen.ps1 (PowerShell/WPF). Reproducible WIM patch = wpf-bake.ps1 (swaps in WPF deploy-boot + deploy-screen + brand-fonts, removes Edge, promotes to PXE+USB). The Edge-era scripts (edge-inject.ps1, ssh-and-finalize.ps1, imaging-screen.html) were removed - Edge does not run in WinPE. build.ps1 now also bakes the WPF screen + fonts.

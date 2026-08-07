@@ -704,3 +704,20 @@ bootx64.efi (bootmgfw_EX.efi, 3,055,456 bytes)
 ```
 
 *Juniper Design internal documentation — last updated 2026-06-22 session 2*
+
+## Modern imaging UI = native WPF (2026-08-07)
+
+The on-machine imaging screen is a native PowerShell/WPF window
+(winpe\deploy-screen.ps1), NOT a browser. Full runbook + rationale:
+docs\WINPE-USB-RUNBOOK.md. Key points:
+
+- Edge/Chromium does NOT run in stock WinPE (launches, silently exits). An
+  Edge-kiosk experiment bloated the WIM to ~1.4 GB and never rendered; removed.
+- WPF needs only WinPE-NetFx + WinPE-PowerShell (already baked). Image ~792 MB.
+- Reproduces the Claude Design screen: navy chrome, Google Sans / Source Serif 4 /
+  Roboto Mono loaded as PRIVATE fonts from X:\brand-fonts, vector wordmark
+  (Geometry.Parse), 14 phase ticks driven by tailing X:\deploy_log.txt.
+- deploy-boot.ps1 shows the WPF screen while deploy.ps1 runs hidden; console is
+  the automatic fallback. Also baked: OpenSSH; 7 NIC/storage drivers preserved.
+- Image promoted to BOTH PXE (WDS, C:\RemoteInstall) and the USB source
+  (C:\WinPE-src), hash-verified identical; stick re-written + hash-verified.

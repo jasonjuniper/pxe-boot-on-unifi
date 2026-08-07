@@ -36,6 +36,7 @@ FONT_BOLD     = _font_url('Poppins-Bold.ttf')
 DOCS = [
     (os.path.join(REPO_ROOT, 'README.md'),        'README.pdf'),
     (os.path.join(REPO_ROOT, 'PXE-FINDINGS.md'),  'PXE-FINDINGS.pdf'),
+    (os.path.join(DOCS_DIR, 'WINPE-USB-RUNBOOK.md'), 'WINPE-USB-RUNBOOK.pdf'),
 ]
 
 # ── Page setup ────────────────────────────────────────────────────────────────

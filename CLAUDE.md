@@ -1328,11 +1328,7 @@ copies of the build scripts: `scripts/winpe-src/`. Critical facts:
   NIC/storage `.inf`s are injected afterward by `nic-only.ps1`/`intel`/`realtek`.
   Patch the known-good live WIM (driver-safe) or re-inject after a fresh build.
   Baseline live driver count = **7** `[Net]` drivers.
-- **Modern UI:** WinPE now shows a full-screen **Edge kiosk** imaging screen
-  (`X:\imaging-screen.html`, tails `X:\deploy_log.txt`); falls back to the
-  console `deploy.ps1` if Edge can't start. Edge is staged from the installed,
-  code-signed copy on pc-deploy — never a downloaded binary. Bundling Edge makes
-  the WIM ~1.38 GB (slower WDS/PXE transfer; fine for USB).
+- **Modern UI:** WinPE shows a native **PowerShell/WPF** branded imaging screen (X:\deploy-screen.ps1) while deploy.ps1 runs hidden and appends X:\deploy_log.txt, which the screen tails for its 14 phase ticks; falls back to the console if WPF cannot load. Edge/Chromium does NOT run in WinPE (launches then silently exits) - do not re-add a browser. WPF needs only NetFx+PowerShell (already baked). Image ~792 MB. Fonts load as private fonts from X:\brand-fonts (Google Sans / Source Serif 4 / Roboto Mono); wordmark from vector path data.
 - **OpenSSH** is baked in (host keys from `C:\WinPE-src\ssh\`, `sshd` auto-start
   in `startnet.cmd`) for remote WinPE access.
 - **Credentials:** `deploy-boot.ps1` ships with `$DeployPass='##WINPE_PASS##'`;

@@ -4,9 +4,10 @@
 # Launched by startnet.cmd after wpeinit.
 #
 # PURPOSE: Wait for network, map the deploy share, and run the live
-# deploy.ps1 from the share.  Keeping the main logic on the share means
-# script changes do NOT require a WIM rebuild -- only changes to this
-# file (or startnet.cmd) require a rebuild.
+# deploy.ps1 from the share, fronted by the branded WPF imaging screen.
+# Keeping the main logic on the share means script changes do NOT require a
+# WIM rebuild -- only changes to this file (or startnet.cmd, deploy-screen.ps1,
+# brand-fonts) require a rebuild.
 #
 # Press T within 60 seconds at startup to open the diagnostic toolkit.
 # Press D to skip the wait and deploy immediately.
@@ -36,7 +37,6 @@ while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
         $key = [Console]::ReadKey($true)
         if ($key.Key -eq [ConsoleKey]::T) { $launchToolkit = $true; break }
         if ($key.Key -eq [ConsoleKey]::D) { $deployNow     = $true;  break }
-        # Any other key also breaks and continues to deployment
         break
     }
     $secsLeft = [int](($timeoutMs - $sw.ElapsedMilliseconds) / 1000)
@@ -83,7 +83,7 @@ if (-not $connected) {
 }
 
 # -- Map deploy share (15s timeout -- net use can hang if SMB is blocked) -----
-# Credentials below are substituted at WIM build time by wim-bake-credentials.ps1.
+# Credentials below are substituted at WIM build time by the credential bake.
 # The placeholder string must never be replaced with a real password in this file.
 $DeployUser = 'junadmin'
 $DeployPass = '##WINPE_PASS##'
@@ -98,7 +98,6 @@ if ($netJob.State -eq 'Running') {
     Remove-Job $netJob -Force
     Write-Host "  Deploy share connection timed out." -ForegroundColor Red
     Write-Host '  Check: SMB port 445 open on pc-deploy' -ForegroundColor Yellow
-    Write-Host '  Check: deploy$ share exists (run 01d-setup-deploy-share.ps1)' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
     exit
@@ -107,7 +106,7 @@ $netOut = Receive-Job $netJob
 Remove-Job $netJob -Force
 if ($netOut -match 'error|denied|failed') {
     Write-Host "  Deploy share auth failed: $netOut" -ForegroundColor Red
-    Write-Host '  WIM may have stale credentials -- run wim-bake-credentials.ps1 on ENG-2 to rebuild.' -ForegroundColor Yellow
+    Write-Host '  WIM may have stale credentials -- rebuild via the credential bake on pc-deploy.' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
     exit
@@ -115,21 +114,21 @@ if ($netOut -match 'error|denied|failed') {
 
 if (-not (Test-Path $DeployShare)) {
     Write-Host "  Cannot reach $DeployShare" -ForegroundColor Red
-    Write-Host '  Run 01a-enable-remote-access.ps1 and 01d-setup-deploy-share.ps1 on pc-deploy.' -ForegroundColor Yellow
+    Write-Host '  Run 01d-setup-deploy-share.ps1 on pc-deploy.' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
     exit
 }
 
-# -- Run deploy with the branded imaging screen (Edge kiosk) ------------------
-# The full-screen imaging screen (X:\imaging-screen.html) is shown in Edge kiosk
-# mode; deploy.ps1 runs in a HIDDEN console and writes X:\deploy_log.txt, which
-# the screen tails to advance its 14 phase ticks. We PROBE that Edge actually
-# launches BEFORE starting deploy.ps1, so a non-viable browser can never leave a
-# half-imaged disk -- it cleanly falls back to the original interactive console
-# (deploy-ui.hta is also retained in the WIM as a manual fallback).
-# NOTE: with the kiosk front, deploy.ps1's 10s prompts auto-accept the serial/UEFI
-# defaults (re-images resolve by serial). This is the unattended on-machine path.
+# -- Run deploy with the branded WPF imaging screen ---------------------------
+# The full-screen branded imaging screen (X:\deploy-screen.ps1, native WPF) is
+# shown while deploy.ps1 runs HIDDEN and writes X:\deploy_log.txt, which the
+# screen tails to advance its 14 phase ticks. WPF needs WinPE-NetFx +
+# WinPE-PowerShell (baked in). If WPF can't load, we cleanly fall back to the
+# interactive console deploy -- so a rendering problem can never leave a
+# half-imaged disk. NOTE: with the screen in front, deploy.ps1's prompts
+# auto-accept the serial/UEFI defaults (re-images resolve by serial); this is
+# the unattended on-machine path.
 $liveScript = "$DeployShare\scripts\deploy.ps1"
 if (-not (Test-Path $liveScript)) {
     Write-Host ''
@@ -140,32 +139,23 @@ if (-not (Test-Path $liveScript)) {
     exit
 }
 
-$edgeExe = 'X:\edge\msedge.exe'
-$screen  = 'X:\imaging-screen.html'
-$edgeUp  = $false
-if ((Test-Path $edgeExe) -and (Test-Path $screen)) {
-    Write-Host '  Launching branded imaging screen (Edge)...' -ForegroundColor Cyan
-    $edgeArgs = @('--kiosk','file:///X:/imaging-screen.html','--edge-kiosk-type=fullscreen',
-        '--no-first-run','--no-default-browser-check','--allow-file-access-from-files',
-        '--disable-gpu','--no-sandbox','--disable-features=Translate,msEdgeWelcome',
-        '--user-data-dir=X:\edgeprofile')
-    try {
-        $ui = Start-Process $edgeExe -ArgumentList $edgeArgs -PassThru -ErrorAction Stop
-        Start-Sleep 6
-        if (-not $ui.HasExited) { $edgeUp = $true }
-        else { Write-Host "  Edge exited immediately (exit $($ui.ExitCode)) - using console." -ForegroundColor Yellow }
-    } catch {
-        Write-Host "  Edge could not launch ($($_.Exception.Message)) - using console." -ForegroundColor Yellow
-    }
-}
+$screen = 'X:\deploy-screen.ps1'
+$guiOk  = $false
+try { Add-Type -AssemblyName PresentationFramework -ErrorAction Stop; $guiOk = $true } catch {}
 
-if ($edgeUp) {
-    # Edge is up and showing the screen. deploy.ps1 runs hidden; its log drives the screen.
+if ($guiOk -and (Test-Path $screen)) {
+    Write-Host '  Launching branded imaging screen...' -ForegroundColor Cyan
+    # deploy.ps1 runs hidden; its log drives the screen.
     $dep = Start-Process 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList @(
         '-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$liveScript`"")
-    Wait-Process -Id $dep.Id -ErrorAction SilentlyContinue
-    try { if (-not $ui.HasExited) { $ui.Kill() } } catch {}
+    try {
+        & $screen -DeployPid $dep.Id
+    } catch {
+        Write-Host "  Imaging screen error ($($_.Exception.Message)) - deploy continues headless." -ForegroundColor Yellow
+    }
+    if ($dep -and -not $dep.HasExited) { Wait-Process -Id $dep.Id -ErrorAction SilentlyContinue }
 } else {
+    if (-not $guiOk) { Write-Host '  WPF unavailable - using console deploy.' -ForegroundColor Yellow }
     # Fallback: original interactive console path (unchanged behavior).
     & $liveScript
 }

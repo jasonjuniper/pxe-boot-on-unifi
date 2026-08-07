@@ -1,4 +1,4 @@
-﻿$log="C:\WinPE-src\build.log"
+$log="C:\WinPE-src\build.log"
 function Log($m){ "$(Get-Date -Format o)  $m" | Out-File $log -Append -Encoding utf8 }
 $oc="C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs"
 $mnt="C:\WinPE-mnt"; $base="C:\WinPE-src\winre-base.wim"; $work="C:\WinPE-src\winpe-deploy.wim"
@@ -20,6 +20,8 @@ try {
   # Bake deploy scripts
   Copy-Item 'C:\deploy\scripts\winpe\deploy-boot.ps1' "$mnt\Windows\System32\deploy-boot.ps1" -Force
   Copy-Item 'C:\deploy\scripts\winpe\toolkit.ps1' "$mnt\Windows\System32\toolkit.ps1" -Force
+  if(Test-Path 'C:\deploy\scripts\winpe\deploy-screen.ps1'){ Copy-Item 'C:\deploy\scripts\winpe\deploy-screen.ps1' "$mnt\deploy-screen.ps1" -Force; Log 'baked deploy-screen.ps1 (WPF)' }
+  if(Test-Path 'C:\deploy\scripts\winpe\brand-fonts'){ New-Item -ItemType Directory -Force "$mnt\brand-fonts" | Out-Null; Copy-Item 'C:\deploy\scripts\winpe\brand-fonts\*' "$mnt\brand-fonts\" -Recurse -Force; Log 'baked brand-fonts' }
   $startnet = @"
 @echo off
 echo.
