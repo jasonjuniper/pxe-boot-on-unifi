@@ -734,18 +734,25 @@ $prior     = $null
 $priorVia  = ''   # 'serial' or 'mac' - for logging only
 
 function Resolve-PriorDevice {
-    param([string]$Query, [string]$ExactField, [string]$ExactValue)
-    # Returns the device record whose $ExactField equals $ExactValue (case-insensitive), or $null.
+    param([string]$Serial, [string]$Mac)
+    # Token-free, RFC-1918-gated lookup. Identity is proven SERVER-side:
+    #   serial -> devices.serial_number + systeminfo bios/chassis serial
+    #   mac    -> identifying, non-excluded interfaces only (dongles barred)
+    # The full search route (/api/devices) is agent-auth-gated and 403s pre-token
+    # during imaging, so it cannot be used here. Returns the first (authoritative)
+    # matching device record, or $null.
     try {
-        $results = Invoke-RestMethod "$InvApi/api/devices?q=$([uri]::EscapeDataString($Query))" `
+        $qs = if ($Serial) { "serial=$([uri]::EscapeDataString($Serial))" }
+              else         { "mac=$([uri]::EscapeDataString($Mac))" }
+        $results = Invoke-RestMethod "$InvApi/ingest/deploy/find-device?$qs" `
             -TimeoutSec 20 -ErrorAction Stop
-        return @($results | Where-Object { "$($_.$ExactField)" -ieq $ExactValue }) | Select-Object -First 1
+        return @($results) | Select-Object -First 1
     } catch { return $null }
 }
 
 $match = $null
 if ($serialClean) {
-    $match = Resolve-PriorDevice -Query $hwSerial -ExactField 'serial_number' -ExactValue $hwSerial
+    $match = Resolve-PriorDevice -Serial $hwSerial
     if ($match) { $priorVia = "serial ($hwSerialSrc)" }
 }
 if (-not $match) {
@@ -754,16 +761,17 @@ if (-not $match) {
     # misidentify this box as whatever machine last used the dongle (the reason a
     # dongle last used on JB-THINKPAD made a different laptop resolve to it). The
     # built-in Wi-Fi/Ethernet MAC is permanent to this machine, so it is safe.
+    # (The server also refuses to resolve an excluded/dongle MAC as a backstop.)
     foreach ($m in $identityMacs) {
         if (-not $m) { continue }
-        $match = Resolve-PriorDevice -Query $m -ExactField 'mac_address' -ExactValue $m
+        $match = Resolve-PriorDevice -Mac $m
         if ($match) { $priorVia = 'mac (built-in NIC)'; break }
     }
     if (-not $match -and $identityMacs.Count -eq 0 -and $primaryMac) {
         # No built-in NIC exists at all (e.g. a desktop imaging via a USB NIC).
         # Only then, as an absolute last resort, match on the removable adapter -
         # flagged low-confidence so a wrong name/OS pre-fill is obvious to the tech.
-        $match = Resolve-PriorDevice -Query $primaryMac -ExactField 'mac_address' -ExactValue $primaryMac
+        $match = Resolve-PriorDevice -Mac $primaryMac
         if ($match) { $priorVia = 'mac (removable adapter - LOW CONFIDENCE)' }
     }
 }
@@ -1200,10 +1208,12 @@ $invDeviceId = if ($prior) { $prior.device_id } else { $null }
 try {
     $JUNIPER_HOSTNAME_OVERRIDE = $computerName
     Invoke-Expression (Invoke-RestMethod "$InvApi/static/install_agent.ps1" -TimeoutSec 10)
-    # Look up device_id by serial so we can PATCH the OS/notes below
-    if (-not $invDeviceId) {
-        $lookup = Invoke-RestMethod "$InvApi/api/devices?q=$hwSerial" -TimeoutSec 5 -ErrorAction SilentlyContinue
-        $invDeviceId = if ($lookup.Count -gt 0) { $lookup[0].device_id } else { $null }
+    # Look up device_id by serial so we can PATCH the OS/notes below.
+    # Token-free find-device (the agent-auth-gated /api/devices 403s pre-token here);
+    # its record uses `id`, not `device_id`.
+    if (-not $invDeviceId -and $hwSerial) {
+        $lookup = Invoke-RestMethod "$InvApi/ingest/deploy/find-device?serial=$([uri]::EscapeDataString($hwSerial))" -TimeoutSec 5 -ErrorAction SilentlyContinue
+        $invDeviceId = if (@($lookup).Count -gt 0) { @($lookup)[0].id } else { $null }
     }
     # Update OS in inventory using the selected edition (ingest/endpoint is always available,
     # unlike the PATCH route which requires auth). This ensures the next re-image defaults correctly.

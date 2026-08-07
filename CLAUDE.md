@@ -280,7 +280,15 @@ operator's final choices back so the next re-image remembers them.
     machine has NO built-in NIC at all (e.g. a desktop imaging via a USB NIC) does it
     match the removable adapter, flagged `mac (removable adapter - LOW CONFIDENCE)`.
     All physical MACs are still recorded to inventory at registration; only
-    *matching* is restricted. Helper: `Resolve-PriorDevice`. Defaults: name = inventory
+    *matching* is restricted. Helper: `Resolve-PriorDevice`.
+  - **Lookup transport (2026-08-07):** `Resolve-PriorDevice` (and the pre-register
+    `device_id` lookup) call the token-free **`GET /ingest/deploy/find-device?serial=`
+    / `?mac=`** (RFC-1918 only) — NOT `GET /api/devices?q=`, which is agent-auth-enforced
+    and **403s pre-token during imaging** (that gate was why the name stopped
+    auto-resolving on re-image). The server proves identity: `serial=` matches
+    `devices.serial_number` + systeminfo bios/chassis serial; `mac=` matches only
+    `identifying`, non-`is_excluded_mac` interfaces (dongles barred server-side too).
+    Defaults: name = inventory
   `hostname`; OS edition by precedence (`$defaultOsKey`): **(a) `oem_edition`** - the
   AUTHORITATIVE UEFI/MSDM licensed edition (see below), the "never guess" source, wins
   over all; (b) live SLS edition (full-Windows only); (c) inventory `os_caption`/`os`
@@ -370,12 +378,13 @@ Near the end of provisioning the orchestrator creates the **assigned user's loca
 admin account** so the machine is ready for its owner at first real logon (the
 kiosk still locks login until provisioning completes).
 
-- **Who:** resolves this machine in inventory by BIOS serial
-  (`GET /api/devices?q=<serial>`), reads the assigned **owner** (`owner_email`
-  preferred, `owner` display name for the full name). If the device record has no
-  linked owner, it falls back to the auto-discovered primary user from the last
-  agent snapshot (`GET /api/device/<id>` -> `system_info.primary_user_email` /
-  `primary_user_name`).
+- **Who:** resolves the assigned user via the token-free
+  **`GET /ingest/deploy/assigned-user?serial=<serial>`** (RFC-1918 only), which
+  returns the resolved `name` (owner display name → WinPE-typed `imaging_assigned_name`
+  → agent `primary_user_name`), `owner_email`, and `skip_assigned_user_account`. This
+  replaced the old `GET /api/devices?q=` + `/api/device/<id>` chain, which is
+  agent-auth-enforced and **403s pre-token during imaging** (why the assigned account
+  wasn't being created). Serial matches `devices.serial_number` + systeminfo bios/chassis.
 - **Account name (Juniper convention):** `local_` + the owner's **first name**,
   lowercased and stripped to letters/digits (e.g. owner "Faldu, Rishi" ->
   **`local_rishi`**; "Smith, Jay" -> `local_jay`). First name comes from the
