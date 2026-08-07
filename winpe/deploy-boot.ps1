@@ -121,14 +121,51 @@ if (-not (Test-Path $DeployShare)) {
     exit
 }
 
-# -- Run live deploy.ps1 from share -------------------------------------------
+# -- Run deploy with the branded imaging screen (Edge kiosk) ------------------
+# The full-screen imaging screen (X:\imaging-screen.html) is shown in Edge kiosk
+# mode; deploy.ps1 runs in a HIDDEN console and writes X:\deploy_log.txt, which
+# the screen tails to advance its 14 phase ticks. We PROBE that Edge actually
+# launches BEFORE starting deploy.ps1, so a non-viable browser can never leave a
+# half-imaged disk -- it cleanly falls back to the original interactive console
+# (deploy-ui.hta is also retained in the WIM as a manual fallback).
+# NOTE: with the kiosk front, deploy.ps1's 10s prompts auto-accept the serial/UEFI
+# defaults (re-images resolve by serial). This is the unattended on-machine path.
 $liveScript = "$DeployShare\scripts\deploy.ps1"
-if (Test-Path $liveScript) {
-    & $liveScript
-} else {
+if (-not (Test-Path $liveScript)) {
     Write-Host ''
     Write-Host "  ERROR: $liveScript not found on deploy share." -ForegroundColor Red
     Write-Host '  Run 01d-setup-deploy-share.ps1 on pc-deploy to populate the share.' -ForegroundColor Yellow
     Read-Host '  Press Enter to reboot'
     wpeutil reboot
+    exit
+}
+
+$edgeExe = 'X:\edge\msedge.exe'
+$screen  = 'X:\imaging-screen.html'
+$edgeUp  = $false
+if ((Test-Path $edgeExe) -and (Test-Path $screen)) {
+    Write-Host '  Launching branded imaging screen (Edge)...' -ForegroundColor Cyan
+    $edgeArgs = @('--kiosk','file:///X:/imaging-screen.html','--edge-kiosk-type=fullscreen',
+        '--no-first-run','--no-default-browser-check','--allow-file-access-from-files',
+        '--disable-gpu','--no-sandbox','--disable-features=Translate,msEdgeWelcome',
+        '--user-data-dir=X:\edgeprofile')
+    try {
+        $ui = Start-Process $edgeExe -ArgumentList $edgeArgs -PassThru -ErrorAction Stop
+        Start-Sleep 6
+        if (-not $ui.HasExited) { $edgeUp = $true }
+        else { Write-Host "  Edge exited immediately (exit $($ui.ExitCode)) - using console." -ForegroundColor Yellow }
+    } catch {
+        Write-Host "  Edge could not launch ($($_.Exception.Message)) - using console." -ForegroundColor Yellow
+    }
+}
+
+if ($edgeUp) {
+    # Edge is up and showing the screen. deploy.ps1 runs hidden; its log drives the screen.
+    $dep = Start-Process 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList @(
+        '-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$liveScript`"")
+    Wait-Process -Id $dep.Id -ErrorAction SilentlyContinue
+    try { if (-not $ui.HasExited) { $ui.Kill() } } catch {}
+} else {
+    # Fallback: original interactive console path (unchanged behavior).
+    & $liveScript
 }

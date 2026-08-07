@@ -338,6 +338,35 @@ if (-not (Test-Path $BrandKitRoot)) {
         }
         Write-Host '  Copied Poppins fonts into WIM.' -ForegroundColor Green
     }
+
+    # --- Modern imaging screen (Edge kiosk) + staged Chromium -------------------
+    # deploy-boot.ps1 shows imaging-screen.html full-screen in Edge, tailing
+    # X:\deploy_log.txt. Best-effort: if Edge is missing or won't launch in WinPE,
+    # deploy-boot.ps1 falls back to the console, so this never fails the build.
+    $screenSrc = Join-Path $winpeSourceDir 'imaging-screen.html'
+    if (Test-Path $screenSrc) {
+        Copy-Item $screenSrc "$mountDir\imaging-screen.html" -Force
+        Write-Host '  Copied imaging-screen.html into WIM (X:\imaging-screen.html).' -ForegroundColor Green
+    } else {
+        Write-Host "  WARN: imaging-screen.html not in $winpeSourceDir - console UI only." -ForegroundColor Yellow
+    }
+
+    # Stage the INSTALLED Microsoft Edge (trusted, code-signed) into the WIM at X:\edge.
+    $edgeApp = $null
+    foreach ($base in @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application", "$env:ProgramFiles\Microsoft\Edge\Application")) {
+        if ($base -and (Test-Path (Join-Path $base 'msedge.exe'))) { $edgeApp = $base; break }
+    }
+    if ($edgeApp) {
+        Write-Host "  Staging Microsoft Edge from $edgeApp (large, ~200MB)..." -ForegroundColor DarkGray
+        & robocopy $edgeApp "$mountDir\edge" /E /NFL /NDL /NJH /NJS /R:1 /W:1 | Out-Null
+        if (Test-Path "$mountDir\edge\msedge.exe") {
+            Write-Host '  Staged Edge into WIM (X:\edge\msedge.exe).' -ForegroundColor Green
+        } else {
+            Write-Host '  WARN: Edge copy did not land msedge.exe - kiosk will fall back to console.' -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host '  WARN: Microsoft Edge not found on build host - kiosk UI will fall back to console.' -ForegroundColor Yellow
+    }
 }
 
 # --- Step 6: Unmount and commit ------------------------------------------------
