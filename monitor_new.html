@@ -388,6 +388,9 @@ function onScroll(){
 loadSessions();
 setInterval(loadSessions,10000);
 
+/* Focus a machine passed as ?machine=<name> (the Imaging dashboard "Watch live" deep-link). */
+(function(){var m=null;try{m=new URLSearchParams(location.search).get('machine');}catch(e){}if(m){setTimeout(function(){try{sel(m);}catch(e){}},400);}})();
+
 /* ============================================================================
    Added for the branded build. Nothing above depends on either function.
    ============================================================================ */
