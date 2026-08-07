@@ -19,7 +19,7 @@
 # USAGE: .\10-setup-user.ps1
 
 param(
-    [string]$InventoryUrl = 'http://inventory.juniperdesign.local:8080',
+    [string]$InventoryUrl = 'http://192.168.5.141:8080',   # inventory server IP; the .local name did not resolve on imaged machines -> owner lookup silently failed (no account created)
     [switch]$DryRun
 )
 

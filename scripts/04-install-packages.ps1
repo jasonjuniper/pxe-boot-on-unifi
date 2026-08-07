@@ -391,6 +391,12 @@ try {
     Write-Log "  Could not determine primary NIC MAC: $_" -Level WARN
 }
 
+# BIOS/system serial - the authoritative identity key. A machine imaging over a shared
+# USB-C dongle reports the dongle MAC (excluded server-side), so the catalog query must be
+# able to resolve by serial or it gets ZERO packages. Sent alongside the MAC below.
+$primarySerial = ''
+try { $primarySerial = "$((Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue).SerialNumber)".Trim() } catch {}
+
 $diskFreePct = 100.0
 try {
     $disk = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'"
@@ -458,10 +464,11 @@ Publish-Event -PhaseKey 'install-packages' -Step 'catalog-install' -Status 'runn
 $catalogPackages = @()
 $catalogQueried  = $false
 
-if ($primaryMac) {
+if ($primaryMac -or $primarySerial) {
     try {
         $macEnc = [uri]::EscapeDataString($primaryMac)
-        $catalogUrl = "$invBase/api/deploy/assignments?mac=$macEnc&disk_free_pct=$diskFreePct"
+        $serEnc = [uri]::EscapeDataString($primarySerial)
+        $catalogUrl = "$invBase/api/deploy/assignments?mac=$macEnc&serial=$serEnc&disk_free_pct=$diskFreePct"
         # PS 5.1 fix: assign then wrap (@(Invoke-RestMethod) collapses a top-level JSON array to 1 elem)
         $catalogPackages = Invoke-RestMethod $catalogUrl -TimeoutSec 15 -ErrorAction Stop
         $catalogPackages = @($catalogPackages)
