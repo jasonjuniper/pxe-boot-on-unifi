@@ -114,56 +114,28 @@ if (-not $serial) {
 Write-Host "==> setup-user: resolved serial '$serial'" -ForegroundColor Cyan
 Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'running' -Message "Resolving assigned user for serial '$serial'"
 
-# --- 2. Look up the assigned owner in inventory -----------------------------
-$ownerEmail = $null; $ownerName = $null; $deviceId = $null
+# --- 2. Resolve the assigned owner (TOKEN-FREE, RFC-1918) -------------------
+# Uses /ingest/deploy/assigned-user, NOT /api/devices: the /api surface is agent-auth
+# gated and imaging has no token at this stage, so the old /api/devices + /api/device/{id}
+# lookups silently 403'd -> no owner -> no account. This /ingest endpoint already resolves
+# owner display name -> WinPE-typed name -> last primary_user_name and returns owner_email
+# plus the skip flag; it is RFC-1918-gated at the route.
+$ownerEmail = $null; $ownerName = $null
 try {
-    $hits = Invoke-RestMethod ("$InventoryUrl/api/devices?q=" + [uri]::EscapeDataString($serial)) -TimeoutSec 15 -ErrorAction Stop
+    $au = Invoke-RestMethod ("$InventoryUrl/ingest/deploy/assigned-user?serial=" + [uri]::EscapeDataString($serial)) -TimeoutSec 15 -ErrorAction Stop
 } catch {
-    Write-Host "WARN: inventory device lookup failed ($InventoryUrl): $_" -ForegroundColor Yellow
-    Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'warning' -Message "Inventory device lookup failed ($InventoryUrl): $($_.Exception.Message)"
+    Write-Host "WARN: assigned-user lookup failed ($InventoryUrl): $_" -ForegroundColor Yellow
+    Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'warning' -Message "Assigned-user lookup failed: $($_.Exception.Message)"
     exit 0
 }
-$match = @($hits | Where-Object { "$($_.serial_number)".Trim().ToLower() -eq $serial.ToLower() }) | Select-Object -First 1
-if (-not $match) { $match = @($hits) | Select-Object -First 1 }   # single-result fallback
-if ($match) {
-    $deviceId   = $match.id
-    $ownerEmail = "$($match.owner_email)".Trim()
-    $ownerName  = "$($match.owner)".Trim()
-}
-
-# --- 2b. Provisioning policy: skip the assigned-user account? ----------------
-# When the device is flagged 'skip_assigned_user_account' in inventory, this
-# machine uses ONLY the canned junadmin account - create no local_<owner>.
-# Set via POST /api/devices/<id>/assigned-user-account; returned by /api/devices.
-if ($match -and ($match.skip_assigned_user_account -eq $true -or
-                 "$($match.skip_assigned_user_account)" -match '^(?i:true|1)$')) {
+# Provisioning policy: 'skip_assigned_user_account' -> junadmin only, no local_<owner>.
+if ($au.skip_assigned_user_account -eq $true -or "$($au.skip_assigned_user_account)" -match '^(?i:true|1)$') {
     Write-Host "Device flagged 'skip assigned-user account' in inventory - junadmin only, no local_<user> created (not an error)." -ForegroundColor Yellow
     Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'info' -Message 'Assigned-user account disabled in inventory (junadmin-only) - skipped'
     exit 0
 }
-
-# Fallback: device record has no linked owner -> use the auto-discovered
-# primary user from the last agent snapshot (system_info.primary_user_*).
-if ((-not $ownerEmail) -and $deviceId) {
-    try {
-        $detail = Invoke-RestMethod "$InventoryUrl/api/device/$deviceId" -TimeoutSec 15 -ErrorAction Stop
-        $si = $detail.system_info
-        if ($si) {
-            if ($si.primary_user_email) { $ownerEmail = "$($si.primary_user_email)".Trim() }
-            if (-not $ownerName -and $si.primary_user_name) { $ownerName = "$($si.primary_user_name)".Trim() }
-        }
-    } catch {}
-}
-
-# Fallback: operator-entered name from the WinPE pre-wipe no-user prompt
-# (devices.imaging_assigned_name), surfaced token-free via /ingest/deploy/assigned-user.
-if ((-not $ownerEmail) -and (-not $ownerName)) {
-    try {
-        $au = Invoke-RestMethod ("$InventoryUrl/ingest/deploy/assigned-user?serial=" + [uri]::EscapeDataString($serial)) -TimeoutSec 10 -ErrorAction Stop
-        if ($au.name) { $ownerName = "$($au.name)".Trim(); Write-Host "  Using WinPE-entered assigned user '$ownerName'." -ForegroundColor Cyan }
-    } catch {}
-}
-
+$ownerEmail = "$($au.owner_email)".Trim()
+$ownerName  = "$($au.name)".Trim()   # owner display name, else WinPE-typed name, else last primary_user_name
 if (-not $ownerEmail -and -not $ownerName) {
     Write-Host "No assigned user on this device record - skipping local-account setup (not an error)." -ForegroundColor Yellow
     Publish-Event -PhaseKey 'setup-user' -Step 'resolve-owner' -Status 'info' -Message 'No assigned user on device record - local-account setup skipped'
