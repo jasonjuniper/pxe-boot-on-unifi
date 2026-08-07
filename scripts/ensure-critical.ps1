@@ -77,60 +77,95 @@ $state = Get-State
 # =====================================================================
 #  Wi-Fi
 # =====================================================================
+function Get-WifiConnection {
+    Get-NetConnectionProfile -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceAlias -match 'Wi-Fi|Wireless' } | Select-Object -First 1
+}
+function Get-WlanProfiles {
+    try { (netsh wlan show profiles) | Select-String 'All User Profile\s*:\s*(.+)$' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() } | Where-Object { $_ } } catch { @() }
+}
+function Set-WifiCoexist {
+    param($Nic)
+    # THE root-cause fix: by default Windows drops/skips Wi-Fi whenever a wired link
+    # is up ("minimize simultaneous connections"). During imaging the wired dongle is
+    # always present, so a saved auto Wi-Fi profile never actually connects and every
+    # reboot comes up wired-only. fMinimizeConnections=0 lets Wi-Fi stay up alongside
+    # Ethernet; we also make sure WLAN autoconfig is enabled on the adapter.
+    try {
+        $gp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+        if (-not (Test-Path $gp)) { New-Item -Path $gp -Force | Out-Null }
+        Set-ItemProperty -Path $gp -Name 'fMinimizeConnections' -Value 0 -Type DWord -Force
+    } catch {}
+    try { if ($Nic) { netsh wlan set autoconfig enabled=yes interface="$($Nic.Name)" 2>&1 | Out-Null } } catch {}
+}
+
 function Ensure-Wifi {
     if (Test-Path $WifiOk) { return $true }
 
     $nic = Get-NetAdapter -ErrorAction SilentlyContinue |
-           Where-Object { $_.PhysicalMediaType -match 'Native 802.11|Wireless' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11' }
+           Where-Object { $_.PhysicalMediaType -match 'Native 802.11|Wireless' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11' } |
+           Select-Object -First 1
     if (-not $nic) {
         Log "Wi-Fi: no wireless adapter present - N/A (satisfied)."
         Mark-Ok $WifiOk 'na-no-adapter'
         return $true
     }
 
-    $connected = (Get-NetConnectionProfile -ErrorAction SilentlyContinue |
-                  Where-Object { $_.InterfaceAlias -match 'Wi-Fi|Wireless' } | Select-Object -First 1)
+    # Always assert coexistence-with-wired + autoconfig first (idempotent).
+    Set-WifiCoexist -Nic $nic
+
+    $connected = Get-WifiConnection
     if ($connected) {
-        # Belt-and-suspenders: ensure the connected profile is Private (a known prior gap).
         try { Set-NetConnectionProfile -InterfaceIndex $connected.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue } catch {}
-        Log "Wi-Fi: already connected to '$($connected.Name)' (set Private). Satisfied."
+        Log "Wi-Fi: already connected to '$($connected.Name)' (coexist set, profile Private). Satisfied."
         Mark-Ok $WifiOk "connected:$($connected.Name)"
         return $true
     }
 
-    # Not connected + adapter present -> sanity-check server reachability, then re-run 06.
-    $reachable = $false
-    try { $null = Invoke-RestMethod "$InvIp/api/management/wifi" -TimeoutSec 8 -ErrorAction Stop; $reachable = $true } catch {}
-    if (-not $reachable) {
+    # Not connected. Resolve the office SSID (server preferred, else a saved profile).
+    $ssid = $null
+    try { $ssid = "$((Invoke-RestMethod "$InvIp/api/management/wifi" -TimeoutSec 8 -ErrorAction Stop).ssid)".Trim() } catch {}
+    $profiles = Get-WlanProfiles
+    if (-not $ssid) { $ssid = @($profiles)[0] }
+
+    # If the office profile isn't saved yet, run 06 to fetch creds + add it (user=all/auto).
+    if ($ssid -and (@($profiles) -notcontains $ssid)) {
+        Log "Wi-Fi: profile '$ssid' not saved yet - running 06-join-wifi.ps1 to add it."
+        Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'running' -Message "Safety-net adding Wi-Fi profile '$ssid'."
+        try { & "$ScriptsDir\06-join-wifi.ps1" -InventoryUrl $InvIp | Out-Null } catch { Log "Wi-Fi: 06 threw: $_" }
+        $profiles = Get-WlanProfiles
+        if (-not $ssid) { $ssid = @($profiles)[0] }
+    }
+
+    if (-not $ssid) {
         $state.wifi_attempts++
-        Log "Wi-Fi: adapter present but not connected and Wi-Fi creds API unreachable (attempt $($state.wifi_attempts)/$MaxAttempts). Will retry."
-        if ($state.wifi_attempts -ge $MaxAttempts) {
-            $state.wifi_gaveup = $true
-            Log "Wi-Fi: attempt budget exhausted - giving up (machine may only have wired/no office Wi-Fi in range)."
-            Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'warning' -Message 'Safety-net could not join Wi-Fi after retries - gave up (no creds API / no association).'
-        }
+        Log "Wi-Fi: no SSID resolved and no saved profile (attempt $($state.wifi_attempts)/$MaxAttempts) - creds API likely unreachable. Retry."
+        if ($state.wifi_attempts -ge $MaxAttempts) { $state.wifi_gaveup = $true; Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'warning' -Message 'Safety-net had no Wi-Fi SSID/profile to connect after retries - gave up.' }
         return $false
     }
 
-    Log "Wi-Fi: not connected - running 06-join-wifi.ps1 (safety net)."
-    Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'running' -Message 'Safety-net re-running Wi-Fi join (main pass did not complete it).'
-    try { & "$ScriptsDir\06-join-wifi.ps1" -InventoryUrl $InvIp | Out-Null } catch { Log "Wi-Fi: 06 threw: $_" }
+    # EXPLICIT connect - this is the key: an operator-style `netsh wlan connect`
+    # associates Wi-Fi even while the wired dongle is up (Windows auto-connect will
+    # not). This is what was missing on the final boot.
+    Log "Wi-Fi: not connected - issuing explicit connect to '$ssid'."
+    Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'running' -Message "Safety-net forcing Wi-Fi connect to '$ssid'."
+    try { netsh wlan connect name="$ssid" 2>&1 | Out-Null } catch {}
+    Start-Sleep 7
 
-    Start-Sleep 6
-    $now = (Get-NetConnectionProfile -ErrorAction SilentlyContinue |
-            Where-Object { $_.InterfaceAlias -match 'Wi-Fi|Wireless' } | Select-Object -First 1)
+    $now = Get-WifiConnection
     if ($now) {
         try { Set-NetConnectionProfile -InterfaceIndex $now.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue } catch {}
-        Log "Wi-Fi: connected to '$($now.Name)' after safety-net run (set Private)."
-        Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'ok' -Message "Safety-net joined Wi-Fi '$($now.Name)' and set profile Private."
+        Log "Wi-Fi: connected to '$($now.Name)' after explicit connect (set Private)."
+        Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'ok' -Message "Safety-net connected Wi-Fi '$($now.Name)' (explicit connect) and set profile Private."
         Mark-Ok $WifiOk "ensure:$($now.Name)"
         return $true
     }
     $state.wifi_attempts++
-    Log "Wi-Fi: safety-net run did not confirm a connection (attempt $($state.wifi_attempts)/$MaxAttempts)."
+    Log "Wi-Fi: explicit connect to '$ssid' did not confirm (attempt $($state.wifi_attempts)/$MaxAttempts)."
     if ($state.wifi_attempts -ge $MaxAttempts) {
         $state.wifi_gaveup = $true
-        Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'warning' -Message 'Safety-net could not confirm Wi-Fi association after retries - gave up.'
+        Publish-Event -PhaseKey 'join-wifi' -Step 'ensure-critical' -Status 'warning' -Message "Safety-net could not associate Wi-Fi '$ssid' after retries - gave up (out of range / bad PSK?)."
     }
     return $false
 }

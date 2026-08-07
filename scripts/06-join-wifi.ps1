@@ -55,6 +55,19 @@ if (-not $wifiNic) {
     exit 0
 }
 
+# Let Wi-Fi stay up ALONGSIDE the wired imaging dongle. By default Windows
+# "minimizes simultaneous connections" and will not bring Wi-Fi up while a wired
+# link is present - so a saved auto profile never actually connects during/after
+# imaging (every boot comes up wired-only). Set fMinimizeConnections=0 + ensure
+# WLAN autoconfig is enabled so the saved profile can associate. Idempotent; runs
+# even on the already-connected early-exit path below.
+try {
+    $gp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy'
+    if (-not (Test-Path $gp)) { New-Item -Path $gp -Force | Out-Null }
+    Set-ItemProperty -Path $gp -Name 'fMinimizeConnections' -Value 0 -Type DWord -Force
+    netsh wlan set autoconfig enabled=yes interface="$(@($wifiNic)[0].Name)" 2>&1 | Out-Null
+} catch {}
+
 # --- Check if already connected ----------------------------------------------
 $current = (Get-NetConnectionProfile -ErrorAction SilentlyContinue |
             Where-Object { $_.InterfaceAlias -match 'Wi-Fi|Wireless' } |

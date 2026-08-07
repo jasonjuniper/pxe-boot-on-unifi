@@ -592,6 +592,20 @@ update is skipped/flagged so imaging COMPLETES, never aborts.
 
 ### Wi-Fi join during imaging
 Imaged PCs auto-join the corporate Wi-Fi during post-install.
+
+> **Root cause of "Wi-Fi not connected on final boot" (fixed 2026-08-07).** The
+> profile WAS being saved correctly (bootstrap adds a `user=all` / `connectionMode=auto`
+> "Juniper" profile), but Windows' default **"minimize simultaneous connections"**
+> (`fMinimizeConnections`) makes it refuse to bring Wi-Fi up while a wired link is
+> present — and the imaging USB/USB-C **Ethernet dongle is attached the whole time**,
+> so Wi-Fi never actually associates and every reboot comes up wired-only. Because
+> Wi-Fi looked "already handled," `06`'s `already-connected` early-exit also skipped
+> re-asserting anything. Two-part fix: (1) `06` and the safety net set
+> `HKLM\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy\fMinimizeConnections=0`
+> (+ `netsh wlan set autoconfig enabled=yes`) so Wi-Fi may coexist with wired; (2)
+> `JuniperEnsureCritical` issues an **explicit `netsh wlan connect`** on the final boot —
+> an operator-style connect associates Wi-Fi even with the dongle up, which Windows
+> auto-connect will not do. This is the "first-boot connect" the fleet was missing.
 - **Source chain:** UniFi controller (read via the Inventory `X-API-Key`,
   `GET /proxy/network/api/s/default/rest/wlanconf`) -> inventory `/api/management/wifi`
   endpoint -> `06-join-wifi.ps1` phase. The PSK is **never** in the repo or in any
