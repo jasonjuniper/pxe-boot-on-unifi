@@ -934,6 +934,15 @@ try {
     New-Item -ItemType Directory -Force $jsDir | Out-Null
     $npScript = Join-Path $jsDir 'net-private.ps1'
     @'
+# Reconnect Wi-Fi if a saved all-user profile exists and Wi-Fi is down. The imaging
+# every-run re-join is gone once the orchestrator tears down, and the auto profile does
+# not reliably reconnect on the first clean boot - so this persistent task covers it
+# (it also fires on the network-connect event, which then flips the profile Private).
+$w = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.PhysicalMediaType -match '802\.11' -or $_.Name -match 'Wi-?Fi|Wireless' } | Select-Object -First 1
+if ($w -and $w.Status -ne 'Up') {
+    $p = (netsh wlan show profiles) | Select-String 'All User Profile\s*:\s*(.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() } | Where-Object { $_ } | Select-Object -First 1
+    if ($p) { netsh wlan connect name="$p" 2>&1 | Out-Null; Start-Sleep -Seconds 3 }
+}
 Get-NetConnectionProfile -ErrorAction SilentlyContinue |
     Where-Object { $_.NetworkCategory -ne 'DomainAuthenticated' -and $_.NetworkCategory -ne 'Private' } |
     ForEach-Object { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue }
