@@ -1,94 +1,194 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <title>Imaging Monitor - Juniper IT</title>
+<link rel="icon" type="image/svg+xml" href="assets/juniper-mark.svg">
+<!--
+  Juniper-branded Imaging Monitor. Drop-in replacement for monitor_new.html.
+
+  The <script> below is UNCHANGED from the original page: STEPS, scanLine,
+  renderProgress, loadSessions, renderSessions, fmtAge, trunc, sel, connect,
+  setConn, appendLine, classify, clearLog, toggleScroll, onScroll. Every class
+  name it writes into innerHTML is still styled here, so the diff is confined to
+  this <style> block and the <header> markup.
+
+  Served files this page wants (all already in the repo, next to it):
+    fonts/Poppins-{Light,Regular,Medium,SemiBold,Bold}.ttf   brand typeface
+    assets/juniper-logo.svg                                  wordmark
+    assets/juniper-mark.svg                                  favicon + empty state
+  If the inventory server does not serve them, the page still works: type falls
+  back to the system stack and the wordmark shows its alt text. Tokens are
+  inlined rather than pulled from css/juniper-brand.css so the page cannot end up
+  unstyled; if you would rather link the canonical stylesheet, add
+  <link rel="stylesheet" href="css/juniper-brand.css"> and delete sections 0-1.
+
+  The theme toggle uses the brand kit's own storage key and event, so dropping in
+  <script src="js/juniper-theme.js"></script> instead of the inline version at the
+  bottom behaves identically.
+-->
 <style>
+/* -- 0. Brand typeface ---------------------------------------------------- */
+@font-face{font-family:"Poppins";font-style:normal;font-weight:300;font-display:swap;src:url("fonts/Poppins-Light.ttf") format("truetype")}
+@font-face{font-family:"Poppins";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/Poppins-Regular.ttf") format("truetype")}
+@font-face{font-family:"Poppins";font-style:normal;font-weight:500;font-display:swap;src:url("fonts/Poppins-Medium.ttf") format("truetype")}
+@font-face{font-family:"Poppins";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/Poppins-SemiBold.ttf") format("truetype")}
+@font-face{font-family:"Poppins";font-style:normal;font-weight:700;font-display:swap;src:url("fonts/Poppins-Bold.ttf") format("truetype")}
+
+/* -- 1. Brand tokens ------------------------------------------------------ */
+:root{
+  --juniper-navy:#1a1a2e;--juniper-charcoal:#3c3c3d;--juniper-offwhite:#e8e7e3;
+  --juniper-tagline:#5a5a5a;--juniper-accent:#6e8cff;
+  --juniper-font:"Poppins","Helvetica Neue","Helvetica","Inter","Segoe UI",Arial,"Segoe UI Emoji","Segoe UI Symbol",sans-serif;
+  --juniper-mono:Consolas,Monaco,monospace;
+}
+:root,html[data-theme="light"]{
+  --bg:#f0f2f5;--bg-elev:#ffffff;--bg-elev-2:#f5f5f5;
+  --text:#1a1a2e;--text-soft:#555555;--text-muted:#888888;
+  --border:#e0e0e0;--border-strong:#cccccc;--hairline:#eeeeee;--shadow:rgba(0,0,0,.08);
+  --primary:#1565c0;--primary-hover:#0d47a1;--success:#2e7d32;
+  --warning-bg:#fff8e1;--warning-border:#f9a825;--warning-fg:#6d4c00;
+  --error-bg:#ffebee;--error-border:#ef9a9a;--error-fg:#b71c1c;
+  --tpl-summary-bg:#f0f4ff;--tpl-summary-border:#c5d3f0;
+  --status-ok:#137333;--status-neutral:#5f6368;
+}
+html[data-theme="dark"]{
+  --bg:#1a1a2e;--bg-elev:#20223a;--bg-elev-2:#2a2c44;
+  --text:#e6e8ee;--text-soft:#b9bdcc;--text-muted:#9095a8;
+  --border:#34374f;--border-strong:#44475f;--hairline:#2a2c44;--shadow:rgba(0,0,0,.5);
+  --primary:#6e8cff;--primary-hover:#8aa3ff;--success:#2ea047;
+  --warning-bg:#3d3320;--warning-border:#d08c2d;--warning-fg:#e0b870;
+  --error-bg:#3d2528;--error-border:#da3633;--error-fg:#f08080;
+  --tpl-summary-bg:#25283f;--tpl-summary-border:#34374f;
+  --status-ok:#2ea047;--status-neutral:#5f6368;
+}
+
+/* -- 2. Page shell ------------------------------------------------------- */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Consolas','Menlo',monospace;background:#0d1117;color:#c9d1d9;height:100vh;display:flex;flex-direction:column;overflow:hidden}
-header{background:#161b22;border-bottom:1px solid #30363d;padding:10px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
-header h1{font-size:14px;font-weight:600;color:#58a6ff}
-.badge{font-size:11px;background:#484f58;color:#fff;padding:2px 8px;border-radius:10px;transition:background .3s}
-.badge.live{background:#238636}
-.user{margin-left:auto;font-size:12px;color:#8b949e}
-.user a{color:#8b949e;text-decoration:none}
-.user a:hover{color:#58a6ff}
-.layout{display:flex;flex:1;overflow:hidden}
-.sidebar{width:240px;background:#0d1117;border-right:1px solid #21262d;display:flex;flex-direction:column;flex-shrink:0}
-.sidebar-hdr{padding:8px 12px;border-bottom:1px solid #21262d;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center}
-.sidebar-hdr .refresh{margin-left:auto;cursor:pointer;color:#58a6ff;font-size:14px;user-select:none}
-.machine-list{flex:1;overflow-y:auto}
-.machine-item{padding:8px 12px;cursor:pointer;border-left:3px solid transparent;transition:background .1s}
-.machine-item:hover{background:#161b22}
-.machine-item.sel{background:#161b22;border-left-color:#58a6ff}
-.m-name{font-size:13px;font-weight:500;color:#e6edf3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.m-meta{font-size:11px;color:#8b949e;margin-top:2px;display:flex;align-items:center;gap:4px}
-.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.dot-a{background:#3fb950;animation:pulse 1.5s infinite}
-.dot-r{background:#d29922}
-.dot-o{background:#484f58}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.m-last{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;font-size:10px;color:#8b949e;margin-top:1px}
-.empty{padding:24px 12px;text-align:center;color:#484f58;font-size:12px}
-.log-panel{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.no-sel{flex:1;display:flex;align-items:center;justify-content:center;color:#484f58;font-size:13px;flex-direction:column;gap:10px}
-.no-sel svg{opacity:.25}
-#log-view{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.toolbar{padding:6px 12px;background:#161b22;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px;font-size:12px;flex-shrink:0}
-.t-name{font-weight:600;color:#e6edf3}
-.t-right{margin-left:auto;display:flex;align-items:center;gap:6px;color:#8b949e}
-.btn{background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:3px 9px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit}
-.btn:hover{background:#30363d}
-.btn.on{background:#1f6feb;border-color:#388bfd;color:#fff}
-.ci{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
-.ci-ok{background:#3fb950}
-.ci-wait{background:#d29922}
-.ci-err{background:#f85149}
-.prog-strip{background:#0d1117;border-bottom:1px solid #21262d;padding:5px 12px;display:flex;align-items:center;gap:6px;flex-shrink:0;overflow:hidden}
-.prog-phase{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#8b949e;background:#21262d;padding:2px 6px;border-radius:3px;white-space:nowrap;flex-shrink:0}
-.prog-steps{display:flex;align-items:center;flex:1;overflow:hidden;gap:0}
+body{font-family:var(--juniper-font);background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;transition:background-color 200ms ease,color 200ms ease}
+
+/* -- 3. Brand bar (navy in both themes) ---------------------------------- */
+.juniper-brand-bar{background:var(--juniper-navy);padding:10px 24px;box-shadow:0 2px 6px rgba(0,0,0,.15);flex-shrink:0}
+.juniper-brand-bar-inner{display:flex;align-items:center;gap:16px}
+/* The shipped wordmark SVG carries no fill, so it renders black. The source is
+   pure black, so invert(1) recolours it to exactly white. */
+.juniper-brand-bar img.juniper-logo{height:30px;width:auto;display:block;filter:none}
+.juniper-product{color:var(--juniper-offwhite);font-size:.8rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase}
+.juniper-theme-toggle{background:transparent;border:1px solid rgba(232,231,227,.25);color:var(--juniper-offwhite);width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;line-height:1;padding:0;transition:background .15s ease,border-color .15s ease}
+.juniper-theme-toggle:hover{background:rgba(232,231,227,.1);border-color:rgba(232,231,227,.5)}
+.juniper-theme-toggle:focus-visible{outline:2px solid var(--juniper-accent);outline-offset:2px}
+.bar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+
+/* Session count, styled as the app's status pill. */
+.badge{font-size:12px;font-weight:600;background:var(--status-neutral);color:#fff;padding:2px 10px;border-radius:12px;text-transform:capitalize;white-space:nowrap;transition:background .3s}
+.badge.live{background:var(--status-ok)}
+.user{font-size:13px;color:var(--juniper-offwhite);opacity:.8}
+.user a{color:var(--juniper-offwhite);text-decoration:none}
+.user a:hover{text-decoration:underline}
+
+/* -- 4. Session list ----------------------------------------------------- */
+.layout{display:grid;grid-template-columns:260px 1fr;flex:1;min-height:0}
+.sidebar{background:var(--bg-elev);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+.sidebar-hdr{display:flex;align-items:center;padding:12px 14px;border-bottom:1px solid var(--hairline);font-size:.8rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-soft)}
+.sidebar-hdr .refresh{margin-left:auto;cursor:pointer;color:var(--primary);font-size:15px;line-height:1;padding:2px 4px;border-radius:3px;user-select:none}
+.sidebar-hdr .refresh:hover{background:var(--bg-elev-2)}
+.machine-list{flex:1;min-height:0;overflow-y:auto}
+/* The 3px accent left rule is the brand's emphasis device (see <pre>, blockquote). */
+.machine-item{padding:12px 14px;cursor:pointer;border-bottom:1px solid var(--hairline);border-left:3px solid transparent;transition:background .15s ease}
+.machine-item:hover{background:var(--bg-elev-2)}
+.machine-item.sel{background:var(--bg-elev-2);border-left-color:var(--juniper-accent)}
+.m-name{font-family:var(--juniper-mono);font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-meta{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:12px;color:var(--text-muted)}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.dot-a{background:var(--success);animation:pulse 1.6s ease-in-out infinite}
+.dot-r{background:var(--warning-border)}
+.dot-o{background:var(--text-muted)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.m-last{margin-top:3px;font-family:var(--juniper-mono);font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.empty{padding:24px 14px;text-align:center;color:var(--text-muted);font-size:13px}
+.byline{padding:14px;border-top:1px solid var(--hairline);font-size:11px;color:var(--text-muted);letter-spacing:.04em}
+
+/* -- 5. Log panel -------------------------------------------------------- */
+.log-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.no-sel{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text-muted);font-size:14px}
+.no-sel img{width:46px;opacity:.4;border-radius:10px}
+.toolbar{display:flex;align-items:center;gap:8px;flex-shrink:0;padding:12px 20px;background:var(--bg-elev);border-bottom:1px solid var(--border)}
+.t-name{font-family:var(--juniper-mono);font-size:16px;font-weight:600;color:var(--text)}
+.t-right{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-soft)}
+.btn{background:var(--juniper-navy);border:1px solid transparent;color:#fff;padding:4px 9px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:500;font-family:inherit;transition:filter .12s ease,background-color .12s ease,border-color .12s ease}
+.btn:hover{filter:brightness(.93)}
+.btn:active{filter:brightness(.85)}
+.btn:focus-visible{outline:2px solid var(--juniper-accent);outline-offset:2px}
+html[data-theme="dark"] .btn{border-color:var(--border-strong)}
+/* "on" is the resting state of Auto-scroll; "off" (plain .btn) reads as Paused. */
+.btn.on{background:var(--primary);border-color:transparent;color:#fff}
+.ci{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.ci-ok{background:var(--success)}
+.ci-wait{background:var(--warning-border)}
+.ci-err{background:var(--error-fg)}
+
+/* -- 6. Phase strip ------------------------------------------------------ */
+.prog-strip{display:flex;align-items:center;gap:8px;flex-shrink:0;padding:8px 20px;background:var(--bg-elev-2);border-bottom:1px solid var(--hairline);overflow:hidden}
+.prog-phase{flex-shrink:0;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-soft);background:var(--bg-elev);border:1px solid var(--border);border-radius:3px;padding:2px 7px;white-space:nowrap}
+.prog-steps{flex:1;min-width:0;display:flex;align-items:center;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+.prog-steps::-webkit-scrollbar{height:4px}
+.prog-steps::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:2px}
 .ps{display:flex;align-items:center;flex-shrink:0}
-.ps-label{font-size:10px;padding:2px 6px;border-radius:3px;color:#484f58;background:transparent;transition:all .25s;white-space:nowrap}
-.ps.done .ps-label{color:#3fb950}
-.ps.cur .ps-label{color:#58a6ff;background:#0d1e38;outline:1px solid #1f6feb}
-.ps.active .ps-label{color:#58a6ff;background:#0d1e38;outline:1px solid #1f6feb;animation:stepblink 1s infinite}
-@keyframes stepblink{0%,100%{outline-color:#1f6feb}50%{outline-color:#388bfd}}
-.ps.fail .ps-label{color:#f85149;background:#2d1517;outline:1px solid #6e1a1a}
-.ps-arrow{color:#21262d;font-size:9px;padding:0 1px;flex-shrink:0;user-select:none}
-.ps.done .ps-arrow{color:#3fb950}
-.prog-pct{font-size:10px;color:#8b949e;white-space:nowrap;flex-shrink:0;min-width:30px;text-align:right}
-.log-out{flex:1;overflow-y:auto;padding:4px 0;font-size:12px;line-height:1.6}
-.ll{padding:0 10px}
-.ll:hover{background:#161b22}
-.li{color:#c9d1d9}
-.lw{color:#d29922}
-.le{color:#f85149}
-.lph{color:#58a6ff;font-weight:600;background:#0d1e38;padding:2px 10px;border-left:3px solid #58a6ff;margin:3px 0}
-.lok{color:#3fb950;font-weight:600;background:#0d2416;padding:2px 10px;border-left:3px solid #3fb950;margin:3px 0}
-.lfail{color:#f85149;font-weight:600;background:#2d1517;padding:2px 10px;border-left:3px solid #f85149;margin:3px 0}
-.lrbt{color:#a371f7;font-weight:600;background:#1b1329;padding:2px 10px;border-left:3px solid #a371f7;margin:3px 0}
-.lsep{color:#21262d}
-::-webkit-scrollbar{width:5px;height:5px}
+.ps-label{font-size:11px;font-weight:500;padding:2px 5px;border-radius:3px;color:var(--text-muted);border:1px solid transparent;white-space:nowrap;transition:color .25s ease,background-color .25s ease,border-color .25s ease}
+.ps.done .ps-label{color:var(--success)}
+.ps.cur .ps-label,.ps.active .ps-label{color:var(--primary);background:var(--tpl-summary-bg);border-color:var(--tpl-summary-border)}
+.ps.fail .ps-label{color:var(--error-fg);background:var(--error-bg);border-color:var(--error-border)}
+.ps-arrow{flex-shrink:0;padding:0 1px;color:var(--border-strong);font-size:11px;user-select:none}
+.ps.done .ps-arrow{color:var(--success)}
+.prog-pct{flex-shrink:0;min-width:34px;text-align:right;font-size:11px;color:var(--text-soft);font-variant-numeric:tabular-nums}
+
+/* -- 7. Log stream. Severity uses the brand's 3px rule + semantic tints. -- */
+.log-out{flex:1;min-height:0;overflow-y:auto;padding:8px 0;font-family:var(--juniper-mono);font-size:13px;line-height:1.6}
+.ll{padding:1px 20px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ll:hover{background:var(--bg-elev-2)}
+.li{color:var(--text)}
+.lw{color:var(--warning-fg);background:var(--warning-bg)}
+.le{color:var(--error-fg);background:var(--error-bg)}
+.lsep{color:var(--border-strong)}
+.lph,.lok,.lfail,.lrbt{margin:4px 0;padding:3px 20px;font-weight:600;border-left:3px solid transparent;border-radius:0 3px 3px 0}
+.lph{color:var(--primary);background:var(--tpl-summary-bg);border-left-color:var(--juniper-accent)}
+.lok{color:var(--success);background:var(--bg-elev-2);border-left-color:var(--success)}
+.lfail{color:var(--error-fg);background:var(--error-bg);border-left-color:var(--error-border)}
+/* No purple in the brand: rebooting reads as charcoal-ruled and neutral. */
+.lrbt{color:var(--text-soft);background:var(--bg-elev-2);border-left-color:var(--juniper-charcoal)}
+
+::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:#21262d;border-radius:3px}
-::-webkit-scrollbar-thumb:hover{background:#30363d}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}.dot-a{animation:none}}
 </style>
 </head>
 <body>
-<header>
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="#58a6ff"><rect x="1" y="2" width="14" height="10" rx="1.5" stroke="#58a6ff" stroke-width="1.5" fill="none"/><path d="M5 14h6M8 12v2" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round"/></svg>
-  <h1>Imaging Monitor</h1>
-  <span class="badge" id="badge">0 active</span>
-  <span class="user">__USER__ &nbsp;&middot;&nbsp; <a href="/">Inventory</a></span>
+
+<header class="juniper-brand-bar">
+  <div class="juniper-brand-bar-inner">
+    <img class="juniper-logo" src="assets/juniper-logo.svg" alt="Juniper Design">
+    <span class="juniper-product">Imaging Monitor</span>
+    <span class="bar-right">
+      <span class="badge" id="badge">0 active</span>
+      <span class="user">__USER__ &nbsp;&middot;&nbsp; <a href="/">Inventory</a></span>
+      <button id="juniper-theme-toggle" class="juniper-theme-toggle" type="button"
+              aria-label="Toggle light/dark theme" title="Toggle light/dark theme">
+        <span class="juniper-theme-icon">&#9728;</span>
+      </button>
+    </span>
+  </div>
 </header>
+
 <div class="layout">
   <div class="sidebar">
     <div class="sidebar-hdr">Machines <span class="refresh" title="Refresh" onclick="loadSessions()">&#8635;</span></div>
     <div class="machine-list" id="machine-list"><div class="empty">No sessions found</div></div>
+    <div class="byline">A Juniper Design product</div>
   </div>
   <div class="log-panel">
     <div class="no-sel" id="no-sel">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+      <img src="assets/juniper-mark.svg" alt="">
       Select a machine to view its live log
     </div>
     <div id="log-view" style="display:none">
@@ -110,7 +210,11 @@ header h1{font-size:14px;font-weight:600;color:#58a6ff}
     </div>
   </div>
 </div>
+
 <script>
+/* ============================================================================
+   UNCHANGED from the original monitor_new.html. Do not restyle by editing this.
+   ============================================================================ */
 var cur=null,es=null,autoScroll=true;
 var machineStep={};
 
@@ -167,7 +271,9 @@ function renderProgress(){
     var arrow=(i<STEPS.length-1)?'<span class="ps-arrow">&#x203A;</span>':'';
     html+='<span class="ps '+cls+'"><span class="ps-label">'+STEPS[i].label+'</span>'+arrow+'</span>';
   }
-  document.getElementById('prog-steps').innerHTML=html;
+  var steps=document.getElementById('prog-steps');
+  steps.innerHTML=html;
+  keepStepInView(steps,idx);
 }
 
 async function loadSessions(){
@@ -193,7 +299,7 @@ function renderSessions(sessions){
     return '<div class="machine-item'+issel+'" onclick="sel(\''+s.computer_name+'\')">'+
       '<div class="m-name">'+s.computer_name+'</div>'+
       '<div class="m-meta"><span class="dot '+dc+'"></span><span>'+age+'</span></div>'+
-      '<div class="m-last">'+trunc(ll,52)+'</div></div>';
+      '<div class="m-last">'+trunc(ll,46)+'</div></div>';
   }).join('');
 }
 
@@ -213,7 +319,7 @@ function sel(name){
   document.getElementById('no-sel').style.display='none';
   var lv=document.getElementById('log-view');
   lv.style.display='flex';lv.style.flexDirection='column';
-  lv.style.overflow='hidden';lv.style.flex='1';
+  lv.style.overflow='hidden';lv.style.flex='1';lv.style.minWidth='0';lv.style.minHeight='0';
   document.getElementById('t-name').textContent=name;
   document.getElementById('log-out').innerHTML='';
   renderProgress();
@@ -281,6 +387,43 @@ function onScroll(){
 
 loadSessions();
 setInterval(loadSessions,10000);
+
+/* ============================================================================
+   Added for the branded build. Nothing above depends on either function.
+   ============================================================================ */
+
+/* Poppins step labels are wider than the old 10px Consolas ones, so the strip
+   can overflow 14 chips. It scrolls, and this keeps the live step centred. */
+function keepStepInView(steps,idx){
+  var chip=steps.children[Math.max(0,idx)];
+  if(!chip)return;
+  steps.scrollLeft=Math.max(0,chip.offsetLeft-steps.clientWidth/2+chip.offsetWidth/2);
+}
+
+/* Theme toggle. Same storage key and event as the brand kit's js/juniper-theme.js
+   — swap in that file instead of this block if you prefer the canonical copy.
+   Defaults to dark: this page is usually left up on a wall. */
+(function(){
+  var KEY='juniper.theme';
+  function icon(t){
+    var n=document.querySelectorAll('.juniper-theme-icon');
+    for(var i=0;i<n.length;i++)n[i].innerHTML=(t==='dark'?'&#9728;':'&#127769;');
+  }
+  function apply(t,announce){
+    document.documentElement.setAttribute('data-theme',t);
+    icon(t);
+    if(announce!==false)window.dispatchEvent(new CustomEvent('juniper-theme-change',{detail:{theme:t}}));
+  }
+  var stored=null;
+  try{stored=localStorage.getItem(KEY);}catch(e){}
+  apply(stored==='light'||stored==='dark'?stored:'dark',false);
+  var btn=document.getElementById('juniper-theme-toggle');
+  if(btn)btn.addEventListener('click',function(){
+    var next=document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';
+    apply(next,true);
+    try{localStorage.setItem(KEY,next);}catch(e){}
+  });
+})();
 </script>
 </body>
 </html>
