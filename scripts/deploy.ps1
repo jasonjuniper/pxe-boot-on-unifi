@@ -60,6 +60,11 @@ function Write-DeployLog {
     $name  = if ($Script:WpeTargetName) { $Script:WpeTargetName } else { 'winpe' }
     $entry = "$ts  [$($Level.PadRight(5))]  [winpe                 ]  $Message"
 
+    # WinPE-local progress log (X: RAMdisk, exists from the very first line) -
+    # the branded imaging screen (X:\deploy-screen.ps1) tails THIS file to advance
+    # its phase ticks. Always written, independent of the target-drive log below.
+    Add-Content -LiteralPath 'X:\deploy_log.txt' -Value $entry -Encoding UTF8 -ErrorAction SilentlyContinue
+
     # Write to target drive if staging paths are known
     if ($Script:WpeMasterLog) {
         Add-Content -LiteralPath $Script:WpeMasterLog -Value $entry -Encoding UTF8 -ErrorAction SilentlyContinue
@@ -844,6 +849,14 @@ if ($prior) {
         Write-Host "    (UEFI license: $($OsOptions[$oemOsDefault].Label) overrides inventory OS: $($prior.os))" -ForegroundColor Yellow
     }
     Write-Host ''
+} else {
+    Write-Host ''
+    Write-Host '  ============================================================' -ForegroundColor Yellow
+    Write-Host '   MACHINE NOT IN INVENTORY  --  UNKNOWN' -ForegroundColor Yellow
+    Write-Host '   No serial/MAC match. Name and OS have no saved defaults, so' -ForegroundColor Yellow
+    Write-Host '   each field below WAITS for your input (no auto-accept countdown).' -ForegroundColor Yellow
+    Write-Host '  ============================================================' -ForegroundColor Yellow
+    Write-Host ''
 }
 
 # Helper: validate a candidate computer name (1-15 chars, A-Z0-9 and hyphen, no edge hyphen)
@@ -1016,6 +1029,111 @@ Write-Host "    OS    : $($os.Label)"
 Write-Host "    Name  : $computerName"
 Write-Host ''
 Write-Host '  !! Disk 0 will be COMPLETELY WIPED !!' -ForegroundColor Red
+
+# ================= Phase 4: pre-wipe user-data backup (server-armed + 10s interruptible) =================
+# Two-part opt-in (see docs/design-prewipe-backup.md): armed per-device from the
+# inventory UI ("Back up at next re-imaging"), OR opted-in here at the console.
+# Runs BEFORE the branded screen launches so the countdown/keys are visible.
+function Invoke-PreWipeBackup {
+    param([switch]$Force)
+    $script:PreWipeBackupOk = $false
+    $runId = $null
+    try {
+        $macId = ''
+        try { $macId = (([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' -and $_.NetworkInterfaceType -ne 'Loopback' } | Select-Object -First 1).GetPhysicalAddress().ToString() -replace '(..)(?=.)','$1:') } catch {}
+        $q = "serial=$serialClean&mac=$macId"; if ($Force) { $q += '&force=1' }
+        $bk = Invoke-RestMethod "$InvApi/ingest/backup/begin?$q" -TimeoutSec 20
+        if (-not ($bk.enabled -and $bk.run_id)) { Write-Host '  Backup not enabled for this device; skipping.' -ForegroundColor DarkGray; $script:PreWipeBackupOk = $true; return }
+        $runId = $bk.run_id
+        Publish-Event -PhaseKey 'winpe' -Step 'prewipe-backup' -Status 'running' -Message 'Backing up user data before wipe...' -Percent 1
+        Write-DeployLog 'Step: Backing up user data before wipe'
+        Write-Host '  Backing up user data before wipe...' -ForegroundColor Cyan
+        # backup$ reached over the existing junadmin deploy-share session (same server,
+        # same user); a 2nd session as junbackup triggers SMB multi-connection errors.
+        $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $root = "\\$DeployServer\backup$\$($bk.serial)\winpe-$ts"
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Invoke-RestMethod "$InvApi/ingest/backup/start" -Method Post -Body (@{run_id=$runId;path=$root}|ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 20 | Out-Null
+        $osv = $null
+        foreach ($v in (Get-Volume | Where-Object { $_.DriveLetter })) { $d = "$($v.DriveLetter):"; if ((Test-Path "$d\Windows\System32\config\SYSTEM") -and (Test-Path "$d\Users")) { $osv = $d; break } }
+        function RCbk($src,$dst,$extra){ if (Test-Path -LiteralPath $src) { New-Item -ItemType Directory -Path $dst -Force | Out-Null; $ar=@($src,$dst,'/E','/B','/R:1','/W:1','/NFL','/NDL','/NP','/NJH','/NJS')+$extra; robocopy @ar | Out-Null } }
+        $accounts = @()
+        if ($osv) {
+            foreach ($p in (Get-ChildItem "$osv\Users" -Directory | Where-Object { $_.Name -notin @('Default','Default User','Public','All Users','defaultuser0') })) {
+                $b = $p.FullName; $pd = "$root\profiles\$($p.Name)"; $accounts += $p.Name
+                foreach ($f in @('Desktop','Documents','Downloads','Pictures','Videos','Favorites')) { RCbk "$b\$f" "$pd\$f" @() }
+                foreach ($br in @(@{n='Edge';f="$b\AppData\Local\Microsoft\Edge\User Data\Default\Bookmarks"}, @{n='Chrome';f="$b\AppData\Local\Google\Chrome\User Data\Default\Bookmarks"})) { if (Test-Path -LiteralPath $br.f) { New-Item -ItemType Directory -Path "$pd\browser\$($br.n)" -Force | Out-Null; Copy-Item -LiteralPath $br.f -Destination "$pd\browser\$($br.n)\Bookmarks" -Force } }
+                if (Test-Path -LiteralPath "$b\AppData\Local\Microsoft\Outlook") { RCbk "$b\AppData\Local\Microsoft\Outlook" "$pd\Outlook" @('/XF','*.ost') }
+            }
+            RCbk "$osv\dev" "$root\machine\dev" @()
+            foreach ($inc in @($bk.include_paths)) { if ($inc) { $rel = ($inc -replace '^[A-Za-z]:',''); $src = "$osv$rel"; if (Test-Path -LiteralPath $src) { RCbk $src ("$root\machine\" + ($rel.TrimStart('\'))) @() } } }
+        }
+        $files = Get-ChildItem $root -Recurse -File
+        $bytes = ($files | Measure-Object Length -Sum).Sum
+        (@{serial=$bk.serial;run_id=$runId;timestamp=$ts;source_volume=$osv;file_count=$files.Count;total_bytes=$bytes;captured_utc=(Get-Date).ToUniversalTime().ToString('o')}|ConvertTo-Json)|Set-Content -LiteralPath "$root\manifest.json"
+        Invoke-RestMethod "$InvApi/ingest/backup/finish" -Method Post -Body (@{run_id=$runId;status='complete';bytes=$bytes;file_count=$files.Count;accounts=$accounts;path=$root}|ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+        Publish-Event -PhaseKey 'winpe' -Step 'prewipe-backup' -Status 'ok' -Message "Backed up $($files.Count) files ($([math]::Round($bytes/1MB,1)) MB) before wipe" -Percent 2
+        Write-DeployLog "Step: Backup complete ($($files.Count) files, $([math]::Round($bytes/1MB,1)) MB)"
+        Write-Host "  Pre-wipe backup complete: $($files.Count) files, $([math]::Round($bytes/1MB,1)) MB" -ForegroundColor Green
+        $script:PreWipeBackupOk = $true
+    } catch {
+        Write-Host "  Pre-wipe backup FAILED (imaging continues): $($_.Exception.Message)" -ForegroundColor Yellow
+        try { Publish-Event -PhaseKey 'winpe' -Step 'prewipe-backup' -Status 'error' -Message "backup skipped: $($_.Exception.Message)" -Percent 1 } catch {}
+        try { if ($runId) { Invoke-RestMethod "$InvApi/ingest/backup/finish" -Method Post -Body (@{run_id=$runId;status='failed';notes="$($_.Exception.Message)"}|ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 15 | Out-Null } } catch {}
+    }
+}
+try {
+    $armed = $false
+    try { $chk = Invoke-RestMethod "$InvApi/ingest/backup/for-device?serial=$serialClean" -TimeoutSec 12; $armed = [bool]($chk -and $chk.enabled) } catch {}
+    $runBackup = $false; $keys = if ($armed) { @('s','S') } else { @('b','B') }
+    $label = if ($armed) { 'Backup starts' } else { 'Wiping' }
+    $hint  = if ($armed) { 'S = skip backup' } else { 'B = back up first' }
+    if ($armed) { $runBackup = $true }
+    Write-Host ''
+    if ($armed) {
+        Write-Host '  ============================================================' -ForegroundColor Cyan
+        Write-Host '   PRE-WIPE BACKUP is ARMED - user data will be captured.' -ForegroundColor Cyan
+        Write-Host '  ============================================================' -ForegroundColor Cyan
+    } else {
+        Write-Host '   No pre-wipe backup armed for this machine.' -ForegroundColor DarkGray
+    }
+    for ($i = 10; $i -ge 1; $i--) {
+        Write-Host ("`r   $label in {0,2}s ... ($hint)   " -f $i) -NoNewline -ForegroundColor Cyan
+        $t0 = Get-Date
+        while ((((Get-Date) - $t0).TotalMilliseconds) -lt 1000) {
+            if ($host.UI.RawUI.KeyAvailable) {
+                $k = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                if ($k.Character -in $keys) { $runBackup = (-not $armed); $i = 0; break }
+            }
+            Start-Sleep -Milliseconds 80
+        }
+    }
+    Write-Host ''
+    if ($runBackup) {
+        Invoke-PreWipeBackup -Force:(-not $armed)
+        if ($armed -and -not $script:PreWipeBackupOk) {
+            Write-Host ''
+            Write-Host '  *** PRE-WIPE BACKUP FAILED and this machine is ARMED for backup. ***' -ForegroundColor Red
+            Write-Host '  HALTING before wipe to protect user data.' -ForegroundColor Red
+            Read-Host '  Press Enter ONLY to wipe WITHOUT a backup (DATA LOSS), or close this window to abort'
+        }
+    }
+    elseif ($armed) { Write-Host '   Pre-wipe backup SKIPPED by operator.' -ForegroundColor Yellow }
+} catch { Write-Host "  Pre-wipe backup step error (imaging continues): $($_.Exception.Message)" -ForegroundColor Yellow }
+# ================= end pre-wipe backup =================
+
+# --- Launch the branded WPF imaging screen (Option 3) ----------------------
+# Every console decision (name / edition / assigned-user / backup) is made above.
+# From here imaging is unattended, so bring up the full-screen branded progress
+# screen. deploy.ps1 keeps running behind it and writes X:\deploy_log.txt, which
+# the screen tails. Best-effort + non-fatal: if WPF can't load, imaging simply
+# continues in the console (deploy-boot.ps1 launched us in the foreground).
+try {
+    if (Test-Path 'X:\deploy-screen.ps1') {
+        Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile','-ExecutionPolicy','Bypass','-File','X:\deploy-screen.ps1','-DeployPid',"$PID") | Out-Null
+    }
+} catch {}
 
 # --- Partition Disk 0 (GPT / UEFI) -----------------------------------------
 

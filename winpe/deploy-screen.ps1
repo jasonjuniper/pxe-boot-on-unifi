@@ -148,11 +148,13 @@ for($i=0;$i -lt $STEPS.Count;$i++){
 $CW = 680.0
 $script:lastIdx = -2
 $script:lastFail = $false
+$script:lastMachine = ''
 function Render($idx,$failed){
   if($idx -eq $script:lastIdx -and $failed -eq $script:lastFail){ return }
   $script:lastIdx = $idx; $script:lastFail = $failed
   if($idx -lt 0){ $ph='WinPE'; $msg='Starting...'; $pct=0 }
   else { $ph=$STEPS[$idx].ph; $msg=$STEPS[$idx].msg; $pct=[int][math]::Round(100.0 * ($idx + 1) / $STEPS.Count) }
+  if($pct -lt 0){ $pct = 0 } elseif($pct -gt 100){ $pct = 100 }   # never render a bogus percent (belt-and-suspenders)
   $w = $CW * $pct / 100.0
   if($w -lt 0){ $w = 0.0 } elseif($w -gt $CW){ $w = $CW }
   (E 'phase').Text = $ph.ToUpper()
@@ -164,7 +166,9 @@ function Render($idx,$failed){
     elseif($n -eq $idx){ $tickRects[$n].Fill=$brNow }
     else{ $tickRects[$n].Fill=$brTodo }
   }
-  $done = ($idx -eq ($STEPS.Count-1))
+  # Flip to "ready" on the Complete phase itself - robust even if idx/count ever drift.
+  $done = ($idx -ge 0) -and ($STEPS[$idx].ph -eq 'Complete')
+  try { "$(Get-Date -Format 'HH:mm:ss')  idx=$idx count=$($STEPS.Count) pct=$pct done=$done ph=$ph" | Out-File 'X:\screen-diag.txt' -Append -Encoding utf8 } catch {}
   (E 'headline').Text = $(if($done){'This computer is ready'} else {'Setting up this computer'})
   (E 'sub').Text = $(if($done){'Sign in with your Juniper account to finish.'} else {'This takes about 40 minutes. The machine will restart a few times on its own - you can leave it.'})
   if($failed){ (E 'warntext').Text='A step reported a problem. Imaging continues; a technician will review the log.'; (E 'warnbox').Visibility='Visible' }
@@ -176,6 +180,9 @@ function Scan($text){
     if($ln -match 'PHASE END:.*FAILED|\[ERROR\]'){ $failed=$true }
     for($s=$idx+1;$s -lt $STEPS.Count;$s++){ if($ln -match $STEPS[$s].re){ $idx=$s; $failed=$false; break } }
   }
+  # Pull the resolved machine name from deploy.ps1's "Machine: <name> | OS: ..." line.
+  $mm = [regex]::Match($text, 'Machine:\s*([^\|\r\n]+)')
+  if($mm.Success){ $nm = $mm.Groups[1].Value.Trim(); if($nm -and $nm -ne $script:lastMachine){ $script:lastMachine = $nm; try { Spec 'footMachine' 'MACHINE' $nm } catch {} } }
   Render $idx $failed
 }
 Render -1 $false

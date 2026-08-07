@@ -203,3 +203,32 @@ re-add a browser; see §1 "Why WPF".)
 - `winpemedia$` / `tftpd64$` shares — gone.
 - Edge-kiosk imaging screen + staged Edge (`imaging-screen.html`, `X:\edge`) —
   replaced by the WPF screen; Edge does not run in WinPE.
+
+## Deploy-time input flow + pre-wipe backup (2026-08-07)
+
+"Console prompts first, then branded screen" (Option 3): `deploy-boot.ps1` runs
+`deploy.ps1` in the FOREGROUND (console visible); all operator decisions happen in
+the console, then `deploy.ps1` launches the WPF screen (`X:\deploy-screen.ps1`)
+right before partitioning and keeps logging to `X:\deploy_log.txt` (which the
+screen tails).
+
+- KNOWN host (serial/MAC resolves in inventory): computer name + Windows edition
+  auto-accept via 10s countdowns; the pre-wipe backup gate also counts down. Hands-off.
+- UNKNOWN machine: a "MACHINE NOT IN INVENTORY - UNKNOWN" banner shows and the
+  name/edition fields WAIT for input (no auto-accept).
+
+Pre-wipe user-data backup (two-part; see design-prewipe-backup.md):
+- Armed per-device from the inventory UI ("Back up at next re-imaging"), OR opted-in
+  at the console gate (B = back up first when not armed; S = skip when armed; 10s).
+- Captures each profile's Desktop/Documents/Downloads/Pictures/Videos/Favorites +
+  Edge/Chrome bookmarks + Outlook (minus .ost) + C:\dev to
+  \\pc-deploy\backup$\<serial>\winpe-<ts>, over the existing junadmin session.
+- FAIL-SAFE: if a device is ARMED and the backup FAILS, imaging HALTS before wipe.
+- Wiring: Write-DeployLog also appends X:\deploy_log.txt (the screen source); the
+  backup hook sits immediately before diskpart clean. Server endpoints:
+  /ingest/backup/{for-device,begin,start,finish} (RFC-1918).
+
+Regression note: the backup hook was stripped from deploy.ps1 by the Aug 5-7
+stagebios/hardening edits and RESTORED 2026-08-07 from deploy.ps1.bak-stagebios.
+deploy.ps1 lives on the deploy share (read at runtime) - changes take effect
+without a WIM rebuild; only deploy-boot.ps1 / deploy-screen.ps1 / fonts require a rebake.

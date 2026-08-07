@@ -120,15 +120,12 @@ if (-not (Test-Path $DeployShare)) {
     exit
 }
 
-# -- Run deploy with the branded WPF imaging screen ---------------------------
-# The full-screen branded imaging screen (X:\deploy-screen.ps1, native WPF) is
-# shown while deploy.ps1 runs HIDDEN and writes X:\deploy_log.txt, which the
-# screen tails to advance its 14 phase ticks. WPF needs WinPE-NetFx +
-# WinPE-PowerShell (baked in). If WPF can't load, we cleanly fall back to the
-# interactive console deploy -- so a rendering problem can never leave a
-# half-imaged disk. NOTE: with the screen in front, deploy.ps1's prompts
-# auto-accept the serial/UEFI defaults (re-images resolve by serial); this is
-# the unattended on-machine path.
+# -- Run the live deploy in the FOREGROUND (console visible) ------------------
+# Option 3: deploy.ps1 runs in the console so its prompts (computer name /
+# Windows edition / assigned-user / pre-wipe backup) take real keyboard input.
+# deploy.ps1 itself launches the branded WPF imaging screen once imaging begins
+# (right after the backup gate), and writes X:\deploy_log.txt which the screen
+# tails. If WPF can't load, imaging just continues visibly in this console.
 $liveScript = "$DeployShare\scripts\deploy.ps1"
 if (-not (Test-Path $liveScript)) {
     Write-Host ''
@@ -139,23 +136,7 @@ if (-not (Test-Path $liveScript)) {
     exit
 }
 
-$screen = 'X:\deploy-screen.ps1'
-$guiOk  = $false
-try { Add-Type -AssemblyName PresentationFramework -ErrorAction Stop; $guiOk = $true } catch {}
-
-if ($guiOk -and (Test-Path $screen)) {
-    Write-Host '  Launching branded imaging screen...' -ForegroundColor Cyan
-    # deploy.ps1 runs hidden; its log drives the screen.
-    $dep = Start-Process 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList @(
-        '-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$liveScript`"")
-    try {
-        & $screen -DeployPid $dep.Id
-    } catch {
-        Write-Host "  Imaging screen error ($($_.Exception.Message)) - deploy continues headless." -ForegroundColor Yellow
-    }
-    if ($dep -and -not $dep.HasExited) { Wait-Process -Id $dep.Id -ErrorAction SilentlyContinue }
-} else {
-    if (-not $guiOk) { Write-Host '  WPF unavailable - using console deploy.' -ForegroundColor Yellow }
-    # Fallback: original interactive console path (unchanged behavior).
-    & $liveScript
-}
+# deploy.ps1 owns the branded screen now (it launches X:\deploy-screen.ps1 itself,
+# after the pre-wipe backup gate). Run it in the FOREGROUND so every console
+# prompt takes real keyboard input.
+& $liveScript
